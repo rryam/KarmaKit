@@ -1,4 +1,6 @@
 # KarmaKit
+[![Star History Chart](https://api.star-history.com/svg?repos=rryam/KarmaKit&type=Date)](https://star-history.com/#rryam/KarmaKit&Date)
+
 
 KarmaKit is a Swift library inspired by [Hugging Face’s smolagents](https://github.com/huggingface/smolagents), designed to make building agentic systems simple. 
 
