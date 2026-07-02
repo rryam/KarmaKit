@@ -2,20 +2,19 @@
 
 **CoreAgent makes any model shippable. CoreVoiceAgent gives it a voice.**
 
-CoreVoiceAgent is an on-device voice agent pipeline for Apple platforms:
+CoreVoiceAgent is a voice agent pipeline for Apple platforms:
 
 ```text
 microphone ──▶ endpointer ──▶ transcriber ──▶ responder ──▶ chunker ──▶ synthesizer ──▶ speaker
-   (ears: Parakeet-TDT via Core AI)      (brain: CoreAgent over      (mouth: Chatterbox Turbo
-                                          Foundation Models)          via Core AI)
+   (your speech recognizer)          (CoreAgent over Foundation Models)      (Chatterbox Turbo via Core AI)
 ```
 
-Every stage is a protocol, and the defaults are all local: NVIDIA
-Parakeet-TDT-0.6B speech recognition through Core AI, a
-[CoreAgent](https://github.com/rudrankriyam/CoreAgent) session over any
-Foundation Models `LanguageModel` (the on-device system model by default),
-and Resemble AI's Chatterbox Turbo text-to-speech through Core AI. No
-cloud, no per-minute pricing, no audio leaving the device.
+Every stage is a protocol. This package ships the voice loop, a
+[CoreAgent](https://github.com/rudrankriyam/CoreAgent) responder over any
+Foundation Models `LanguageModel`, Chatterbox Turbo text-to-speech through
+Core AI, AVAudioEngine capture/playback, and deterministic test doubles.
+Bring the speech recognizer that fits your app by conforming to
+`Transcriber`.
 
 `VoiceAgentSession` owns the loop: it segments user speech with a
 deterministic energy endpointer, transcribes the finished utterance,
@@ -27,7 +26,7 @@ the current one plays. Sustained user speech during a reply cancels it
 ## Requirements
 
 - Swift 6.2+ toolchain (Xcode 27 for the CoreAgent and Core AI paths)
-- iOS 27+ or macOS 27+ for the full on-device stack
+- iOS 27+ or macOS 27+ for the CoreAgent, Core AI, and AVFoundation paths
 - The platform-independent core (`CoreVoiceAgentCore`) compiles and tests
   anywhere Swift runs, including Linux
 
@@ -48,7 +47,6 @@ Pick products by the weight you want to carry:
 | --- | --- |
 | `CoreVoiceAgent` | The pipeline plus the CoreAgent-backed responder |
 | `CoreVoiceAgentCore` | Just the pipeline and protocols (no Apple-only imports) |
-| `CoreVoiceAgentParakeet` | Parakeet-TDT ears via `coreai-kit` |
 | `CoreVoiceAgentChatterbox` | Chatterbox Turbo mouth via Core AI |
 | `CoreVoiceAgentAudio` | `AVAudioEngine` capture and playback |
 | `CoreVoiceAgentTestSupport` | Scripted components and audio fixtures |
@@ -60,8 +58,6 @@ import CoreAgent
 import CoreVoiceAgent
 import CoreVoiceAgentAudio
 import CoreVoiceAgentChatterbox
-import CoreVoiceAgentParakeet
-import CoreAIKit
 import FoundationModels
 
 // The brain: any LanguageModel, wrapped in CoreAgent's production
@@ -75,9 +71,6 @@ let agent = try CoreAgentSession(
   }
 )
 
-// The ears: Parakeet-TDT-0.6B, downloaded from the Hub on first use.
-let parakeet = try await KitParakeetModel(model: .parakeetTDT)
-
 // The mouth: Chatterbox Turbo from a directory containing recipe.json
 // and the four .aimodel assets.
 let chatterbox = ChatterboxEngine(recipeDirectory: chatterboxModelsURL)
@@ -86,7 +79,7 @@ try await chatterbox.prepare()
 let session = VoiceAgentSession(
   input: MicrophoneAudioInput(),
   output: SpeakerAudioOutput(),
-  transcriber: ParakeetTranscriber(model: parakeet),
+  transcriber: AppTranscriber(),
   responder: CoreAgentResponder(session: agent),
   synthesizer: ChatterboxSpeechSynthesizer(engine: chatterbox)
 )
@@ -147,28 +140,22 @@ struct EchoResponder: ConversationResponder {
 
 ## Swap the ears and mouth
 
-`Transcriber` and `SpeechSynthesizer` are single-method protocols.
-Parakeet and Chatterbox are the fully local defaults; the Speech
-framework, WhisperKit, or a Kokoro port each fit the same seams.
+`Transcriber` and `SpeechSynthesizer` are single-method protocols. The
+package currently leaves speech recognition to the app, so the Speech
+framework, WhisperKit, a Core AI recognizer, or a fixture-backed test
+transcriber can each fit the same seam.
 
-The batch `Transcriber` shape is deliberate. Parakeet decodes a finished
-clip about 48x faster than real time on an iPhone 17 Pro GPU, so
-endpoint-then-transcribe adds roughly a third of a second to the turn —
-far simpler and more robust than incremental streaming against a model
-with a fixed 30-second encoder bucket.
+The batch `Transcriber` shape is deliberate: the session endpoints first,
+then gives the recognizer a finished clip. A streaming recognizer can still
+surface partial captions through the `onPartialTranscript` callback.
 
 ## Model assets
 
 | Stage | Model | Size | License |
 | --- | --- | --- | --- |
-| Ears | [`mlboydaisuke/Parakeet-TDT-0.6B-CoreAI`](https://huggingface.co/mlboydaisuke/Parakeet-TDT-0.6B-CoreAI) | ~1.3 GB | CC-BY-4.0 |
+| Ears | App-supplied `Transcriber` | app-defined | app-defined |
 | Brain | On-device Foundation Models system model | — | — |
 | Mouth | Chatterbox Turbo Core AI export ([conversion recipes](https://github.com/rudrankriyam/Core-AI-Framework-Lab)) | ~600 MiB | MIT (weights: Resemble AI) |
-
-`KitParakeetModel` downloads its bundle from the Hub on first use. For
-iPhone, AOT-compile the Parakeet encoder to `.aimodelc` as described in
-the [coreai-model-zoo notes](https://github.com/john-rocky/coreai-model-zoo);
-the raw 1.2 GB asset stalls on-device JIT specialization.
 
 The Chatterbox engine loads a directory (or bundle resource folder)
 containing `recipe.json`, the four `.aimodel` assets, and the tokenizer —
@@ -182,7 +169,7 @@ Time-to-first-audio for a turn is approximately:
 
 ```text
 endSilence (0.8 s default)
-  + Parakeet pass (~0.3 s warm)
+  + speech-recognition pass
   + first sentence from the model (model-dependent)
   + Chatterbox synthesis of that first sentence
 ```
@@ -220,8 +207,8 @@ end-to-end voice tests with a deterministic, zero-network brain.
 
 ## Deliberate boundaries
 
-- **Endpoint-then-transcribe, not streaming ASR.** See above; the seams
-  allow a streaming transcriber later without touching the session.
+- **Endpoint-then-transcribe by default.** See above; the seams allow a
+  streaming transcriber later without touching the session.
 - **One fixed voice.** The Chatterbox Core AI export currently covers the
   fixed-voice inference path. Voice cloning needs the reference-voice
   encoders converted first.

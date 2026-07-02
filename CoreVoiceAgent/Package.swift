@@ -17,9 +17,6 @@ let package = Package(
     // sentence chunking, and the session orchestrator. No Apple-only
     // framework imports; compiles and tests on Linux.
     .library(name: "CoreVoiceAgentCore", targets: ["CoreVoiceAgentCore"]),
-    // NVIDIA Parakeet-TDT-0.6B speech-to-text through Core AI, via the
-    // community coreai-kit runtime.
-    .library(name: "CoreVoiceAgentParakeet", targets: ["CoreVoiceAgentParakeet"]),
     // Resemble AI Chatterbox Turbo text-to-speech through Core AI, vendored
     // from Core-AI-Framework-Lab and adapted to return raw samples.
     .library(name: "CoreVoiceAgentChatterbox", targets: ["CoreVoiceAgentChatterbox"]),
@@ -35,12 +32,6 @@ let package = Package(
       url: "https://github.com/rudrankriyam/CoreAgent.git",
       from: "0.3.0"
     ),
-    // Community Core AI runtime that ships KitParakeetModel. No release tag
-    // yet, so the dependency pins a verified commit.
-    .package(
-      url: "https://github.com/john-rocky/coreai-kit.git",
-      revision: "7ddc5cce7770a4d283e15c8b191ce5584936f1b4"
-    ),
     .package(
       url: "https://github.com/huggingface/swift-transformers.git",
       from: "1.1.0"
@@ -53,13 +44,6 @@ let package = Package(
       dependencies: [
         "CoreVoiceAgentCore",
         .product(name: "CoreAgent", package: "CoreAgent"),
-      ]
-    ),
-    .target(
-      name: "CoreVoiceAgentParakeet",
-      dependencies: [
-        "CoreVoiceAgentCore",
-        .product(name: "CoreAIKit", package: "coreai-kit"),
       ]
     ),
     .target(

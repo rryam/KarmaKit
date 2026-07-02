@@ -32,11 +32,8 @@ public protocol AudioOutput: Sendable {
 
 /// A speech-to-text engine that transcribes one completed utterance.
 ///
-/// The batch shape is intentional: the on-device recognizers this package
-/// targets — Parakeet-TDT through Core AI, Whisper-family models, and the
-/// Speech framework's file path — all transcribe a finished clip many times
-/// faster than real time, so the session endpoints first and transcribes
-/// second.
+/// The batch shape is intentional: the session endpoints first and hands
+/// each finished clip to whichever recognizer the app supplies.
 public protocol Transcriber: Sendable {
   /// Transcribes a completed utterance.
   ///

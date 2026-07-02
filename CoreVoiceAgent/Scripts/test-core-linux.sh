@@ -22,6 +22,9 @@ import PackageDescription
 
 let package = Package(
   name: "core-voice-agent-core-tests",
+  platforms: [
+    .macOS(.v13)
+  ],
   targets: [
     .target(name: "CoreVoiceAgentCore"),
     .target(name: "CoreVoiceAgentTestSupport", dependencies: ["CoreVoiceAgentCore"]),

@@ -13,7 +13,7 @@ import Foundation
 /// let session = VoiceAgentSession(
 ///   input: MicrophoneAudioInput(),
 ///   output: SpeakerAudioOutput(),
-///   transcriber: ParakeetTranscriber(model: parakeet),
+///   transcriber: AppTranscriber(),
 ///   responder: CoreAgentResponder(session: agent),
 ///   synthesizer: ChatterboxSpeechSynthesizer(engine: chatterbox)
 /// )
@@ -23,10 +23,9 @@ import Foundation
 /// }
 /// ```
 ///
-/// Every dependency is a protocol, so the ears (Parakeet, the Speech
-/// framework), brain (CoreAgent over any Foundation Models
-/// `LanguageModel`), and mouth (Chatterbox) are swappable without touching
-/// the loop.
+/// Every dependency is a protocol, so the ears, brain (CoreAgent over any
+/// Foundation Models `LanguageModel`), and mouth (Chatterbox) are swappable
+/// without touching the loop.
 public actor VoiceAgentSession {
   private let configuration: VoiceAgentConfiguration
   private let input: any AudioInput

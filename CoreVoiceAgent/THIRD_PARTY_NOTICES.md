@@ -14,20 +14,12 @@ CoreVoiceAgent composes the following third-party work.
 ## Package dependencies
 
 - **[CoreAgent](https://github.com/rudrankriyam/CoreAgent)** — MIT.
-- **[coreai-kit](https://github.com/john-rocky/coreai-kit)** — BSD
-  3-Clause, copyright (c) 2026 Daisuke Majima. Provides
-  `KitParakeetModel`, the Parakeet-TDT Core AI runtime.
 - **[swift-transformers](https://github.com/huggingface/swift-transformers)**
   — Apache License 2.0.
 
 ## Model weights (downloaded or supplied by the app, not distributed
 with this package)
 
-- **NVIDIA Parakeet-TDT-0.6B-v3**
-  ([`mlboydaisuke/Parakeet-TDT-0.6B-CoreAI`](https://huggingface.co/mlboydaisuke/Parakeet-TDT-0.6B-CoreAI),
-  converted from
-  [`nvidia/parakeet-tdt-0.6b-v3`](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3))
-  — CC-BY-4.0. Ship attribution to NVIDIA with your app.
 - **Resemble AI Chatterbox Turbo**
   (converted with
   [Core-AI-Framework-Lab](https://github.com/rudrankriyam/Core-AI-Framework-Lab)

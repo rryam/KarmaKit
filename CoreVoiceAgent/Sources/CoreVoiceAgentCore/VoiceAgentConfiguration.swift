@@ -23,7 +23,7 @@ public struct EndpointerConfiguration: Sendable, Equatable {
 
   /// The hard cap per utterance.
   ///
-  /// The default stays inside Parakeet-TDT's ~29-second encoder bucket.
+  /// The default stays inside common fixed-window speech recognizer buckets.
   public var maximumUtteranceDuration: TimeInterval
 
   /// Creates an endpointer configuration.

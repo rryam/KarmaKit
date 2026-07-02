@@ -11,8 +11,6 @@ Initial release.
   `Transcriber`, `ConversationResponder`, `SpeechSynthesizer`).
 - `CoreVoiceAgent`: `CoreAgentResponder`, adapting `CoreAgentSession`
   (any Foundation Models `LanguageModel`) as the conversational brain.
-- `CoreVoiceAgentParakeet`: `ParakeetTranscriber` over `coreai-kit`'s
-  `KitParakeetModel` (NVIDIA Parakeet-TDT-0.6B through Core AI).
 - `CoreVoiceAgentChatterbox`: `ChatterboxEngine` and
   `ChatterboxSpeechSynthesizer` (Chatterbox Turbo through Core AI),
   vendored from Core-AI-Framework-Lab and adapted to return raw samples
