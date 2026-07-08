@@ -18,6 +18,7 @@ let package = Package(
     .library(name: "CoreAgentGraph", targets: ["CoreAgentGraph"]),
     .library(name: "CoreAgentMemory", targets: ["CoreAgentMemory"]),
     .library(name: "CoreAgentSkills", targets: ["CoreAgentSkills"]),
+    .library(name: "CoreAgentTalon", targets: ["CoreAgentTalon"]),
     .library(name: "CoreAgentAgenticKit", targets: ["CoreAgentAgenticKit"]),
     .library(name: "CoreAgentTestSupport", targets: ["CoreAgentTestSupport"]),
     .library(name: "CoreAgentProviders", targets: ["CoreAgentProviders"]),
@@ -76,6 +77,10 @@ let package = Package(
     ),
     .target(
       name: "CoreAgentGraph",
+      dependencies: ["CoreAgent"]
+    ),
+    .target(
+      name: "CoreAgentTalon",
       dependencies: ["CoreAgent"]
     ),
     .target(
@@ -168,6 +173,10 @@ let package = Package(
     .testTarget(
       name: "CoreAgentGraphTests",
       dependencies: ["CoreAgentGraph"]
+    ),
+    .testTarget(
+      name: "CoreAgentTalonTests",
+      dependencies: ["CoreAgentTalon", "CoreAgentTestSupport"]
     ),
     .testTarget(
       name: "CoreAgentDeepTests",
