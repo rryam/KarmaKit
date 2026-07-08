@@ -1,0 +1,597 @@
+import CoreAgent
+import CoreAgentEngine
+import CoreAgentGraph
+import CryptoKit
+import Foundation
+import Observation
+import SwiftData
+
+public enum CoreAgentSwiftDataGraphPersistenceError: Error, Equatable, Sendable {
+  case checkpointScopeMismatch(checkpointID: String, expected: String, actual: String)
+  case checkpointDigestMismatch(checkpointID: String, expected: String, actual: String)
+  case checkpointPayloadDecodeFailed(checkpointID: String)
+  case checkpointSidecarMismatch(checkpointID: String)
+  case storeScopeMismatch(namespace: String, key: String, expected: String, actual: String)
+  case storeDigestMismatch(namespace: String, key: String, expected: String, actual: String)
+  case storePayloadDecodeFailed(namespace: String, key: String)
+  case storeSidecarMismatch(namespace: String, key: String)
+}
+
+@Model
+public final class CoreAgentSwiftDataGraphCheckpointRecord {
+  public private(set) var checkpointScopeKey: String
+  public private(set) var checkpointID: String
+  public private(set) var threadID: String
+  public private(set) var namespace: String
+  public private(set) var parentCheckpointID: String?
+  public private(set) var step: Int
+  public private(set) var createdAt: Date
+  public private(set) var storedAt: Date
+  public private(set) var saveSequence: Int
+  public private(set) var encodedCheckpoint: Data
+  public private(set) var checkpointDigest: String
+
+  public convenience init<State: Codable & Sendable>(
+    checkpoint: CoreAgentGraphCheckpoint<State>,
+    saveSequence: Int,
+    storedAt: Date = Date()
+  ) throws {
+    let encodedCheckpoint = try CoreAgentSwiftDataGraphCodec.encode(checkpoint)
+    self.init(
+      checkpointID: checkpoint.id.rawValue,
+      threadID: checkpoint.threadID.rawValue,
+      namespace: checkpoint.namespace.rawValue,
+      parentCheckpointID: checkpoint.parentCheckpointID?.rawValue,
+      step: checkpoint.step,
+      createdAt: checkpoint.createdAt,
+      storedAt: storedAt,
+      saveSequence: saveSequence,
+      encodedCheckpoint: encodedCheckpoint,
+      checkpointDigest: Self.integrityDigest(
+        checkpointScopeKey: Self.scopeKey(
+          threadID: checkpoint.threadID.rawValue,
+          namespace: checkpoint.namespace.rawValue
+        ),
+        checkpointID: checkpoint.id.rawValue,
+        threadID: checkpoint.threadID.rawValue,
+        namespace: checkpoint.namespace.rawValue,
+        parentCheckpointID: checkpoint.parentCheckpointID?.rawValue,
+        step: checkpoint.step,
+        createdAt: checkpoint.createdAt,
+        storedAt: storedAt,
+        saveSequence: saveSequence,
+        encodedCheckpoint: encodedCheckpoint
+      )
+    )
+  }
+
+  public init(
+    checkpointID: String,
+    threadID: String,
+    namespace: String,
+    parentCheckpointID: String?,
+    step: Int,
+    createdAt: Date,
+    storedAt: Date,
+    saveSequence: Int = 0,
+    checkpointScopeKey: String? = nil,
+    encodedCheckpoint: Data,
+    checkpointDigest: String
+  ) {
+    self.checkpointScopeKey =
+      checkpointScopeKey
+      ?? Self.scopeKey(
+        threadID: threadID,
+        namespace: namespace
+      )
+    self.checkpointID = checkpointID
+    self.threadID = threadID
+    self.namespace = namespace
+    self.parentCheckpointID = parentCheckpointID
+    self.step = step
+    self.createdAt = createdAt
+    self.storedAt = storedAt
+    self.saveSequence = saveSequence
+    self.encodedCheckpoint = encodedCheckpoint
+    self.checkpointDigest = checkpointDigest
+  }
+
+  func checkpoint<State: Codable & Sendable>(
+    as type: State.Type
+  ) throws -> CoreAgentGraphCheckpoint<State> {
+    let expectedScopeKey = Self.scopeKey(threadID: threadID, namespace: namespace)
+    guard checkpointScopeKey == expectedScopeKey else {
+      throw CoreAgentSwiftDataGraphPersistenceError.checkpointScopeMismatch(
+        checkpointID: checkpointID,
+        expected: expectedScopeKey,
+        actual: checkpointScopeKey
+      )
+    }
+    let actualDigest = Self.integrityDigest(
+      checkpointScopeKey: checkpointScopeKey,
+      checkpointID: checkpointID,
+      threadID: threadID,
+      namespace: namespace,
+      parentCheckpointID: parentCheckpointID,
+      step: step,
+      createdAt: createdAt,
+      storedAt: storedAt,
+      saveSequence: saveSequence,
+      encodedCheckpoint: encodedCheckpoint
+    )
+    guard checkpointDigest == actualDigest else {
+      throw CoreAgentSwiftDataGraphPersistenceError.checkpointDigestMismatch(
+        checkpointID: checkpointID,
+        expected: checkpointDigest,
+        actual: actualDigest
+      )
+    }
+    let checkpoint: CoreAgentGraphCheckpoint<State>
+    do {
+      checkpoint = try CoreAgentSwiftDataGraphCodec.decode(
+        CoreAgentGraphCheckpoint<State>.self,
+        from: encodedCheckpoint
+      )
+    } catch {
+      throw CoreAgentSwiftDataGraphPersistenceError.checkpointPayloadDecodeFailed(
+        checkpointID: checkpointID
+      )
+    }
+    guard checkpoint.id.rawValue == checkpointID,
+      checkpoint.threadID.rawValue == threadID,
+      checkpoint.namespace.rawValue == namespace,
+      checkpoint.parentCheckpointID?.rawValue == parentCheckpointID,
+      checkpoint.step == step,
+      checkpoint.createdAt == createdAt
+    else {
+      throw CoreAgentSwiftDataGraphPersistenceError.checkpointSidecarMismatch(
+        checkpointID: checkpointID
+      )
+    }
+    return checkpoint
+  }
+
+  public static func scopeKey(threadID: String, namespace: String) -> String {
+    "graph-checkpoint-scope-sha256-v1:" + sha256Hex(framed([threadID, namespace]))
+  }
+
+  static func integrityDigest(
+    checkpointScopeKey: String? = nil,
+    checkpointID: String,
+    threadID: String,
+    namespace: String,
+    parentCheckpointID: String?,
+    step: Int,
+    createdAt: Date,
+    storedAt: Date,
+    saveSequence: Int = 0,
+    encodedCheckpoint: Data
+  ) -> String {
+    let fields = [
+      checkpointScopeKey ?? Self.scopeKey(threadID: threadID, namespace: namespace),
+      checkpointID,
+      threadID,
+      namespace,
+      parentCheckpointID ?? "nil",
+      String(step),
+      timeToken(createdAt),
+      timeToken(storedAt),
+      String(saveSequence),
+      sha256Hex(encodedCheckpoint),
+    ]
+    return "sha256:" + sha256Hex(framed(fields))
+  }
+}
+
+@Model
+public final class CoreAgentSwiftDataGraphStoreRecord {
+  public private(set) var storeScopeKey: String
+  public private(set) var namespace: String
+  public private(set) var key: String
+  public private(set) var updatedAt: Date
+  public private(set) var encodedValue: Data
+  public private(set) var valueDigest: String
+
+  public convenience init<Value: Codable & Sendable>(
+    record: CoreAgentGraphStoreRecord<Value>
+  ) throws {
+    let encodedValue = try CoreAgentSwiftDataGraphCodec.encode(record.value)
+    self.init(
+      namespace: record.namespace.rawValue,
+      key: record.key.rawValue,
+      updatedAt: record.updatedAt,
+      encodedValue: encodedValue,
+      valueDigest: Self.integrityDigest(
+        storeScopeKey: Self.scopeKey(
+          namespace: record.namespace.rawValue,
+          key: record.key.rawValue
+        ),
+        namespace: record.namespace.rawValue,
+        key: record.key.rawValue,
+        updatedAt: record.updatedAt,
+        encodedValue: encodedValue
+      )
+    )
+  }
+
+  public init(
+    namespace: String,
+    key: String,
+    updatedAt: Date,
+    storeScopeKey: String? = nil,
+    encodedValue: Data,
+    valueDigest: String
+  ) {
+    self.storeScopeKey = storeScopeKey ?? Self.scopeKey(namespace: namespace, key: key)
+    self.namespace = namespace
+    self.key = key
+    self.updatedAt = updatedAt
+    self.encodedValue = encodedValue
+    self.valueDigest = valueDigest
+  }
+
+  func graphRecord<Value: Codable & Sendable>(
+    as type: Value.Type
+  ) throws -> CoreAgentGraphStoreRecord<Value> {
+    try validateIntegrity()
+    let value: Value
+    do {
+      value = try CoreAgentSwiftDataGraphCodec.decode(Value.self, from: encodedValue)
+    } catch {
+      throw CoreAgentSwiftDataGraphPersistenceError.storePayloadDecodeFailed(
+        namespace: namespace,
+        key: key
+      )
+    }
+    let graphRecord = CoreAgentGraphStoreRecord(
+      namespace: CoreAgentGraphStoreNamespace(namespace),
+      key: CoreAgentGraphStoreKey(key),
+      value: value,
+      updatedAt: updatedAt
+    )
+    guard graphRecord.namespace.rawValue == namespace,
+      graphRecord.key.rawValue == key
+    else {
+      throw CoreAgentSwiftDataGraphPersistenceError.storeSidecarMismatch(
+        namespace: namespace,
+        key: key
+      )
+    }
+    return graphRecord
+  }
+
+  func validateIntegrity() throws {
+    let expectedScopeKey = Self.scopeKey(namespace: namespace, key: key)
+    guard storeScopeKey == expectedScopeKey else {
+      throw CoreAgentSwiftDataGraphPersistenceError.storeScopeMismatch(
+        namespace: namespace,
+        key: key,
+        expected: expectedScopeKey,
+        actual: storeScopeKey
+      )
+    }
+    let actualDigest = Self.integrityDigest(
+      storeScopeKey: storeScopeKey,
+      namespace: namespace,
+      key: key,
+      updatedAt: updatedAt,
+      encodedValue: encodedValue
+    )
+    guard valueDigest == actualDigest else {
+      throw CoreAgentSwiftDataGraphPersistenceError.storeDigestMismatch(
+        namespace: namespace,
+        key: key,
+        expected: valueDigest,
+        actual: actualDigest
+      )
+    }
+  }
+
+  public static func scopeKey(namespace: String, key: String) -> String {
+    "graph-store-scope-sha256-v1:" + sha256Hex(framed([namespace, key]))
+  }
+
+  static func integrityDigest(
+    storeScopeKey: String? = nil,
+    namespace: String,
+    key: String,
+    updatedAt: Date,
+    encodedValue: Data
+  ) -> String {
+    let fields = [
+      storeScopeKey ?? Self.scopeKey(namespace: namespace, key: key),
+      namespace,
+      key,
+      timeToken(updatedAt),
+      sha256Hex(encodedValue),
+    ]
+    return "sha256:" + sha256Hex(framed(fields))
+  }
+}
+
+@MainActor
+public final class CoreAgentSwiftDataGraphCheckpointer<State: Codable & Sendable>:
+  CoreAgentGraphCheckpointer
+{
+  private let modelContext: ModelContext
+  private let rollsBackOnFailure: Bool
+
+  public init(modelContext: ModelContext, rollsBackOnFailure: Bool = true) {
+    self.modelContext = modelContext
+    self.rollsBackOnFailure = rollsBackOnFailure
+  }
+
+  public convenience init(modelContainer: ModelContainer) {
+    self.init(modelContext: ModelContext(modelContainer), rollsBackOnFailure: true)
+  }
+
+  public func save(_ checkpoint: CoreAgentGraphCheckpoint<State>) async throws {
+    let record = try CoreAgentSwiftDataGraphCheckpointRecord(
+      checkpoint: checkpoint,
+      saveSequence: nextCheckpointSequence()
+    )
+    do {
+      modelContext.insert(record)
+      try modelContext.save()
+    } catch {
+      recoverAfterFailedMutation()
+      throw error
+    }
+  }
+
+  public func checkpoint(
+    id: CoreAgentGraphCheckpointID
+  ) async throws -> CoreAgentGraphCheckpoint<State>? {
+    let checkpointID = id.rawValue
+    let descriptor = FetchDescriptor<CoreAgentSwiftDataGraphCheckpointRecord>(
+      predicate: #Predicate<CoreAgentSwiftDataGraphCheckpointRecord> { record in
+        record.checkpointID == checkpointID
+      },
+      sortBy: [
+        SortDescriptor(\.saveSequence, order: .reverse),
+        SortDescriptor(\.storedAt, order: .reverse),
+        SortDescriptor(\.createdAt, order: .reverse),
+      ]
+    )
+    let checkpoints = try modelContext.fetch(descriptor).map { record in
+      try record.checkpoint(as: State.self)
+    }
+    guard let checkpoint = checkpoints.first else {
+      return nil
+    }
+    return checkpoint
+  }
+
+  public func latest(
+    threadID: CoreAgentGraphThreadID,
+    namespace: CoreAgentGraphCheckpointNamespace = .default
+  ) async throws -> CoreAgentGraphCheckpoint<State>? {
+    guard
+      let record = try checkpointRecords(
+        threadID: threadID,
+        namespace: namespace,
+        fetchLimit: 1
+      ).first
+    else {
+      return nil
+    }
+    return try record.checkpoint(as: State.self)
+  }
+
+  public func history(
+    threadID: CoreAgentGraphThreadID,
+    namespace: CoreAgentGraphCheckpointNamespace = .default
+  ) async throws -> [CoreAgentGraphCheckpoint<State>] {
+    let records = try checkpointRecords(threadID: threadID, namespace: namespace)
+    return try records.map { try $0.checkpoint(as: State.self) }
+  }
+
+  private func checkpointRecords(
+    threadID: CoreAgentGraphThreadID,
+    namespace: CoreAgentGraphCheckpointNamespace,
+    fetchLimit: Int? = nil
+  ) throws -> [CoreAgentSwiftDataGraphCheckpointRecord] {
+    let threadID = threadID.rawValue
+    let namespace = namespace.rawValue
+    let scopeKey = CoreAgentSwiftDataGraphCheckpointRecord.scopeKey(
+      threadID: threadID,
+      namespace: namespace
+    )
+    var descriptor = FetchDescriptor<CoreAgentSwiftDataGraphCheckpointRecord>(
+      predicate: #Predicate<CoreAgentSwiftDataGraphCheckpointRecord> { record in
+        record.checkpointScopeKey == scopeKey
+          || (record.threadID == threadID && record.namespace == namespace)
+      },
+      sortBy: [
+        SortDescriptor(\.saveSequence, order: .reverse),
+        SortDescriptor(\.storedAt, order: .reverse),
+        SortDescriptor(\.createdAt, order: .reverse),
+        SortDescriptor(\.checkpointID),
+      ]
+    )
+    if let fetchLimit {
+      descriptor.fetchLimit = fetchLimit
+    }
+    return try modelContext.fetch(descriptor)
+  }
+
+  private func nextCheckpointSequence() throws -> Int {
+    var descriptor = FetchDescriptor<CoreAgentSwiftDataGraphCheckpointRecord>(
+      sortBy: [SortDescriptor(\.saveSequence, order: .reverse)]
+    )
+    descriptor.fetchLimit = 1
+    return ((try modelContext.fetch(descriptor).first?.saveSequence) ?? -1) + 1
+  }
+
+  private func recoverAfterFailedMutation() {
+    guard rollsBackOnFailure else {
+      return
+    }
+    modelContext.rollback()
+  }
+}
+
+@MainActor
+public final class CoreAgentSwiftDataGraphStore<Value: Codable & Sendable>:
+  CoreAgentGraphStore
+{
+  private let modelContext: ModelContext
+  private let rollsBackOnFailure: Bool
+
+  public init(modelContext: ModelContext, rollsBackOnFailure: Bool = true) {
+    self.modelContext = modelContext
+    self.rollsBackOnFailure = rollsBackOnFailure
+  }
+
+  public convenience init(modelContainer: ModelContainer) {
+    self.init(modelContext: ModelContext(modelContainer), rollsBackOnFailure: true)
+  }
+
+  public func put(
+    _ value: Value,
+    forKey key: CoreAgentGraphStoreKey,
+    namespace: CoreAgentGraphStoreNamespace = .default
+  ) async throws {
+    let graphRecord = CoreAgentGraphStoreRecord(namespace: namespace, key: key, value: value)
+    let record = try CoreAgentSwiftDataGraphStoreRecord(record: graphRecord)
+    do {
+      let existingRecords = try storeRecords(forKey: key, namespace: namespace)
+      for existing in existingRecords {
+        try existing.validateIntegrity()
+      }
+      for existing in existingRecords {
+        modelContext.delete(existing)
+      }
+      modelContext.insert(record)
+      try modelContext.save()
+    } catch {
+      recoverAfterFailedMutation()
+      throw error
+    }
+  }
+
+  public func value(
+    forKey key: CoreAgentGraphStoreKey,
+    namespace: CoreAgentGraphStoreNamespace = .default
+  ) async throws -> Value? {
+    try await record(forKey: key, namespace: namespace)?.value
+  }
+
+  public func record(
+    forKey key: CoreAgentGraphStoreKey,
+    namespace: CoreAgentGraphStoreNamespace = .default
+  ) async throws -> CoreAgentGraphStoreRecord<Value>? {
+    let graphRecords = try storeRecords(forKey: key, namespace: namespace).map { record in
+      try record.graphRecord(as: Value.self)
+    }
+    guard let graphRecord = graphRecords.first else {
+      return nil
+    }
+    return graphRecord
+  }
+
+  public func removeValue(
+    forKey key: CoreAgentGraphStoreKey,
+    namespace: CoreAgentGraphStoreNamespace = .default
+  ) async throws {
+    do {
+      let records = try storeRecords(forKey: key, namespace: namespace)
+      for record in records {
+        try record.validateIntegrity()
+      }
+      for record in records {
+        modelContext.delete(record)
+      }
+      try modelContext.save()
+    } catch {
+      recoverAfterFailedMutation()
+      throw error
+    }
+  }
+
+  public func keys(
+    namespace: CoreAgentGraphStoreNamespace = .default
+  ) async throws -> [CoreAgentGraphStoreKey] {
+    let namespace = namespace.rawValue
+    let descriptor = FetchDescriptor<CoreAgentSwiftDataGraphStoreRecord>(
+      predicate: #Predicate<CoreAgentSwiftDataGraphStoreRecord> { record in
+        record.namespace == namespace
+      },
+      sortBy: [
+        SortDescriptor(\.key),
+        SortDescriptor(\.updatedAt, order: .reverse),
+      ]
+    )
+    var keys: Set<CoreAgentGraphStoreKey> = []
+    for record in try modelContext.fetch(descriptor) {
+      try record.validateIntegrity()
+      keys.insert(CoreAgentGraphStoreKey(record.key))
+    }
+    return keys.sorted()
+  }
+
+  private func storeRecords(
+    forKey key: CoreAgentGraphStoreKey,
+    namespace: CoreAgentGraphStoreNamespace
+  ) throws -> [CoreAgentSwiftDataGraphStoreRecord] {
+    let namespace = namespace.rawValue
+    let key = key.rawValue
+    let scopeKey = CoreAgentSwiftDataGraphStoreRecord.scopeKey(namespace: namespace, key: key)
+    let descriptor = FetchDescriptor<CoreAgentSwiftDataGraphStoreRecord>(
+      predicate: #Predicate<CoreAgentSwiftDataGraphStoreRecord> { record in
+        record.storeScopeKey == scopeKey
+          || (record.namespace == namespace && record.key == key)
+      },
+      sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+    )
+    return try modelContext.fetch(descriptor)
+  }
+
+  private func recoverAfterFailedMutation() {
+    guard rollsBackOnFailure else {
+      return
+    }
+    modelContext.rollback()
+  }
+}
+
+private enum CoreAgentSwiftDataGraphCodec {
+  static func encode(_ value: some Encodable) throws -> Data {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .deferredToDate
+    encoder.outputFormatting = [.sortedKeys]
+    return try encoder.encode(value)
+  }
+
+  static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .deferredToDate
+    return try decoder.decode(type, from: data)
+  }
+}
+
+private func framed(_ fields: [String]) -> Data {
+  Data(fields.map { "\($0.utf8.count):\($0)" }.joined(separator: "|").utf8)
+}
+
+private func sha256Hex(_ data: Data) -> String {
+  SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+private func timeToken(_ date: Date) -> String {
+  stableTimeToken(date)
+}
+
+private func stableTimeToken(_ date: Date) -> String {
+  let scaled = (date.timeIntervalSinceReferenceDate * 1_000_000_000).rounded()
+  guard scaled.isFinite else {
+    return scaled.sign == .minus ? String(Int64.min) : String(Int64.max)
+  }
+  if scaled >= Double(Int64.max) {
+    return String(Int64.max)
+  }
+  if scaled <= Double(Int64.min) {
+    return String(Int64.min)
+  }
+  return String(Int64(scaled))
+}
