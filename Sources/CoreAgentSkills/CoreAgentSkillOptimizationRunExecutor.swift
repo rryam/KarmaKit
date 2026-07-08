@@ -270,14 +270,12 @@ public struct CoreAgentSkillOptimizationRunExecutor: Sendable {
     var metaSkillEpoch: Int?
     var metaSkillEvolutionRecordCount = 0
 
-    if let metaSkill = request.metaSkill {
-      try await store.recordMetaSkillSnapshot(metaSkill.snapshot, skillID: metaSkill.skillID)
-      metaSkillBranchID = metaSkill.snapshot.branchID
-      metaSkillEpoch = metaSkill.snapshot.epoch
-      phases.append(CoreAgentSkillOptimizationRunPhaseRecord(phase: .metaSkillStateRecorded))
-    }
-
-    var harvestedIDs: [String] = []
+    // Validate the harvest token budget BEFORE any store write so a budget-exceeded run
+    // fails closed without side effects. Otherwise `recordMetaSkillSnapshot` below would
+    // persist branch/epoch bookkeeping for a run that then throws, leaving a partial
+    // mutation behind. The harvested evidence is reused after the gate to avoid a second
+    // harvest pass.
+    var pendingHarvestEvidence: [CoreAgentSkillRolloutEvidence]?
     if let harvest = request.harvest {
       guard let engineStore else {
         throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
@@ -303,6 +301,18 @@ public struct CoreAgentSkillOptimizationRunExecutor: Sendable {
           )
         }
       }
+      pendingHarvestEvidence = harvested
+    }
+
+    if let metaSkill = request.metaSkill {
+      try await store.recordMetaSkillSnapshot(metaSkill.snapshot, skillID: metaSkill.skillID)
+      metaSkillBranchID = metaSkill.snapshot.branchID
+      metaSkillEpoch = metaSkill.snapshot.epoch
+      phases.append(CoreAgentSkillOptimizationRunPhaseRecord(phase: .metaSkillStateRecorded))
+    }
+
+    var harvestedIDs: [String] = []
+    if let harvested = pendingHarvestEvidence {
       harvestedIDs = harvested.map(\.id)
       evidence = try Self.mergedEvidence(evidence, harvested)
       phases.append(

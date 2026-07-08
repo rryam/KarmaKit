@@ -192,13 +192,29 @@ of silent prompt drift.
     generation, optional meta-skill branch-state audit, and
     `CoreAgentSkillSleepOptimizer` mutation.
   - Fails closed when harvest is configured without an executor `engineStore`,
-    when proposal generation is configured without optimization targets, or when
-    seed/supplied proposal IDs are invalid or duplicated.
+    when harvested Engine token usage exceeds `maximumTotalTokens`, when
+    proposal generation is configured without optimization targets, or when
+    seed/supplied proposal IDs are invalid or duplicated. The token gate aborts
+    before proposal generation and before the sleep optimizer can mutate a
+    skill.
   - Dedupes rollout evidence by ID across seed, harvested, and replay phases
     before proposal generation.
   - Emits ordered phase records (`harvested`, `replayGenerated`,
     `replayExecuted`, `proposalsGenerated`, `frontierSelected`,
     `sleepOptimized`) for audit/UI.
+
+- `CoreAgentSkillOptimizationCrossRunSchedulerPlan` and policy/decision values
+  - Provide a pure, deterministic, host-invoked plan for ordering the next
+    `CoreAgentSkillOptimizationRunRequest` backlog from prior
+    `CoreAgentSkillOptimizationRunReport` records.
+  - Carry over backlog requests whose run IDs have not appeared in prior
+    reports, expose the full carried-over run ID order, and limit the returned
+    next requests per host invocation.
+  - Optionally prioritize carry-over requests targeting skills that had
+    rejected sleep proposals in prior reports, with stable run-ID/report
+    canonicalization so input report ordering does not affect output ordering.
+  - Are `Sendable` data values only. They expose a `.hostInvoked` trigger and
+    no timer, thread, daemon, `Task`, or dispatch/run entry point.
 
 - `CoreAgentSkillMetaEvolutionFrontierSelector`
   - Selects and orders a typed proposal frontier before sleep optimization,
@@ -235,8 +251,9 @@ of silent prompt drift.
 
 ## Explicit Non-Goals For This Slice
 
-- No scheduled/nightly daemon yet.
-- No production model-backed replay/dream simulator or cross-run scheduler yet.
+- No scheduled/nightly daemon or self-triggering scheduler in the library. The
+  cross-run plan is host-invoked and does not execute requests.
+- No production model-backed replay/dream simulator yet.
 - No autonomous production proposer scheduler yet; callers provide the
   `CoreAgentSession` and run policy.
 

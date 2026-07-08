@@ -169,6 +169,175 @@ extension CoreAgentSkillsTests {
     }
   }
 
+  @Test("Optimization run fails closed when harvest exceeds token budget")
+  func optimizationRunFailsClosedWhenHarvestExceedsTokenBudget() async throws {
+    let skill = Self.skill(id: "swift-budget", body: "Use XCTest.")
+    let store = InMemoryCoreAgentSkillStore()
+    try await store.save(skill)
+    let runID = Self.uuid(840)
+    let run = Self.run(
+      id: runID,
+      events: [
+        Self.event(runID: runID, kind: .runCompleted, message: "completed")
+      ]
+    )
+    let engineStore = StaticEngineStore(traces: [
+      CoreAgentEngineTrace(
+        projectID: "coreagent",
+        threadID: "thread-budget",
+        run: run,
+        receipt: try CoreAgentRunReceipt(run: run)
+      )
+    ])
+    let proposalBackend = CountingModelProposalBackend()
+
+    await #expect(
+      throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+        "harvested Engine trace token usage 15 exceeds maximumTotalTokens 1"
+      )
+    ) {
+      _ = try await CoreAgentSkillOptimizationRunExecutor(
+        store: store,
+        engineStore: engineStore
+      ).run(
+        CoreAgentSkillOptimizationRunRequest(
+          runID: "optimization-run-budget",
+          harvest: CoreAgentSkillOptimizationRunHarvestConfig(
+            projectID: "coreagent",
+            threadID: "thread-budget",
+            maximumTotalTokens: 1
+          ),
+          proposal: CoreAgentSkillOptimizationRunProposalConfig(
+            backend: proposalBackend,
+            maxProposals: 1
+          ),
+          targets: [
+            CoreAgentSkillOptimizationRunTarget(skillID: skill.id, baselineScore: 0.5)
+          ],
+          suppliedProposals: [
+            Self.sleepProposal(
+              id: "budget-mutation",
+              skillID: skill.id,
+              score: 0.9,
+              replacement: "Use Swift Testing."
+            )
+          ]
+        )
+      )
+    }
+
+    let current = try #require(await store.currentSkill(id: skill.id))
+    #expect(current.version == 1)
+    #expect(current.body == "Use XCTest.")
+    #expect(await proposalBackend.callCount == 0)
+  }
+
+  @Test("Optimization run does not persist meta-skill snapshot when harvest exceeds token budget")
+  func optimizationRunDoesNotPersistMetaSkillSnapshotWhenHarvestExceedsBudget() async throws {
+    let skill = Self.skill(id: "swift-budget-meta", body: "Use XCTest.")
+    let store = InMemoryCoreAgentSkillStore()
+    try await store.save(skill)
+    let runID = Self.uuid(841)
+    let run = Self.run(
+      id: runID,
+      events: [
+        Self.event(runID: runID, kind: .runCompleted, message: "completed")
+      ]
+    )
+    let engineStore = StaticEngineStore(traces: [
+      CoreAgentEngineTrace(
+        projectID: "coreagent",
+        threadID: "thread-budget-meta",
+        run: run,
+        receipt: try CoreAgentRunReceipt(run: run)
+      )
+    ])
+    let snapshot = Self.metaSkillSnapshot(branchID: "branch-budget", epoch: 4)
+
+    await #expect(
+      throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+        "harvested Engine trace token usage 15 exceeds maximumTotalTokens 1"
+      )
+    ) {
+      _ = try await CoreAgentSkillOptimizationRunExecutor(
+        store: store,
+        engineStore: engineStore
+      ).run(
+        CoreAgentSkillOptimizationRunRequest(
+          runID: "optimization-run-budget-meta",
+          harvest: CoreAgentSkillOptimizationRunHarvestConfig(
+            projectID: "coreagent",
+            threadID: "thread-budget-meta",
+            maximumTotalTokens: 1
+          ),
+          metaSkill: CoreAgentSkillMetaSkillRunConfig(
+            skillID: skill.id,
+            snapshot: snapshot,
+            previousEpoch: 3
+          )
+        )
+      )
+    }
+
+    // Fail-closed: the token-budget gate runs before `recordMetaSkillSnapshot`, so a
+    // rejected run must leave no meta-skill branch bookkeeping behind.
+    let memory = await store.optimizerMemory(skillID: skill.id)
+    #expect(memory.metaSkillSnapshots.isEmpty)
+    #expect(memory.metaSkillEvolutionRecords.isEmpty)
+  }
+
+  @Test("Cross-run scheduler plan is deterministic and host triggered")
+  func crossRunSchedulerPlanIsDeterministicAndHostTriggered() throws {
+    let swiftSkillID = CoreAgentSkillID("swift-scheduler")
+    let otherSkillID = CoreAgentSkillID("other-scheduler")
+    let plan = CoreAgentSkillOptimizationCrossRunSchedulerPlan(
+      policy: CoreAgentSkillOptimizationCrossRunSchedulerPolicy(
+        maximumRequestsPerHostInvocation: 2,
+        prioritizeRejectedSkillTargets: true
+      ),
+      backlog: [
+        Self.optimizationRunRequest(runID: "carry-other", skillID: otherSkillID),
+        Self.optimizationRunRequest(runID: "already-finished", skillID: swiftSkillID),
+        CoreAgentSkillOptimizationRunRequest(runID: "carry-empty"),
+        Self.optimizationRunRequest(runID: "carry-swift", skillID: swiftSkillID),
+      ]
+    )
+    Self.requireSendable(plan)
+
+    let priorReports = [
+      Self.optimizationRunReport(runID: "prior-other"),
+      Self.optimizationRunReport(
+        runID: "prior-swift",
+        sleepReport: CoreAgentSkillSleepOptimizationReport(
+          runID: "prior-swift",
+          entries: [
+            CoreAgentSkillSleepOptimizationEntry(
+              proposalID: "swift-rejected",
+              skillID: swiftSkillID,
+              decision: .rejected(.validationDidNotImprove),
+              skillVersionBefore: 1,
+              skillVersionAfter: nil,
+              baselineScore: 0.5,
+              validation: Self.validation(score: 0.4),
+              evidenceIDs: ["evidence-swift"]
+            )
+          ]
+        )
+      ),
+      Self.optimizationRunReport(runID: "already-finished"),
+    ]
+
+    let firstDecision = try plan.nextRequests(after: priorReports)
+    let secondDecision = try plan.nextRequests(after: priorReports.reversed())
+
+    #expect(plan.trigger == .hostInvoked)
+    #expect(firstDecision.requests.map(\.runID) == ["carry-swift", "carry-other"])
+    #expect(secondDecision.requests.map(\.runID) == firstDecision.requests.map(\.runID))
+    #expect(firstDecision.carryOverRunIDs == ["carry-swift", "carry-other", "carry-empty"])
+    #expect(firstDecision.completedRunIDs == ["already-finished", "prior-other", "prior-swift"])
+    #expect(firstDecision.prioritizedSkillIDs == [swiftSkillID])
+  }
+
   @Test("Optimization run orchestrator applies meta evolution frontier before sleep")
   func optimizationRunOrchestratorAppliesMetaEvolutionFrontierBeforeSleep() async throws {
     let skill = Self.skill(id: "swift", body: "Use XCTest.")
@@ -446,5 +615,36 @@ extension CoreAgentSkillsTests {
     #expect(report.uniqueEvidenceCount == 1)
     #expect(report.phases.isEmpty)
     #expect(report.sleepReport == nil)
+  }
+
+  private static func optimizationRunRequest(
+    runID: String,
+    skillID: CoreAgentSkillID
+  ) -> CoreAgentSkillOptimizationRunRequest {
+    CoreAgentSkillOptimizationRunRequest(
+      runID: runID,
+      targets: [CoreAgentSkillOptimizationRunTarget(skillID: skillID, baselineScore: 0.5)]
+    )
+  }
+
+  private static func optimizationRunReport(
+    runID: String,
+    sleepReport: CoreAgentSkillSleepOptimizationReport? = nil
+  ) -> CoreAgentSkillOptimizationRunReport {
+    CoreAgentSkillOptimizationRunReport(
+      runID: runID,
+      seedEvidenceIDs: [],
+      harvestedEvidenceIDs: [],
+      replayRequestIDs: [],
+      replayEvidenceIDs: [],
+      generatedProposalIDs: [],
+      suppliedProposalIDs: [],
+      sleepReport: sleepReport,
+      phases: []
+    )
+  }
+
+  private static func requireSendable<T: Sendable>(_ value: T) {
+    _ = value
   }
 }

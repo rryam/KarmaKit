@@ -443,9 +443,12 @@ Implementation status as of 2026-07-06:
   rollout evidence records, bounded edit limits, heldout/training split
   isolation, protected slow-update regions, rejected-edit/meta-observation
   memory, and mutation-free preflight for malformed validation/edit proposals.
-  Model-powered proposal, Engine trace harvest, replay/dream rollouts,
-  multi-objective evaluator adapters, and file-backed stores remain future
-  slices.
+  It now also includes Engine trace harvest, replay/dream request execution,
+  typed model-proposal boundaries, multi-objective evaluator adapters,
+  file-backed stores, meta-evolution frontier filtering, meta-skill branch
+  state, token-budget harvest gating, and a pure host-invoked cross-run
+  scheduler plan. Production daemons and self-triggering schedulers remain out
+  of scope.
 - M3 Engine closed-loop gates are implemented through typed proposed-fix
   artifacts, optional held-out validation proof requirements, and an
   AgenticKit-owned rubric-verdict bridge that links Deep rubric outcomes to
@@ -771,8 +774,10 @@ first-class executable subgraphs, parent-graph command routing through explicit
   (deterministic in-process, consent-gated helper-process, WASI backend boundary,
   and remote backend boundary exist; CoreAgent still does not launch sandboxes or
   network calls itself).
-- Production cross-run scheduler/daemon for SkillOpt sleep runs (local executor
-  only).
+- Production autonomous scheduler/daemon for SkillOpt sleep runs. A pure
+  `CoreAgentSkillOptimizationCrossRunSchedulerPlan` now orders a host-supplied
+  backlog with carry-over from prior run reports, but the host must invoke it
+  and execute any returned requests.
 - Fully autonomous token/cost optimization closed loops beyond local budgets and
   `CoreAgentSkillOptimizationRunHarvestConfig.maximumTotalTokens` gating (hosts still
   own production schedulers and evaluator gates).
