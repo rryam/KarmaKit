@@ -37,6 +37,16 @@ or LangSmith-style Engine products.
   Command outputs can also carry typed sends. Checkpoints persist authoritative
   `nextTasks` and task-ID-keyed pending writes while `nextNodeIDs` remains a
   compatibility projection.
+- First-class executable subgraphs through
+  `CoreAgentStateGraph.addSubgraph(_:_:)` and
+  `addNode(_:subgraph:)`. A compiled `CoreAgentCompiledGraph<State>` runs as one
+  parent node super-step, receives the parent task state as its initial state,
+  and returns the child graph's final state as the parent node update.
+- Subgraph checkpoint history is isolated under a nested
+  `CoreAgentGraphCheckpointNamespace` derived from the parent namespace,
+  subgraph node ID, and pushed task ID when present. Parent streams surface
+  child graph events through `CoreAgentGraphStreamEvent.subgraph`, tagged with
+  that nested namespace and the parent step.
 - Checkpointing by thread and namespace with parent checkpoint lineage,
   checkpoint history, time-travel resume, forked child lineages, and pending
   writes for failed super-steps.
@@ -56,8 +66,7 @@ or LangSmith-style Engine products.
 ## Not Implemented In This Slice
 
 - Deep Agents todo/planning/filesystem/subagent behavior.
-- Parent-graph command routing, first-class executable subgraphs, and deferred
-  nodes.
+- Parent-graph command routing and deferred nodes.
 - Python-style heterogeneous `Any` send payloads and send-specific timeout
   policy. CoreAgent `Send` is generic over one `State: Sendable` type.
 - LangSmith-style tracing, eval, replay, annotation, dataset, or optimization

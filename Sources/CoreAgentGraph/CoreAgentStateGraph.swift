@@ -61,7 +61,7 @@ public enum CoreAgentGraphRuntimeError: Error, Equatable, Sendable {
   case recursionLimitExceeded(limit: Int)
 }
 
-public enum CoreAgentGraphStreamEvent<State: Sendable>: Sendable {
+public indirect enum CoreAgentGraphStreamEvent<State: Sendable>: Sendable {
   case values(State, step: Int)
   case updates(nodeID: CoreAgentGraphNodeID, update: State, step: Int)
   case taskStarted(nodeID: CoreAgentGraphNodeID, step: Int)
@@ -72,6 +72,11 @@ public enum CoreAgentGraphStreamEvent<State: Sendable>: Sendable {
     target: CoreAgentGraphNodeID,
     state: State,
     taskID: CoreAgentGraphTaskID,
+    step: Int
+  )
+  case subgraph(
+    namespace: CoreAgentGraphCheckpointNamespace,
+    event: CoreAgentGraphStreamEvent<State>,
     step: Int
   )
   case taskCompleted(nodeID: CoreAgentGraphNodeID, step: Int)
@@ -104,11 +109,13 @@ public struct CoreAgentGraphEdge: Codable, Equatable, Sendable {
 }
 
 public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
+  typealias StreamEmitter = @Sendable (CoreAgentGraphStreamEvent<State>) async -> Void
+
   public let configuration: CoreAgentGraphConfiguration
   public let nodeIDs: [CoreAgentGraphNodeID]
   public let edges: [CoreAgentGraphEdge]
 
-  private struct NodeExecutionResult: @unchecked Sendable {
+  struct NodeExecutionResult: @unchecked Sendable {
     let task: CoreAgentGraphPendingTask<State>
     let order: Int
     let update: State?
@@ -334,7 +341,8 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
       let results = await executeNodes(
         activeTasks,
         snapshot: snapshot,
-        context: context
+        context: context,
+        emit: emit
       )
 
       if let failure = firstFailure(in: results) {
@@ -424,7 +432,8 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
   private func executeNodes(
     _ activeTasks: [CoreAgentGraphPendingTask<State>],
     snapshot: State,
-    context: CoreAgentGraphRuntimeContext
+    context: CoreAgentGraphRuntimeContext,
+    emit: StreamEmitter?
   ) async -> [NodeExecutionResult] {
     await withTaskGroup(of: NodeExecutionResult.self) { group in
       for (order, task) in activeTasks.enumerated() {
@@ -435,7 +444,8 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
             task: task,
             order: order,
             snapshot: task.input ?? snapshot,
-            context: context
+            context: context,
+            emit: emit
           )
         }
       }
@@ -453,10 +463,21 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
     task: CoreAgentGraphPendingTask<State>,
     order: Int,
     snapshot: State,
-    context: CoreAgentGraphRuntimeContext
+    context: CoreAgentGraphRuntimeContext,
+    emit: StreamEmitter?
   ) async -> NodeExecutionResult {
     let scopedContext = context.scoped(to: node.id, taskID: task.taskID)
     do {
+      if let subgraph = node.subgraph {
+        return await executeSubgraphNode(
+          subgraph,
+          task: task,
+          order: order,
+          snapshot: snapshot,
+          context: scopedContext,
+          emit: emit
+        )
+      }
       if let cache, let cachePolicy = node.cachePolicy {
         let cacheKey = try cachePolicy.key(for: snapshot, context: scopedContext)
         if let entry = try await cache.entry(forKey: cacheKey, nodeID: node.id, now: Date()) {
@@ -577,6 +598,7 @@ public struct CoreAgentStateGraph<State: Sendable>: Sendable {
     let id: CoreAgentGraphNodeID
     let operation: CommandNodeOperation
     let cachePolicy: CoreAgentGraphCachePolicy<State>?
+    let subgraph: CoreAgentCompiledGraph<State>?
   }
 
   struct CommandRoutes: Sendable {
@@ -652,7 +674,29 @@ public struct CoreAgentStateGraph<State: Sendable>: Sendable {
     guard nodes[id] == nil else {
       throw CoreAgentGraphCompileError.duplicateNode(id)
     }
-    nodes[id] = Node(id: id, operation: operation, cachePolicy: cachePolicy)
+    nodes[id] = Node(id: id, operation: operation, cachePolicy: cachePolicy, subgraph: nil)
+  }
+
+  public mutating func addSubgraph(
+    _ id: CoreAgentGraphNodeID,
+    _ subgraph: CoreAgentCompiledGraph<State>
+  ) throws {
+    guard nodes[id] == nil else {
+      throw CoreAgentGraphCompileError.duplicateNode(id)
+    }
+    nodes[id] = Node(
+      id: id,
+      operation: { state, _ in .update(state) },
+      cachePolicy: nil,
+      subgraph: subgraph
+    )
+  }
+
+  public mutating func addNode(
+    _ id: CoreAgentGraphNodeID,
+    subgraph: CoreAgentCompiledGraph<State>
+  ) throws {
+    try addSubgraph(id, subgraph)
   }
 
   public mutating func addCommandRoutes(
