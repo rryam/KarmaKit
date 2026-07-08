@@ -10,6 +10,9 @@
   Inc.'s proprietary hosted product). No source was copied from those projects.
 - Versioning now diverges from upstream; releases are cut independently from this
   fork rather than tracking upstream `0.3.0` tags.
+- Added CoreAgentGraph deferred node scheduling with typed
+  `addNode(_:defer:...)` builder support for map-reduce joins after `Send`
+  fanout.
 - Ongoing: Swift, Foundation Models-native ports of graph runtime
   (`CoreAgentGraph`), deep-agent harness (`CoreAgentDeep`), run/evidence engine
   (`CoreAgentEngine`), skills/RSI optimization (`CoreAgentSkills`), and the

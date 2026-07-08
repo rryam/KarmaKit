@@ -757,11 +757,11 @@ the current port foundation.
 
 ### Explicitly Not Implemented Yet
 
-- Deferred node scheduling. `CoreAgentGraph` now has typed `Send<State>`
-  fanout, `Command(update:goto:sends:)`-style node outputs, first-class
-  executable subgraphs, parent-graph command routing through explicit
-  `.parent(...)` endpoints, and checkpointer-backed `updateState` /
-  `bulkUpdateState`.
+No M2 `CoreAgentGraph` parity gaps remain on this list. It now has typed
+`Send<State>` fanout, `Command(update:goto:sends:)`-style node outputs,
+first-class executable subgraphs, parent-graph command routing through explicit
+`.parent(...)` endpoints, deferred node scheduling, and checkpointer-backed
+`updateState` / `bulkUpdateState`.
 - OS-level sandbox interpreter runners and production remote/WASI runtime hosts
   (deterministic in-process, consent-gated helper-process, WASI backend boundary,
   and remote backend boundary exist; CoreAgent still does not launch sandboxes or

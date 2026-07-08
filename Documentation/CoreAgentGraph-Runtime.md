@@ -52,6 +52,10 @@ or LangSmith-style Engine products.
   undeclared parent routes fail closed with
   `CoreAgentGraphRuntimeError.undeclaredParentCommandTarget`, and the command
   update merges through the parent reducer before the parent target runs.
+- Deferred node scheduling through the typed `addNode(_:defer:...)` builder
+  flag. Deferred nodes still participate in normal compile-time reachability
+  validation, but execution holds them until all non-deferred scheduled tasks
+  across regular, command, and `Send` fanout branches have drained.
 - Checkpointing by thread and namespace with parent checkpoint lineage,
   checkpoint history, time-travel resume, forked child lineages, and pending
   writes for failed super-steps.
@@ -71,7 +75,6 @@ or LangSmith-style Engine products.
 ## Not Implemented In This Slice
 
 - Deep Agents todo/planning/filesystem/subagent behavior.
-- Deferred nodes.
 - Python-style heterogeneous `Any` send payloads and send-specific timeout
   policy. CoreAgent `Send` is generic over one `State: Sendable` type.
 - LangSmith-style tracing, eval, replay, annotation, dataset, or optimization

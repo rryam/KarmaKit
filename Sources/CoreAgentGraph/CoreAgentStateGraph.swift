@@ -314,7 +314,8 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
         )
       }
 
-      let activeTasks = canonicalizeTasks(frontier, scheduledForStep: step)
+      let scheduledTasks = canonicalizeTasks(frontier, scheduledForStep: step)
+      let (activeTasks, deferredTasks) = splitDeferredTasks(scheduledTasks)
       guard permitsParallelUpdates || activeTasks.count <= 1 else {
         throw CoreAgentGraphRuntimeError.parallelUpdatesRequireReducer(activeTasks.map(\.nodeID))
       }
@@ -353,11 +354,9 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
         if let parentCommand = failure.error as? CoreAgentGraphParentCommand<State> {
           throw parentCommand
         }
-        // `failure.order` is the task's index within `activeTasks` (assigned via
-        // `activeTasks.enumerated()` in `executeNodes`). Slice `activeTasks` by that
-        // order directly: `results` can be shorter than `activeTasks` when a task is
-        // skipped (missing node), so a `results` position would mis-align the retry set.
-        let retryTasks = Array(activeTasks[failure.order...])
+        // Slice by `failure.order` (the task's index in `activeTasks`), not a `results`
+        // position: `results` can be shorter when a task is skipped, mis-aligning the retry.
+        let retryTasks = Array(activeTasks[failure.order...]) + deferredTasks
         let pendingWrites = pendingWrites(
           from: results,
           before: failure.order,
@@ -401,10 +400,13 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
         state = try stateReducer(state, update)
       }
       await emit?(.values(state, step: step))
-      frontier = try await nextTasks(after: results, state: state, context: context)
-      frontier = canonicalizeTasks(frontier, scheduledForStep: step + 1)
+      let next = try await nextTasks(after: results, state: state, context: context)
+      let heldTaskIDs = Set(deferredTasks.compactMap(\.taskID))
+      frontier = canonicalizeTasks(deferredTasks + next, scheduledForStep: step + 1)
       for task in frontier where task.isPushed {
-        if let source = task.source, let input = task.input, let taskID = task.taskID {
+        if let source = task.source, let input = task.input, let taskID = task.taskID,
+          !heldTaskIDs.contains(taskID)
+        {
           await emit?(
             .send(
               source: source,
@@ -614,6 +616,7 @@ public struct CoreAgentStateGraph<State: Sendable>: Sendable {
     let operation: CommandNodeOperation
     let cachePolicy: CoreAgentGraphCachePolicy<State>?
     let subgraph: CoreAgentCompiledGraph<State>?
+    var isDeferred = false
   }
 
   struct CommandRoutes: Sendable {
