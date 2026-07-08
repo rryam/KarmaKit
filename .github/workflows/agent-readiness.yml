@@ -47,6 +47,9 @@ jobs:
       - name: Dead code scan
         run: ./scripts/check-dead-code.sh
 
+      - name: Talon core isolation
+        run: ./scripts/check-talon-core-isolation.sh
+
       - name: Upload readiness artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -67,11 +70,23 @@ jobs:
         run: brew install swiftlint
       - name: Lint and record metrics
         run: |
+          set -o pipefail
+          # SwiftLint exits non-zero when violations are found; capture that without
+          # aborting, but treat a MISSING/empty report (a real tool crash) as failure so
+          # the gate fails closed instead of silently passing.
           swiftlint lint --reporter json > swiftlint-report.json || true
-          ERRORS=$(python3 -c 'import json; print(sum(1 for i in json.load(open("swiftlint-report.json")) if i.get("severity")=="Error"))' 2>/dev/null || echo 0)
+          if [[ ! -s swiftlint-report.json ]]; then
+            echo "SwiftLint produced no report (tool crash) -- failing closed"
+            exit 1
+          fi
+          # A parse error yields the fail-closed sentinel 9999, not 0, so malformed JSON
+          # can never mask regressions.
+          ERRORS=$(python3 -c 'import json; print(sum(1 for i in json.load(open("swiftlint-report.json")) if i.get("severity")=="Error"))' 2>/dev/null || echo 9999)
           echo "SwiftLint errors: $ERRORS"
-          if [[ "$ERRORS" -gt 50 ]]; then
-            echo "SwiftLint error count exceeds advisory threshold"
+          # Ratcheted to the current baseline (32 errors). Burn this down toward 0; do not
+          # raise it. See tech-debt-report and FINDINGS_LOG for the outstanding items.
+          if [[ "$ERRORS" -gt 35 ]]; then
+            echo "SwiftLint error count ($ERRORS) exceeds threshold (35)"
             exit 1
           fi
       - name: Upload SwiftLint report

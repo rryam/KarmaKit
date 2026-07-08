@@ -38,6 +38,10 @@ let package = Package(
       description: "Enable Firebase AI Logic's Gemini Foundation Models provider."
     ),
     .trait(
+      name: "TalonChannels",
+      description: "Enable optional host-coupled Talon channel adapter contracts."
+    ),
+    .trait(
       name: "AllProviders",
       description: "Enable every first-party provider integration.",
       enabledTraits: ["AppleUtilities", "Claude", "Gemini"]
@@ -55,6 +59,12 @@ let package = Package(
     .package(
       url: "https://github.com/firebase/firebase-ios-sdk.git",
       revision: "eb640a7bd9f8f4e4843e61c12a24c0abe4044443"
+    ),
+    .package(
+      path: "Sources/CoreAgentTalonChannels",
+      traits: [
+        .trait(name: "TalonChannels", condition: .when(traits: ["TalonChannels"]))
+      ]
     ),
   ],
   targets: [
@@ -100,6 +110,11 @@ let package = Package(
         "CoreAgentEngine",
         "CoreAgentGraph",
         "CoreAgentSkills",
+        .product(
+          name: "CoreAgentTalonChannels",
+          package: "CoreAgentTalonChannels",
+          condition: .when(traits: ["TalonChannels"])
+        ),
       ]
     ),
     .target(
@@ -177,6 +192,19 @@ let package = Package(
     .testTarget(
       name: "CoreAgentTalonTests",
       dependencies: ["CoreAgentTalon", "CoreAgentTestSupport"]
+    ),
+    .testTarget(
+      name: "CoreAgentTalonChannelsTests",
+      dependencies: [
+        .product(
+          name: "CoreAgentTalonChannels",
+          package: "CoreAgentTalonChannels",
+          condition: .when(traits: ["TalonChannels"])
+        )
+      ],
+      swiftSettings: [
+        .define("COREAGENT_TALON_CHANNELS", .when(traits: ["TalonChannels"]))
+      ]
     ),
     .testTarget(
       name: "CoreAgentDeepTests",

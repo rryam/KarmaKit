@@ -42,6 +42,27 @@ Codable `CoreAgentTalonEvent` whose `type` is `talon_event`. Payloads are typed
 enum cases for conversation, command, run, and cron evidence, and round-trip
 without lossy string parsing.
 
+## Channel adapters
+
+`CoreAgentTalonChannels` is a separate optional target enabled by the
+`TalonChannels` SwiftPM trait. It contains only host-provided adapter contracts
+and policy shells for WhatsApp, Telegram, and MCP style channels.
+
+- The portable `CoreAgentTalon` core has no default dependency on the channel
+  target.
+- The typed channel adapter contract is one send/receive surface over
+  `CoreAgentTalonChannelOutboundMessage`,
+  `CoreAgentTalonChannelInboundEnvelope`, and
+  `CoreAgentTalonChannelSendReceipt`.
+- The adapter structs store immutable host-provided send and receive closures.
+  Real network transports, credentials, bot tokens, QR pairing, and MCP clients
+  belong to the app host and are not exercised by CI.
+- `CoreAgentTalonExposurePolicy` fails closed for `self` and `allowlist` modes.
+  Only `open` admits any peer.
+- `CoreAgentTalonSingleOperatorPolicy` binds run dispatch to one operator
+  identity and rejects foreign identities before calling the host dispatch
+  closure.
+
 ## Isolation
 
 `scripts/check-talon-core-isolation.sh` enforces that `Sources/CoreAgentTalon`

@@ -13,6 +13,9 @@
 - Added the portable `CoreAgentTalon` product with per-conversation host
   serialization, conversation-scoped stop/new commands, injected-clock cron
   scheduling, and Codable `talon_event` records.
+- Added the optional `TalonChannels` trait target with host-provided WhatsApp,
+  Telegram, and MCP channel adapter contracts plus fail-closed exposure and
+  single-operator policies.
 - Added CoreAgentGraph deferred node scheduling with typed
   `addNode(_:defer:...)` builder support for map-reduce joins after `Send`
   fanout.
