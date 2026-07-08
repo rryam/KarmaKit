@@ -47,6 +47,11 @@ or LangSmith-style Engine products.
   subgraph node ID, and pushed task ID when present. Parent streams surface
   child graph events through `CoreAgentGraphStreamEvent.subgraph`, tagged with
   that nested namespace and the parent step.
+- Parent-graph command routing through explicit `.parent(...)` command
+  endpoints. A subgraph node can route to a parent-declared command target;
+  undeclared parent routes fail closed with
+  `CoreAgentGraphRuntimeError.undeclaredParentCommandTarget`, and the command
+  update merges through the parent reducer before the parent target runs.
 - Checkpointing by thread and namespace with parent checkpoint lineage,
   checkpoint history, time-travel resume, forked child lineages, and pending
   writes for failed super-steps.
@@ -66,7 +71,7 @@ or LangSmith-style Engine products.
 ## Not Implemented In This Slice
 
 - Deep Agents todo/planning/filesystem/subagent behavior.
-- Parent-graph command routing and deferred nodes.
+- Deferred nodes.
 - Python-style heterogeneous `Any` send payloads and send-specific timeout
   policy. CoreAgent `Send` is generic over one `State: Sendable` type.
 - LangSmith-style tracing, eval, replay, annotation, dataset, or optimization

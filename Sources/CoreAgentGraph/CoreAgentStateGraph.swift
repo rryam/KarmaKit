@@ -1,12 +1,13 @@
 import Foundation
 
-public enum CoreAgentGraphEndpoint:
+public indirect enum CoreAgentGraphEndpoint:
   Codable, Equatable, Hashable, Sendable, ExpressibleByStringLiteral,
   CustomStringConvertible
 {
   case start
   case end
   case node(CoreAgentGraphNodeID)
+  case parent(CoreAgentGraphEndpoint)
 
   public init(stringLiteral value: String) {
     self = .node(CoreAgentGraphNodeID(value))
@@ -20,6 +21,8 @@ public enum CoreAgentGraphEndpoint:
       "END"
     case .node(let id):
       id.description
+    case .parent(let target):
+      "PARENT(\(target.description))"
     }
   }
 }
@@ -53,6 +56,7 @@ public enum CoreAgentGraphRuntimeError: Error, Equatable, Sendable {
   case stateUpdateRequiresCheckpoint
   case stateUpdateRequiresCheckpointer
   case undeclaredCommandTarget(source: CoreAgentGraphNodeID, target: CoreAgentGraphEndpoint)
+  case undeclaredParentCommandTarget(source: CoreAgentGraphNodeID, target: CoreAgentGraphEndpoint)
   case undeclaredSendTarget(source: CoreAgentGraphNodeID, target: CoreAgentGraphNodeID)
   case unknownCommandRouteSource(CoreAgentGraphNodeID)
   case unknownCommandRouteTarget(source: CoreAgentGraphNodeID, target: CoreAgentGraphNodeID)
@@ -346,6 +350,9 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
       )
 
       if let failure = firstFailure(in: results) {
+        if let parentCommand = failure.error as? CoreAgentGraphParentCommand<State> {
+          throw parentCommand
+        }
         // `failure.order` is the task's index within `activeTasks` (assigned via
         // `activeTasks.enumerated()` in `executeNodes`). Slice `activeTasks` by that
         // order directly: `results` can be shorter than `activeTasks` when a task is
@@ -517,6 +524,14 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
     case .update(let update):
       return .success(task: task, order: order, update: update)
     case .command(let command):
+      let parentGoto = command.goto.compactMap(\.parentScopedTarget)
+      if !parentGoto.isEmpty {
+        throw CoreAgentGraphParentCommand(
+          update: command.update,
+          goto: parentGoto,
+          sends: command.sends
+        )
+      }
       _ = try commandTasks(from: command.goto, source: task.nodeID)
       _ = try commandSendTasks(from: command.sends, source: task.nodeID)
       return .success(

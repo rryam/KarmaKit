@@ -116,6 +116,24 @@ extension CoreAgentCompiledGraph {
     return next
   }
 
+  func parentCommandTargets(
+    from goto: [CoreAgentGraphEndpoint],
+    source: CoreAgentGraphNodeID
+  ) throws -> [CoreAgentGraphEndpoint] {
+    let declared = Set(commandRoutes.filter { $0.source == source }.flatMap(\.targets))
+    var next: [CoreAgentGraphEndpoint] = []
+    for target in goto {
+      guard declared.contains(target) else {
+        throw CoreAgentGraphRuntimeError.undeclaredParentCommandTarget(
+          source: source,
+          target: target
+        )
+      }
+      next.append(target)
+    }
+    return next
+  }
+
   func commandSendTasks(
     from sends: [CoreAgentGraphSend<State>],
     source: CoreAgentGraphNodeID

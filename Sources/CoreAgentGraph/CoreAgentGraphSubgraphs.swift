@@ -44,6 +44,22 @@ extension CoreAgentCompiledGraph {
         )
       }
       return .success(task: task, order: order, update: update)
+    } catch let parentCommand as CoreAgentGraphParentCommand<State> {
+      do {
+        let parentGoto = try parentCommandTargets(
+          from: parentCommand.goto,
+          source: task.nodeID
+        )
+        return .success(
+          task: task,
+          order: order,
+          update: parentCommand.update,
+          commandGoto: parentGoto,
+          commandSends: parentCommand.sends
+        )
+      } catch {
+        return .failure(task: task, order: order, error: error)
+      }
     } catch {
       return .failure(
         task: task,
