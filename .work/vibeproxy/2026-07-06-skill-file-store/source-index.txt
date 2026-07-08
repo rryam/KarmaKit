@@ -1,3 +1,0 @@
-Sources/CoreAgentSkills/CoreAgentSkills.swift: CoreAgentSkillStore protocol, InMemoryCoreAgentSkillStore conformance, FileCoreAgentSkillStore, generic CoreAgentSkillCurator/CoreAgentSkillOptimizer/CoreAgentSkillSleepOptimizer store dependency.
-Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift: file-backed persistence/resume/export, duplicate-version-after-resume, corrupted-skill-row fail-closed tests.
-Documentation/CoreAgentSkills-Runtime.md and Documentation/DeepAgents-Port-Task-Ledger.md will be updated after review/fixes.

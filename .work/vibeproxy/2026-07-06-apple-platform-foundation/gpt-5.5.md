@@ -1,8 +1,0 @@
-VERDICT: BLOCK
-
-FINDINGS:
-- P2, `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift` / `CoreAgentSwiftDataCheckpointSnapshot.decodeCheckpoint(...)` around lines 75-129, decoded checkpoint `savedAt` is not verified against the sidecar `savedAt` field. The snapshot stores and digests `savedAt` as indexed checkpoint metadata, and `CoreAgentSwiftDataCheckpointRecord.snapshot` exposes that metadata for query/readback, but `decodeCheckpoint` only checks `formatVersion` and `compatibilityRevision` after decoding. Because the public raw snapshot initializer accepts arbitrary `savedAt`, `canonicalCheckpointData`, and `checkpointDigest`, a store adapter can construct an envelope whose indexed `savedAt` does not match the canonical checkpoint bytes and still have `decodeCheckpoint` return successfully if the digest is recomputed. This makes the row metadata partially canonical despite the documented contract that canonical checkpoint bytes are authoritative, and can mislead ordering/query/audit code that uses `savedAt` before or alongside decode. Concrete fix: add a `savedAtMismatch(expected:actual:)` access error and, after decoding, require `checkpoint.savedAt == savedAt` before returning. Alternatively stop treating sidecar `savedAt` as checkpoint metadata and derive it only from decoded canonical bytes.
-
-TEST GAPS:
-- No regression constructs a snapshot with valid canonical checkpoint bytes but a mismatched sidecar `savedAt` and valid recomputed envelope digest, then asserts decode is rejected.
-- No test verifies that all sidecar fields claiming to mirror payload metadata are checked against the decoded checkpoint, not merely included in the envelope digest.

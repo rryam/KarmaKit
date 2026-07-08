@@ -432,7 +432,8 @@ public struct CoreAgentSkillModelProposalGenerator: Sendable {
             score: candidate.validation.score,
             heldoutSuiteID: candidate.validation.heldoutSuiteID,
             passed: candidate.validation.passed,
-            notes: "model proposal \(candidate.id) validation"
+            notes: "model proposal \(candidate.id) validation",
+            heldoutProof: candidate.validation.heldoutProof
           )
         )
       )

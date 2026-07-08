@@ -1,4 +1,0 @@
-Package.swift: CoreAgentSkills target now depends on CoreAgentEngine; CoreAgentSkillsTests depends on CoreAgent/CoreAgentEngine/CoreAgentSkills.
-Sources/CoreAgentSkills/CoreAgentSkills.swift: CoreAgentSkillEngineTraceHarvester, CoreAgentSkillReplayMode, CoreAgentSkillReplayRequest, CoreAgentSkillReplayGenerationPolicy, CoreAgentSkillReplayGenerator, sha256 helper.
-Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift: new Swift Testing coverage for Engine trace harvest privacy/issue linkage and replay/dream generation split exclusion.
-Sources/CoreAgentEngine/CoreAgentEngine.swift: existing Engine store contract returns receipt-verified finalized redacted traces and typed issue clusters.

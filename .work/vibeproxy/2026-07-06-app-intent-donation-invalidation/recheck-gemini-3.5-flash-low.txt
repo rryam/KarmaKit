@@ -1,8 +1,0 @@
-Verdict: BLOCK
-
-Findings:
-- [severity: blocker] `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:3890, 3908, 3918`: `CoreAgentAppIntentDonationRecord` calls an undefined function/method `framed` on lines 3890 and 3908, but defines `fingerprint` as its matching helper on line 3918. This results in a compilation failure. 
-  *Fix*: Change `framed` calls to `Self.fingerprint` (or rename the helper on line 3918 to `framed`).
-
-Residual risks:
-- None identified in the provided slice. Concurrency controls (actors, locks) and signature verification patterns are robust.

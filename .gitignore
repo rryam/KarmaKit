@@ -103,3 +103,7 @@ large-files-report.txt
 
 # Node (doc tooling)
 node_modules/
+
+# Agent working scratch (VibeProxy review requests/prompts, verification runs).
+# Not a build/test input; ~8MB of stale source snapshots that pollute repo-wide grep.
+.work/

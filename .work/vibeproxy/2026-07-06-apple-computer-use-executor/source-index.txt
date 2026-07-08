@@ -1,2 +1,0 @@
-Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift: action gate request/policy plus CoreAgentAppleComputerUse* types
-Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift: L18 computer-use tests and fake backend

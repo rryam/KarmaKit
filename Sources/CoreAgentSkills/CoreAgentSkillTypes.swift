@@ -70,12 +70,45 @@ public struct CoreAgentSkillValidationResult: Codable, Equatable, Sendable {
   public let heldoutSuiteID: String
   public let passed: Bool
   public let notes: String
+  public let heldoutProof: CoreAgentSkillHeldoutValidationProof?
 
-  public init(score: Double, heldoutSuiteID: String, passed: Bool, notes: String) {
+  public init(
+    score: Double,
+    heldoutSuiteID: String,
+    passed: Bool,
+    notes: String,
+    heldoutProof: CoreAgentSkillHeldoutValidationProof? = nil
+  ) {
     self.score = score
     self.heldoutSuiteID = heldoutSuiteID
     self.passed = passed
     self.notes = notes
+    self.heldoutProof = heldoutProof
+  }
+}
+
+public struct CoreAgentSkillHeldoutValidationProof: Codable, Equatable, Sendable {
+  public let heldoutSuiteID: String
+  public let evidenceIDs: [String]
+  public let score: Double
+  public let passed: Bool
+  public let validatorID: String
+  public let proofDigest: String
+
+  public init(
+    heldoutSuiteID: String,
+    evidenceIDs: [String],
+    score: Double,
+    passed: Bool,
+    validatorID: String,
+    proofDigest: String
+  ) {
+    self.heldoutSuiteID = heldoutSuiteID
+    self.evidenceIDs = evidenceIDs
+    self.score = score
+    self.passed = passed
+    self.validatorID = validatorID
+    self.proofDigest = proofDigest
   }
 }
 
@@ -228,4 +261,35 @@ public enum CoreAgentSkillOptimizationRejectionReason:
   case validationDidNotImprove
   case maxAcceptedProposalsReached
   case externalMemoryImport
+}
+
+public struct CoreAgentSkillProposedFixArtifact:
+  Codable, Equatable, Sendable, Identifiable
+{
+  public enum Source: String, Codable, Equatable, Sendable {
+    case modelProposal
+  }
+
+  public let id: String
+  public let skillID: CoreAgentSkillID
+  public let source: Source
+  public let evidenceIDs: [String]
+  public let validationHeldoutSuiteID: String
+  public let validationProofDigest: String?
+
+  public init(
+    id: String,
+    skillID: CoreAgentSkillID,
+    source: Source = .modelProposal,
+    evidenceIDs: [String],
+    validationHeldoutSuiteID: String,
+    validationProofDigest: String?
+  ) {
+    self.id = id
+    self.skillID = skillID
+    self.source = source
+    self.evidenceIDs = evidenceIDs
+    self.validationHeldoutSuiteID = validationHeldoutSuiteID
+    self.validationProofDigest = validationProofDigest
+  }
 }

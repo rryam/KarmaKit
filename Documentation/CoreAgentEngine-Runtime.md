@@ -1,12 +1,12 @@
 # CoreAgentEngine Runtime
 
-Date: 2026-07-06
-Status: Slice 3 local trace ingestion foundation
+Date: 2026-07-08
+Status: M3 closed-loop feedback gate foundation
 
 `CoreAgentEngine` is the portable, Foundation Models-native trace foundation for
-the broader LangSmith Engine-style improvement loop. This slice intentionally
-implements local run evidence and issue grouping before adding datasets,
-evaluators, model-generated diagnoses, or fix automation.
+the broader LangSmith Engine-style improvement loop. It stores local run
+evidence, groups typed issues, and now exposes host-owned Engine/Skills feedback
+gates without autonomous PR creation or skill mutation.
 
 ## Implemented
 
@@ -51,6 +51,12 @@ evaluators, model-generated diagnoses, or fix automation.
     object into a configured Engine store.
   - Reports ingestion failures through an explicit async callback.
 
+- `CoreAgentSkillProposedFixArtifact`
+  - Represents model-proposed fixes as typed Skills artifacts, not store writes.
+  - The sleep optimizer is still the only mutation path and can require
+    `CoreAgentSkillHeldoutValidationProof`; absent or invalid proof fails closed
+    as `.validationDidNotImprove`.
+
 ## Downstream Integration
 
 - `CoreAgentSkills` now consumes Engine traces through
@@ -63,13 +69,21 @@ evaluators, model-generated diagnoses, or fix automation.
     issue titles, fingerprints, failure attributes, event messages, and tool
     arguments are not copied into SkillOpt evidence.
 
+- `CoreAgentAgenticKitFeedbackLoop` wires Deep rubric/RLM completion verdicts
+  through Engine issue linkage into Skills proposals.
+  - The bridge lives in `CoreAgentAgenticKit`, so `CoreAgentDeep` does not import
+    Engine or Skills.
+  - It requires an already verified Engine trace, upserts a typed rubric issue,
+    harvests digest-bound evidence, and delegates mutation decisions to the
+    proof-gated Skills sleep optimizer.
+
 ## Explicit Non-Goals For This Slice
 
 - No LangSmith cloud export.
 - No SQLite trace store yet.
-- No dataset/evaluator/proposed-fix model yet.
+- No cloud dataset/evaluator service yet.
 - No autonomous PR creation.
-- No model-generated diagnosis or self-improvement loop.
+- No autonomous self-improvement loop; hosts invoke feedback gates explicitly.
 - No SwiftData, SwiftUI, App Intents, sandbox, or computer-use adapters.
 
 Those should layer on this portable trace contract instead of replacing it.
@@ -85,3 +99,7 @@ Those should layer on this portable trace contract instead of replacing it.
 - VibeProxy Engine/Skills review produced valid findings that were fixed with
   regressions. `swift test --skip-update --filter 'CoreAgentEngineTests|CoreAgentSkillsTests'`
   passed 17 focused tests after those fixes.
+- `swift test --filter enginePluginProducesNoAutonomousMutation` passed after a
+  red compile failure on the missing typed artifact/proof gate.
+- `swift test --filter rubricVerdictGatesEngineSkillsFeedbackLoop` passed after
+  a red compile failure on the missing AgenticKit feedback loop.

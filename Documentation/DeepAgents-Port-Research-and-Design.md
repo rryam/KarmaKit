@@ -446,6 +446,11 @@ Implementation status as of 2026-07-06:
   Model-powered proposal, Engine trace harvest, replay/dream rollouts,
   multi-objective evaluator adapters, and file-backed stores remain future
   slices.
+- M3 Engine closed-loop gates are implemented through typed proposed-fix
+  artifacts, optional held-out validation proof requirements, and an
+  AgenticKit-owned rubric-verdict bridge that links Deep rubric outcomes to
+  Engine issues and gated Skills proposals. `CoreAgentDeep` remains free of
+  Engine/Skills imports; hosts still invoke the gate explicitly.
 
 Platform adapter implementation order should be:
 
@@ -771,9 +776,6 @@ first-class executable subgraphs, parent-graph command routing through explicit
 - Fully autonomous token/cost optimization closed loops beyond local budgets and
   `CoreAgentSkillOptimizationRunHarvestConfig.maximumTotalTokens` gating (hosts still
   own production schedulers and evaluator gates).
-- Held-out Engine/Skills feedback gates wired into recursive orchestration and
-  rubric grading (FoundationModels decomposition/grading backends and local
-  orchestration exist; closed-loop optimization gates remain host-owned).
 - Default-on autonomous dynamic subagent spawning without any host policy
   (`CoreAgentDeepDynamicSubagentsAutoApprovalPolicy` provides opt-in,
   digest-bound auto-registration for explicitly allowlisted proposal names).

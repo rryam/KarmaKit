@@ -123,6 +123,11 @@ public struct CoreAgentSkillOptimizer: Sendable {
     if policy.trainingSuiteIDs.contains(proposal.validation.heldoutSuiteID) {
       return .heldoutSplitLeakage
     }
+    if policy.requiresHeldoutValidationProof,
+      !isValidHeldoutValidationProof(proposal.validation)
+    {
+      return .validationDidNotImprove
+    }
     if editsProtectedRegion(
       proposal.candidateEdits,
       in: current.body,
@@ -166,6 +171,12 @@ public struct CoreAgentSkillOptimizationPolicy: Codable, Equatable, Sendable {
   public let maxEditsPerProposal: Int
   public let maxAcceptedProposalsPerRun: Int
   public let minimumScoreDelta: Double
+  /// When `true`, a proposal is only applied if it carries held-out validation proof
+  /// that improves on the incumbent; a missing/failing proof fails closed
+  /// (`.validationDidNotImprove`). Defaults to `false` so the host must explicitly
+  /// opt in — leaving it `false` disables the held-out proof gate, so any production
+  /// closed-loop feedback path (Engine/Skills) should set this `true`.
+  public let requiresHeldoutValidationProof: Bool
   public let trainingSuiteIDs: Set<String>
   public let protectedRegions: [CoreAgentSkillProtectedRegion]
   public let editLimits: CoreAgentSkillEditLimits
@@ -174,6 +185,7 @@ public struct CoreAgentSkillOptimizationPolicy: Codable, Equatable, Sendable {
     maxEditsPerProposal: Int = 3,
     maxAcceptedProposalsPerRun: Int = 1,
     minimumScoreDelta: Double = 0,
+    requiresHeldoutValidationProof: Bool = false,
     trainingSuiteIDs: Set<String> = [],
     protectedRegions: [CoreAgentSkillProtectedRegion] = [],
     editLimits: CoreAgentSkillEditLimits = .default
@@ -181,9 +193,54 @@ public struct CoreAgentSkillOptimizationPolicy: Codable, Equatable, Sendable {
     self.maxEditsPerProposal = maxEditsPerProposal
     self.maxAcceptedProposalsPerRun = maxAcceptedProposalsPerRun
     self.minimumScoreDelta = minimumScoreDelta
+    self.requiresHeldoutValidationProof = requiresHeldoutValidationProof
     self.trainingSuiteIDs = trainingSuiteIDs
     self.protectedRegions = protectedRegions
     self.editLimits = editLimits
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case maxEditsPerProposal
+    case maxAcceptedProposalsPerRun
+    case minimumScoreDelta
+    case requiresHeldoutValidationProof
+    case trainingSuiteIDs
+    case protectedRegions
+    case editLimits
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      maxEditsPerProposal: try container.decodeIfPresent(
+        Int.self,
+        forKey: .maxEditsPerProposal
+      ) ?? 3,
+      maxAcceptedProposalsPerRun: try container.decodeIfPresent(
+        Int.self,
+        forKey: .maxAcceptedProposalsPerRun
+      ) ?? 1,
+      minimumScoreDelta: try container.decodeIfPresent(
+        Double.self,
+        forKey: .minimumScoreDelta
+      ) ?? 0,
+      requiresHeldoutValidationProof: try container.decodeIfPresent(
+        Bool.self,
+        forKey: .requiresHeldoutValidationProof
+      ) ?? false,
+      trainingSuiteIDs: try container.decodeIfPresent(
+        Set<String>.self,
+        forKey: .trainingSuiteIDs
+      ) ?? [],
+      protectedRegions: try container.decodeIfPresent(
+        [CoreAgentSkillProtectedRegion].self,
+        forKey: .protectedRegions
+      ) ?? [],
+      editLimits: try container.decodeIfPresent(
+        CoreAgentSkillEditLimits.self,
+        forKey: .editLimits
+      ) ?? .default
+    )
   }
 
   func validate() throws {
@@ -226,15 +283,26 @@ public struct CoreAgentSkillSleepOptimizationProposal: Sendable {
   public let id: String
   public let evidence: [CoreAgentSkillRolloutEvidence]
   public let proposal: CoreAgentSkillOptimizationProposal
+  public let artifact: CoreAgentSkillProposedFixArtifact
 
   public init(
     id: String,
     evidence: [CoreAgentSkillRolloutEvidence] = [],
-    proposal: CoreAgentSkillOptimizationProposal
+    proposal: CoreAgentSkillOptimizationProposal,
+    artifact: CoreAgentSkillProposedFixArtifact? = nil
   ) {
     self.id = id
     self.evidence = evidence
     self.proposal = proposal
+    self.artifact =
+      artifact
+      ?? CoreAgentSkillProposedFixArtifact(
+        id: id,
+        skillID: proposal.skillID,
+        evidenceIDs: evidence.map(\.id),
+        validationHeldoutSuiteID: proposal.validation.heldoutSuiteID,
+        validationProofDigest: proposal.validation.heldoutProof?.proofDigest
+      )
   }
 }
 
@@ -363,6 +431,19 @@ public struct CoreAgentSkillSleepOptimizer: Sendable {
         )
         continue
       }
+      if request.policy.requiresHeldoutValidationProof,
+        !isValidHeldoutValidationProof(proposal.validation)
+      {
+        entries.append(
+          try await reject(
+            candidate,
+            current: current,
+            request: request,
+            reason: .validationDidNotImprove
+          )
+        )
+        continue
+      }
       if editsProtectedRegion(
         proposal.candidateEdits,
         in: current.body,
@@ -462,6 +543,11 @@ public struct CoreAgentSkillSleepOptimizer: Sendable {
         continue
       }
       if request.policy.trainingSuiteIDs.contains(proposal.validation.heldoutSuiteID) {
+        continue
+      }
+      if request.policy.requiresHeldoutValidationProof,
+        !isValidHeldoutValidationProof(proposal.validation)
+      {
         continue
       }
       if editsProtectedRegion(
@@ -595,6 +681,32 @@ private func validateSkillOptimizationScores(
   guard !validation.heldoutSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   else {
     throw CoreAgentSkillOptimizationError.emptyHeldoutSuiteID
+  }
+}
+
+private func isValidHeldoutValidationProof(
+  _ validation: CoreAgentSkillValidationResult
+) -> Bool {
+  guard let proof = validation.heldoutProof else { return false }
+  guard proof.heldoutSuiteID == validation.heldoutSuiteID,
+    proof.score == validation.score,
+    proof.passed == validation.passed,
+    !proof.validatorID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+    !proof.evidenceIDs.isEmpty,
+    proof.evidenceIDs.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+    isSHA256Digest(proof.proofDigest)
+  else {
+    return false
+  }
+  return true
+}
+
+private func isSHA256Digest(_ value: String) -> Bool {
+  guard value.hasPrefix("sha256:") else { return false }
+  let hex = value.dropFirst("sha256:".count)
+  guard hex.count == 64 else { return false }
+  return hex.unicodeScalars.allSatisfy { scalar in
+    (48...57).contains(Int(scalar.value)) || (97...102).contains(Int(scalar.value))
   }
 }
 

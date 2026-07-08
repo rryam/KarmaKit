@@ -1,2 +1,0 @@
-{"error":{"message":"Internal server error","type":"internal_server_error"}}
-500
