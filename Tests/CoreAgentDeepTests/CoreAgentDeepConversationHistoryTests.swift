@@ -66,7 +66,9 @@ struct CoreAgentDeepConversationHistoryTests {
     #expect(compaction.offload.offloadedHistoryEntryCount == 4)
     #expect(compaction.offload.retainedHistoryEntryCount == 2)
     #expect(compaction.compactedTranscript.history.count == 3)
-    #expect(compaction.compactedTranscript.containsText("COREAGENT_DEEP_CONVERSATION_HISTORY_OFFLOADED_V1"))
+    #expect(
+      compaction.compactedTranscript.containsText(
+        "COREAGENT_DEEP_CONVERSATION_HISTORY_OFFLOADED_V1"))
     #expect(compaction.compactedTranscript.containsText("newest prompt"))
     #expect(compaction.compactedTranscript.containsText("newest response"))
     #expect(!compaction.compactedTranscript.containsText("old prompt api_key=secret-value"))
@@ -256,7 +258,9 @@ struct CoreAgentDeepConversationHistoryTests {
     #expect(stored.contains("first answer"))
   }
 
-  @Test("Model-facing read_file cannot read conversation-history artifacts without an explicit read grant")
+  @Test(
+    "Model-facing read_file cannot read conversation-history artifacts without an explicit read grant"
+  )
   func conversationHistoryArtifactsAreNotModelReadableByDefault() async throws {
     let checkpointStore = InMemoryCheckpointStore()
     let filesystem = CoreAgentDeepStateFilesystem(
@@ -350,7 +354,8 @@ struct CoreAgentDeepConversationHistoryTests {
     #expect(await checkpointStore.loadCheckpoint(for: "conversation") == nil)
   }
 
-  @Test("Does not retain orphaned native tool calls when a whole tool turn exceeds the retained budget")
+  @Test(
+    "Does not retain orphaned native tool calls when a whole tool turn exceeds the retained budget")
   func compactionDoesNotRetainOrphanedToolTurns() async throws {
     let checkpointStore = InMemoryCheckpointStore()
     let filesystem = CoreAgentDeepStateFilesystem(
@@ -376,14 +381,16 @@ struct CoreAgentDeepConversationHistoryTests {
     let checkpoint = try #require(await checkpointStore.loadCheckpoint(for: "tool-turn"))
     #expect(checkpoint.transcript.history.count == 1)
     #expect(checkpoint.transcript.containsText("COREAGENT_DEEP_CONVERSATION_HISTORY_OFFLOADED_V1"))
-    #expect(!checkpoint.transcript.history.contains { entry in
-      if case .toolCalls = entry { return true }
-      return false
-    })
-    #expect(!checkpoint.transcript.history.contains { entry in
-      if case .toolOutput = entry { return true }
-      return false
-    })
+    #expect(
+      !checkpoint.transcript.history.contains { entry in
+        if case .toolCalls = entry { return true }
+        return false
+      })
+    #expect(
+      !checkpoint.transcript.history.contains { entry in
+        if case .toolOutput = entry { return true }
+        return false
+      })
   }
 
   @Test("Compacted checkpoints remain compatible with file-backed checkpoint persistence")
@@ -428,7 +435,8 @@ struct CoreAgentDeepConversationHistoryTests {
     #expect(restoredRequest.containsText("second file-backed answer"))
   }
 
-  @Test("Deep conversation retention rebuilds the active native session after checkpoint compaction")
+  @Test(
+    "Deep conversation retention rebuilds the active native session after checkpoint compaction")
   func currentSessionUsesCompactedHistoryAfterCheckpointPersistence() async throws {
     let checkpointStore = InMemoryCheckpointStore()
     let filesystem = CoreAgentDeepStateFilesystem(
@@ -470,7 +478,8 @@ struct CoreAgentDeepConversationHistoryTests {
     #expect(checkpoint.transcript.containsText("COREAGENT_DEEP_CONVERSATION_HISTORY_OFFLOADED_V1"))
   }
 
-  @Test("Deep conversation retention rebuilds the active streaming session after checkpoint compaction")
+  @Test(
+    "Deep conversation retention rebuilds the active streaming session after checkpoint compaction")
   func streamingSessionUsesCompactedHistoryAfterCheckpointPersistence() async throws {
     let checkpointStore = InMemoryCheckpointStore()
     let filesystem = CoreAgentDeepStateFilesystem(
@@ -610,56 +619,6 @@ struct CoreAgentDeepConversationHistoryTests {
     #expect(snapshotAfterFailure[committedPath] == committedContents)
   }
 
-  @Test("Removing checkpoint artifacts ignores paths outside the conversation-history namespace")
-  func artifactRemovalIgnoresInvalidConversationHistoryPaths() async throws {
-    let filesystem = CoreAgentDeepStateFilesystem(
-      files: ["/unrelated/file.txt": "keep"],
-      permissions: [.allow(operations: [.delete], paths: ["/**"])]
-    )
-    let compactor = CoreAgentDeepConversationHistoryCompactor(filesystem: filesystem)
-    let artifact = CoreAgentCheckpointArtifact(
-      id: "conversation-history-forged",
-      kind: CoreAgentDeepConversationHistoryCompactor.checkpointArtifactKind,
-      path: "/unrelated/file.txt",
-      digest: String(repeating: "a", count: 64)
-    )
-
-    try await compactor.removeCheckpointArtifacts([artifact])
-
-    #expect(await filesystem.snapshot()["/unrelated/file.txt"] == "keep")
-  }
-
-  @Test("Checkpoint removal failure leaves conversation-history artifacts intact")
-  func resetRemovalFailureLeavesArtifactsIntact() async throws {
-    let checkpointStore = RemoveFailingCheckpointStore()
-    let filesystem = CoreAgentDeepStateFilesystem(
-      permissions: [.allow(operations: [.write, .delete], paths: ["/conversation_history/**"])]
-    )
-    let session = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [
-        .response(text: "first reset answer"),
-        .response(text: "second reset answer"),
-      ]),
-      checkpointStore: checkpointStore,
-      checkpointKey: "reset-failure",
-      transcriptRetention: .deepConversationHistory(
-        filesystem: filesystem,
-        configuration: .init(maximumInlineHistoryEntries: 2, retainedHistoryEntries: 2),
-        scopeID: { "reset-failure" }
-      )
-    )
-
-    _ = try await session.respond(to: "first reset prompt")
-    _ = try await session.respond(to: "second reset prompt")
-    let path = try #require(await filesystem.snapshot().keys.first)
-
-    await #expect(throws: RemoveFailingCheckpointStore.Error.self) {
-      try await session.reset(removingCheckpoint: true)
-    }
-
-    #expect(await filesystem.snapshot()[path] != nil)
-    #expect(try await checkpointStore.loadCheckpoint(for: "reset-failure") != nil)
-  }
 }
 
 private func prompt(_ content: String) -> Transcript.Entry {
@@ -705,7 +664,7 @@ private actor ThrowingCheckpointStore: CoreAgentCheckpointStore {
   func removeCheckpoint(for key: String) throws {}
 }
 
-private actor RemoveFailingCheckpointStore: CoreAgentCheckpointStore {
+actor RemoveFailingCheckpointStore: CoreAgentCheckpointStore {
   enum Error: Swift.Error {
     case removeFailed
   }
@@ -730,7 +689,7 @@ private enum CompletionFailureError: Error {
 }
 
 private actor CompletionFailureController {
-  private let failingCompletionNumbers: Set<Int>
+  let failingCompletionNumbers: Set<Int>
   private var completionCount = 0
 
   init(failingCompletionNumbers: Set<Int>) {
@@ -756,15 +715,15 @@ private struct CompletionFailingPlugin: CoreAgentSessionPlugin {
   }
 }
 
-private extension CoreAgentDeepConversationHistoryCompactionDecision {
-  var compaction: CoreAgentDeepConversationHistoryCompaction? {
+extension CoreAgentDeepConversationHistoryCompactionDecision {
+  fileprivate var compaction: CoreAgentDeepConversationHistoryCompaction? {
     guard case .compacted(let compaction) = self else { return nil }
     return compaction
   }
 }
 
-private extension Transcript {
-  func containsText(_ expected: String) -> Bool {
+extension Transcript {
+  fileprivate func containsText(_ expected: String) -> Bool {
     contains { entry in
       switch entry {
       case .instructions(let instructions):
@@ -785,7 +744,7 @@ private extension Transcript {
     }
   }
 
-  func containsResponseText(_ expected: String) -> Bool {
+  fileprivate func containsResponseText(_ expected: String) -> Bool {
     contains { entry in
       guard case .response(let response) = entry else { return false }
       return response.segments.containsText(expected)
@@ -793,8 +752,8 @@ private extension Transcript {
   }
 }
 
-private extension [Transcript.Segment] {
-  func containsText(_ expected: String) -> Bool {
+extension [Transcript.Segment] {
+  fileprivate func containsText(_ expected: String) -> Bool {
     contains { segment in
       if case .text(let text) = segment {
         return text.content.contains(expected)

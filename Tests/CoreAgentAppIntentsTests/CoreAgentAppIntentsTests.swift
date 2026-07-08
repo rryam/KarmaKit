@@ -2,6 +2,7 @@ import AppIntents
 import CoreAgentApplePlatform
 import Foundation
 import Testing
+
 @testable import CoreAgentAppIntents
 
 @Suite("CoreAgent App Intents bridge", .serialized)
@@ -11,11 +12,12 @@ struct CoreAgentAppIntentsTests {
     let entries = try CoreAgentRunAppIntentCatalog.entries
 
     #expect(entries.map(\.kind) == [.openRun, .pauseRun, .continueRun])
-    #expect(entries.map(\.descriptor.identifier) == [
-      "CoreAgentOpenRunIntent",
-      "CoreAgentPauseRunIntent",
-      "CoreAgentContinueRunIntent",
-    ])
+    #expect(
+      entries.map(\.descriptor.identifier) == [
+        "CoreAgentOpenRunIntent",
+        "CoreAgentPauseRunIntent",
+        "CoreAgentContinueRunIntent",
+      ])
     #expect(entries.map(\.osPolicy.allowedExecutionTargets) == [.main, .main, .main])
     #expect(entries[0].osPolicy.supportedModes == CoreAgentOpenRunIntent.supportedModes)
     #expect(entries[1].osPolicy.supportedModes == .foreground(.dynamic))
@@ -33,10 +35,11 @@ struct CoreAgentAppIntentsTests {
     let recorder = RuntimeRecorder()
     let gate = Self.appIntentGate()
     await CoreAgentRunAppIntentRuntime.shared.resetEnvironment()
-    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(Self.runtimeEnvironment(
-      gate: gate,
-      recorder: recorder
-    ))
+    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(
+      Self.runtimeEnvironment(
+        gate: gate,
+        recorder: recorder
+      ))
 
     do {
       _ = try await CoreAgentPauseRunIntent(runID: " ").perform()
@@ -74,10 +77,11 @@ struct CoreAgentAppIntentsTests {
 
     _ = try await CoreAgentPauseRunIntent(runID: "run-1").perform()
     _ = try await CoreAgentContinueRunIntent(runID: "run-1").perform()
-    #expect(await recorder.requests == [
-      CoreAgentRunAppIntentRuntimeRequest(kind: .pauseRun, runID: "run-1"),
-      CoreAgentRunAppIntentRuntimeRequest(kind: .continueRun, runID: "run-1"),
-    ])
+    #expect(
+      await recorder.requests == [
+        CoreAgentRunAppIntentRuntimeRequest(kind: .pauseRun, runID: "run-1"),
+        CoreAgentRunAppIntentRuntimeRequest(kind: .continueRun, runID: "run-1"),
+      ])
 
     await CoreAgentRunAppIntentRuntime.shared.resetEnvironment()
   }
@@ -87,11 +91,12 @@ struct CoreAgentAppIntentsTests {
     let recorder = RuntimeRecorder()
     let gate = Self.appIntentGate()
     await CoreAgentRunAppIntentRuntime.shared.resetEnvironment()
-    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(Self.runtimeEnvironment(
-      gate: gate,
-      recorder: recorder,
-      consent: { _ in .notRequired }
-    ))
+    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(
+      Self.runtimeEnvironment(
+        gate: gate,
+        recorder: recorder,
+        consent: { _ in .notRequired }
+      ))
 
     do {
       _ = try await CoreAgentPauseRunIntent(runID: "run-bridge").perform()
@@ -101,11 +106,12 @@ struct CoreAgentAppIntentsTests {
     }
     #expect(await recorder.requests == [])
 
-    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(Self.runtimeEnvironment(
-      gate: gate,
-      recorder: recorder,
-      checkpointKey: { _ in nil }
-    ))
+    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(
+      Self.runtimeEnvironment(
+        gate: gate,
+        recorder: recorder,
+        checkpointKey: { _ in nil }
+      ))
     do {
       _ = try await CoreAgentPauseRunIntent(runID: "run-bridge").perform()
       Issue.record("Expected bridge checkpoint enforcement before host work")
@@ -114,14 +120,16 @@ struct CoreAgentAppIntentsTests {
     }
     #expect(await recorder.requests == [])
 
-    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(Self.runtimeEnvironment(
-      gate: gate,
-      recorder: recorder
-    ))
+    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(
+      Self.runtimeEnvironment(
+        gate: gate,
+        recorder: recorder
+      ))
     _ = try await CoreAgentPauseRunIntent(runID: "run-bridge").perform()
-    #expect(await recorder.requests == [
-      CoreAgentRunAppIntentRuntimeRequest(kind: .pauseRun, runID: "run-bridge"),
-    ])
+    #expect(
+      await recorder.requests == [
+        CoreAgentRunAppIntentRuntimeRequest(kind: .pauseRun, runID: "run-bridge")
+      ])
 
     await CoreAgentRunAppIntentRuntime.shared.resetEnvironment()
   }
@@ -137,14 +145,16 @@ struct CoreAgentAppIntentsTests {
       descriptor: descriptor,
       mode: .app,
       target: .foreground,
-      consent: .granted(Self.receipt(
-        id: "pause-run-missing-checkpoint",
-        requirement: gate.consentRequirement(for: .appIntent(
-          descriptor: descriptor,
-          mode: .app,
-          target: .foreground
-        ))
-      )),
+      consent: .granted(
+        Self.receipt(
+          id: "pause-run-missing-checkpoint",
+          requirement: gate.consentRequirement(
+            for: .appIntent(
+              descriptor: descriptor,
+              mode: .app,
+              target: .foreground
+            ))
+        )),
       checkpointKey: nil
     )
 
@@ -179,14 +189,16 @@ struct CoreAgentAppIntentsTests {
       descriptor: descriptor,
       mode: .app,
       target: .foreground,
-      consent: .granted(Self.receipt(
-        id: "read-run-cancel-before-operation",
-        requirement: gate.consentRequirement(for: .appIntent(
-          descriptor: descriptor,
-          mode: .app,
-          target: .foreground
-        ))
-      )),
+      consent: .granted(
+        Self.receipt(
+          id: "read-run-cancel-before-operation",
+          requirement: gate.consentRequirement(
+            for: .appIntent(
+              descriptor: descriptor,
+              mode: .app,
+              target: .foreground
+            ))
+        )),
       checkpointKey: nil,
       isCancelled: { cancellation.cancelAfterFirstCheck() }
     )
@@ -220,14 +232,16 @@ struct CoreAgentAppIntentsTests {
       descriptor: descriptor,
       mode: .app,
       target: .foreground,
-      consent: .granted(Self.receipt(
-        id: "read-run-operation-cancelled",
-        requirement: gate.consentRequirement(for: .appIntent(
-          descriptor: descriptor,
-          mode: .app,
-          target: .foreground
-        ))
-      )),
+      consent: .granted(
+        Self.receipt(
+          id: "read-run-operation-cancelled",
+          requirement: gate.consentRequirement(
+            for: .appIntent(
+              descriptor: descriptor,
+              mode: .app,
+              target: .foreground
+            ))
+        )),
       checkpointKey: nil
     )
 
@@ -326,16 +340,19 @@ struct CoreAgentAppIntentsTests {
       )
     )
 
-    #expect(result.status == .donated(CoreAgentRunAppIntentDonationReceipt(
-      record: expectedRecord,
-      osDonationToken: CoreAgentAppIntentOSDonationToken(
-        encodedIdentifier: Data("os:pause:run-1".utf8)
-      ),
-      osDonationIdentifierDigest: CoreAgentAppIntentOSDonationToken(
-        encodedIdentifier: Data("os:pause:run-1".utf8)
-      ).digest,
-      donatedAt: Date(timeIntervalSince1970: 1_800_000_500)
-    )))
+    #expect(
+      result.status
+        == .donated(
+          CoreAgentRunAppIntentDonationReceipt(
+            record: expectedRecord,
+            osDonationToken: CoreAgentAppIntentOSDonationToken(
+              encodedIdentifier: Data("os:pause:run-1".utf8)
+            ),
+            osDonationIdentifierDigest: CoreAgentAppIntentOSDonationToken(
+              encodedIdentifier: Data("os:pause:run-1".utf8)
+            ).digest,
+            donatedAt: Date(timeIntervalSince1970: 1_800_000_500)
+          )))
     let requests = await backend.donationRequests
     #expect(requests.count == 1)
     #expect(requests.first?.kind == .pauseRun)
@@ -391,9 +408,12 @@ struct CoreAgentAppIntentsTests {
     )
 
     #expect(denied.status == .denied(.missingCapability(.appIntentDonation)))
-    #expect(disabled.status == .rejected(.invalidDonationRecord(
-      .disabledDonation(identifier: "CoreAgentOpenRunIntent")
-    )))
+    #expect(
+      disabled.status
+        == .rejected(
+          .invalidDonationRecord(
+            .disabledDonation(identifier: "CoreAgentOpenRunIntent")
+          )))
     #expect(invalidRun.status == .rejected(.invalidRunID(.pauseRun)))
     #expect(await backend.donationRequests.isEmpty)
   }
@@ -424,10 +444,13 @@ struct CoreAgentAppIntentsTests {
       )
     )
 
-    #expect(result.status == .rejected(.subjectRunIDMismatch(
-      expectedStableIdentifier: "run-1:paused",
-      actualStableIdentifier: "run-2:paused"
-    )))
+    #expect(
+      result.status
+        == .rejected(
+          .subjectRunIDMismatch(
+            expectedStableIdentifier: "run-1:paused",
+            actualStableIdentifier: "run-2:paused"
+          )))
     #expect(await backend.donationRequests.isEmpty)
   }
 
@@ -446,40 +469,45 @@ struct CoreAgentAppIntentsTests {
       donatedAt: Date(timeIntervalSince1970: 1_800_000_500)
     )
 
-    #expect(throws: CoreAgentRunAppIntentDonationBackendError.disabledDonation(
-      identifier: "CoreAgentOpenRunIntent"
-    )) {
-      _ = try backend.validate(CoreAgentRunAppIntentDonationBackendRequest(
-        kind: .openRun,
-        runID: "run-1",
-        record: record,
-        authorization: CoreAgentRunAppIntentDonationBackendAuthorization(
+    #expect(
+      throws: CoreAgentRunAppIntentDonationBackendError.disabledDonation(
+        identifier: "CoreAgentOpenRunIntent"
+      )
+    ) {
+      _ = try backend.validate(
+        CoreAgentRunAppIntentDonationBackendRequest(
+          kind: .openRun,
+          runID: "run-1",
           record: record,
-          runID: "run-1"
-        )
-      ))
+          authorization: CoreAgentRunAppIntentDonationBackendAuthorization(
+            record: record,
+            runID: "run-1"
+          )
+        ))
     }
     #expect(throws: CoreAgentRunAppIntentDonationBackendError.invalidRunID(.pauseRun)) {
-      _ = try backend.validate(CoreAgentRunAppIntentDonationBackendRequest(
-        kind: .pauseRun,
-        runID: "../run-1",
-        record: record,
-        authorization: CoreAgentRunAppIntentDonationBackendAuthorization(
+      _ = try backend.validate(
+        CoreAgentRunAppIntentDonationBackendRequest(
+          kind: .pauseRun,
+          runID: "../run-1",
           record: record,
-          runID: "../run-1"
-        )
-      ))
+          authorization: CoreAgentRunAppIntentDonationBackendAuthorization(
+            record: record,
+            runID: "../run-1"
+          )
+        ))
     }
     #expect(throws: CoreAgentRunAppIntentDonationBackendError.unauthorizedRequest) {
-      _ = try backend.validate(CoreAgentRunAppIntentDonationBackendRequest(
-        kind: .pauseRun,
-        runID: "run-1",
-        record: record,
-        authorization: CoreAgentRunAppIntentDonationBackendAuthorization(
+      _ = try backend.validate(
+        CoreAgentRunAppIntentDonationBackendRequest(
+          kind: .pauseRun,
+          runID: "run-1",
           record: record,
-          runID: "run-2"
-        )
-      ))
+          authorization: CoreAgentRunAppIntentDonationBackendAuthorization(
+            record: record,
+            runID: "run-2"
+          )
+        ))
     }
   }
 
@@ -531,20 +559,22 @@ struct CoreAgentAppIntentsTests {
       )
     )
 
-    #expect(result == CoreAgentRunAppIntentDonationInvalidationResult(
-      receipt: receipt,
-      deletedOSDonationIdentifierDigests: [token.digest],
-      invalidationRecords: [
-        CoreAgentAppIntentDonationInvalidationRecord(
-          donationIdentifier: record.donationIdentifier,
-          descriptorIdentifier: record.descriptorIdentifier,
-          subject: record.subject,
-          reason: .erased,
-          invalidatedAt: Date(timeIntervalSince1970: 1_800_000_600)
-        )
-      ],
-      status: .invalidated
-    ))
+    #expect(
+      result
+        == CoreAgentRunAppIntentDonationInvalidationResult(
+          receipt: receipt,
+          deletedOSDonationIdentifierDigests: [token.digest],
+          invalidationRecords: [
+            CoreAgentAppIntentDonationInvalidationRecord(
+              donationIdentifier: record.donationIdentifier,
+              descriptorIdentifier: record.descriptorIdentifier,
+              subject: record.subject,
+              reason: .erased,
+              invalidatedAt: Date(timeIntervalSince1970: 1_800_000_600)
+            )
+          ],
+          status: .invalidated
+        ))
     #expect(await backend.deletedTokens == [token])
     #expect(await store.activeRecords().isEmpty)
   }
@@ -612,254 +642,9 @@ struct CoreAgentAppIntentsTests {
     #expect(await store.activeRecords() == [record])
   }
 
-  @Test("Bridge denies unsupported CoreAgent modes before executing host work")
-  func bridgeDeniesUnsupportedCoreAgentModesBeforeExecutingHostWork() async throws {
-    let recorder = BridgeRecorder()
-    let gate = Self.appIntentGate()
-    let bridge = CoreAgentAppIntentBridge(
-      actionGate: gate,
-      checkpoint: { request in
-        await recorder.record("checkpoint:\(request.checkpointKey ?? "none")")
-      }
-    )
-    let descriptor = Self.pauseRunDescriptor(supportedModes: [.app])
-    let request = CoreAgentAppIntentBridgeRequest(
-      actionID: "pause-run",
-      descriptor: descriptor,
-      mode: .siri,
-      target: .foreground,
-      consent: .granted(Self.receipt(
-        id: "unsupported-mode-receipt",
-        requirement: gate.consentRequirement(for: .appIntent(
-          descriptor: descriptor,
-          mode: .siri,
-          target: .foreground
-        ))
-      )),
-      checkpointKey: "run:abc"
-    )
-
-    let result = await bridge.perform(request) { request in
-      await recorder.record("operation:\(request.actionID)")
-      return CoreAgentAppIntentBridgeOperationResult()
-    }
-
-    #expect(result.status == .denied(.unsupportedAppIntentMode(
-      identifier: "CoreAgentPauseRunIntent",
-      mode: .siri
-    )))
-    #expect(await recorder.events == [])
-  }
-
-  @Test("Bridge requires CoreAgent consent and checkpoints before host work")
-  func bridgeRequiresCoreAgentConsentAndCheckpointsBeforeHostWork() async throws {
-    let recorder = BridgeRecorder()
-    let gate = Self.appIntentGate()
-    let bridge = CoreAgentAppIntentBridge(
-      actionGate: gate,
-      checkpoint: { request in
-        await recorder.record("checkpoint:\(request.checkpointKey ?? "none")")
-      }
-    )
-    let descriptor = Self.pauseRunDescriptor(supportedModes: [.app])
-    let deniedRequest = CoreAgentAppIntentBridgeRequest(
-      actionID: "pause-run",
-      descriptor: descriptor,
-      mode: .app,
-      target: .foreground,
-      consent: .notRequired,
-      checkpointKey: "run:abc"
-    )
-
-    let denied = await bridge.perform(deniedRequest) { request in
-      await recorder.record("operation:\(request.actionID)")
-      return CoreAgentAppIntentBridgeOperationResult()
-    }
-
-    #expect(denied.status == .denied(.missingConsent(.appIntentExecution)))
-    #expect(await recorder.events == [])
-
-    let allowedRequest = CoreAgentAppIntentBridgeRequest(
-      actionID: "pause-run",
-      descriptor: descriptor,
-      mode: .app,
-      target: .foreground,
-      consent: .granted(Self.receipt(
-        id: "pause-run-receipt",
-        requirement: gate.consentRequirement(for: .appIntent(
-          descriptor: descriptor,
-          mode: .app,
-          target: .foreground
-        ))
-      )),
-      checkpointKey: "run:abc"
-    )
-
-    let allowed = await bridge.perform(allowedRequest) { request in
-      await recorder.record("operation:\(request.actionID)")
-      return CoreAgentAppIntentBridgeOperationResult()
-    }
-
-    #expect(allowed.status == .completed)
-    #expect(await recorder.events == [
-      "checkpoint:run:abc",
-      "operation:pause-run",
-    ])
-  }
-
-  @Test("Bridge observes cancellation before checkpoint or host work")
-  func bridgeObservesCancellationBeforeCheckpointOrHostWork() async throws {
-    let recorder = BridgeRecorder()
-    let gate = Self.appIntentGate()
-    let bridge = CoreAgentAppIntentBridge(
-      actionGate: gate,
-      checkpoint: { request in
-        await recorder.record("checkpoint:\(request.checkpointKey ?? "none")")
-      }
-    )
-    let descriptor = Self.pauseRunDescriptor(supportedModes: [.app])
-    let request = CoreAgentAppIntentBridgeRequest(
-      actionID: "pause-run",
-      descriptor: descriptor,
-      mode: .app,
-      target: .foreground,
-      consent: .granted(Self.receipt(
-        id: "cancelled-receipt",
-        requirement: gate.consentRequirement(for: .appIntent(
-          descriptor: descriptor,
-          mode: .app,
-          target: .foreground
-        ))
-      )),
-      checkpointKey: "run:abc",
-      isCancelled: { true }
-    )
-
-    let result = await bridge.perform(request) { request in
-      await recorder.record("operation:\(request.actionID)")
-      return CoreAgentAppIntentBridgeOperationResult()
-    }
-
-    #expect(result.status == .cancelled)
-    #expect(await recorder.events == [])
-  }
-
-  private static func pauseRunDescriptor(
-    supportedModes: Set<CoreAgentAppleAppIntentMode>
-  ) -> CoreAgentAppIntentDescriptor {
-    CoreAgentAppIntentDescriptor(
-      identifier: "CoreAgentPauseRunIntent",
-      title: "Pause Run",
-      mutability: .mutating,
-      allowsAgentExecution: true,
-      allowedExecutionTargets: [.foreground],
-      supportedModes: supportedModes,
-      donationPolicy: .donateAfterUserInitiatedAction,
-      requiresAuthorization: true,
-      requiresHITLForSensitiveOperations: true
-    )
-  }
-
-  private static func appIntentGate() -> CoreAgentAppleActionGate {
-    CoreAgentAppleActionGate(
-      sandbox: CoreAgentAppleSandboxProfile(
-        capabilities: [.appIntentExecution],
-        workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent"),
-        networkPolicy: .denied,
-        authorityBoundaryID: "workspace:coreagent",
-        policyVersion: 27
-      ),
-      trustedConsentIssuerID: issuerID,
-      consentSigningKey: signingKey,
-      now: { Date(timeIntervalSince1970: 1_800_000_000) }
-    )
-  }
-
-  private static func appIntentDonationGate(
-    capabilities: Set<CoreAgentAppleExecutionCapability> = [.appIntentDonation]
-  ) -> CoreAgentAppleActionGate {
-    CoreAgentAppleActionGate(
-      sandbox: CoreAgentAppleSandboxProfile(
-        capabilities: capabilities,
-        workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent"),
-        networkPolicy: .denied,
-        authorityBoundaryID: "workspace:coreagent",
-        policyVersion: 27
-      ),
-      trustedConsentIssuerID: issuerID,
-      consentSigningKey: signingKey,
-      now: { Date(timeIntervalSince1970: 1_800_000_000) }
-    )
-  }
-
-  private static func runtimeEnvironment(
-    gate: CoreAgentAppleActionGate,
-    recorder: RuntimeRecorder,
-    mode: @escaping @Sendable (CoreAgentRunAppIntentRuntimeRequest) -> CoreAgentAppleAppIntentMode = {
-      _ in .app
-    },
-    target: @escaping @Sendable (CoreAgentRunAppIntentRuntimeRequest)
-      -> CoreAgentAppleAppIntentExecutionTarget = { _ in .foreground },
-    consent: (@Sendable (CoreAgentRunAppIntentRuntimeRequest) -> CoreAgentAppleConsent)? = nil,
-    checkpointKey: @escaping @Sendable (CoreAgentRunAppIntentRuntimeRequest) -> String? = {
-      "run:\($0.runID)"
-    }
-  ) -> CoreAgentRunAppIntentRuntimeEnvironment {
-    CoreAgentRunAppIntentRuntimeEnvironment(
-      bridge: CoreAgentAppIntentBridge(actionGate: gate),
-      mode: mode,
-      target: target,
-      consent: consent ?? { request in
-        .granted(Self.receipt(
-          id: "runtime-\(request.kind.rawValue)-\(request.runID)-\(UUID().uuidString)",
-          requirement: gate.consentRequirement(for: .appIntent(
-            descriptor: Self.descriptor(for: request.kind),
-            mode: mode(request),
-            target: target(request)
-          ))
-        ))
-      },
-      checkpointKey: checkpointKey,
-      operation: { request in
-        await recorder.record(request)
-      }
-    )
-  }
-
-  private static func descriptor(
-    for kind: CoreAgentRunAppIntentKind
-  ) -> CoreAgentAppIntentDescriptor {
-    switch kind {
-    case .openRun:
-      CoreAgentOpenRunIntent.coreAgentDescriptor
-    case .pauseRun:
-      CoreAgentPauseRunIntent.coreAgentDescriptor
-    case .continueRun:
-      CoreAgentContinueRunIntent.coreAgentDescriptor
-    }
-  }
-
-  private static func receipt(
-    id: String,
-    requirement: CoreAgentAppleConsentRequirement
-  ) -> CoreAgentAppleConsentReceipt {
-    CoreAgentAppleConsentReceipt.issue(
-      id: id,
-      issuerID: issuerID,
-      requirement: requirement,
-      signingKey: signingKey,
-      grantedAt: Date(timeIntervalSince1970: 1_799_999_900),
-      expiresAt: Date(timeIntervalSince1970: 1_800_000_100)
-    )
-  }
-
-  private static let issuerID = "coreagent.test.appintents"
-  private static let signingKey = CoreAgentAppleConsentSigningKey(
-    Data(repeating: 0x41, count: 32)
-  )!
 }
 
-private actor BridgeRecorder {
+actor BridgeRecorder {
   private var recordedEvents: [String] = []
 
   var events: [String] {
@@ -871,7 +656,7 @@ private actor BridgeRecorder {
   }
 }
 
-private actor RuntimeRecorder {
+actor RuntimeRecorder {
   private var recordedRequests: [CoreAgentRunAppIntentRuntimeRequest] = []
 
   var requests: [CoreAgentRunAppIntentRuntimeRequest] {
@@ -884,7 +669,7 @@ private actor RuntimeRecorder {
 }
 
 private final class CancellationProbe: @unchecked Sendable {
-  private let lock = NSLock()
+  let lock = NSLock()
   private var checks = 0
 
   func cancelAfterFirstCheck() -> Bool {
@@ -895,15 +680,16 @@ private final class CancellationProbe: @unchecked Sendable {
   }
 }
 
-private struct FakeRunDonationKey: Hashable, Sendable {
+struct FakeRunDonationKey: Hashable, Sendable {
   let kind: CoreAgentRunAppIntentKind
   let runID: String
 }
 
-private actor FakeRunDonationBackend: CoreAgentRunAppIntentDonationBackend {
-  private let tokens: [FakeRunDonationKey: CoreAgentAppIntentOSDonationToken]
-  private let deletedTokenResults: [CoreAgentAppIntentOSDonationToken:
-    [CoreAgentAppIntentOSDonationToken]]
+actor FakeRunDonationBackend: CoreAgentRunAppIntentDonationBackend {
+  let tokens: [FakeRunDonationKey: CoreAgentAppIntentOSDonationToken]
+  let deletedTokenResults:
+    [CoreAgentAppIntentOSDonationToken:
+      [CoreAgentAppIntentOSDonationToken]]
   private var recordedDonationRequests: [CoreAgentRunAppIntentDonationBackendRequest] = []
   private var recordedDeletedTokens: [CoreAgentAppIntentOSDonationToken] = []
 
@@ -929,8 +715,8 @@ private actor FakeRunDonationBackend: CoreAgentRunAppIntentDonationBackend {
     recordedDonationRequests.append(request)
     return tokens[FakeRunDonationKey(kind: request.kind, runID: request.runID)]
       ?? CoreAgentAppIntentOSDonationToken(
-      encodedIdentifier: Data("os:\(request.kind.rawValue):\(request.runID)".utf8)
-    )
+        encodedIdentifier: Data("os:\(request.kind.rawValue):\(request.runID)".utf8)
+      )
   }
 
   func deleteDonation(

@@ -6,16 +6,16 @@ import FoundationModels
 import Testing
 
 @Generable
-private struct TestAnswer: Sendable {
+struct TestAnswer: Sendable {
   let value: String
 }
 
 @Generable
-private struct EchoArguments: Sendable {
+struct EchoArguments: Sendable {
   let value: String
 }
 
-private actor InvocationCounter {
+actor InvocationCounter {
   private(set) var count = 0
   private(set) var values: [String] = []
 
@@ -25,7 +25,7 @@ private actor InvocationCounter {
   }
 }
 
-private struct EchoTool: Tool {
+struct EchoTool: Tool {
   let counter: InvocationCounter
   let name = "echo"
   let description = "Returns the supplied value."
@@ -37,7 +37,7 @@ private struct EchoTool: Tool {
   }
 }
 
-private struct SlowEchoTool: Tool {
+struct SlowEchoTool: Tool {
   let name = "slow_echo"
   let description = "Returns the supplied value after a delay."
 
@@ -48,7 +48,7 @@ private struct SlowEchoTool: Tool {
   }
 }
 
-private struct SchemaHiddenEchoTool: Tool {
+struct SchemaHiddenEchoTool: Tool {
   let name = "schema_hidden_echo"
   let description = "Keeps its argument schema out of instructions."
   let includesSchemaInInstructions = false
@@ -59,7 +59,7 @@ private struct SchemaHiddenEchoTool: Tool {
   }
 }
 
-private struct TestDynamicProfile: LanguageModelSession.DynamicProfile {
+struct TestDynamicProfile: LanguageModelSession.DynamicProfile {
   let instructions: String
 
   init(instructions: String = "Dynamic profile instructions.") {
@@ -74,7 +74,7 @@ private struct TestDynamicProfile: LanguageModelSession.DynamicProfile {
   }
 }
 
-private struct TestToolDynamicProfile: LanguageModelSession.DynamicProfile {
+struct TestToolDynamicProfile: LanguageModelSession.DynamicProfile {
   let tool: EchoTool
 
   var body: some LanguageModelSession.DynamicProfile {
@@ -86,11 +86,11 @@ private struct TestToolDynamicProfile: LanguageModelSession.DynamicProfile {
   }
 }
 
-private enum ProfileLifecycleError: Error {
+enum ProfileLifecycleError: Error {
   case intentional
 }
 
-private struct ThrowingLifecycleDynamicProfile: LanguageModelSession.DynamicProfile {
+struct ThrowingLifecycleDynamicProfile: LanguageModelSession.DynamicProfile {
   let tool: EchoTool
 
   var body: some LanguageModelSession.DynamicProfile {
@@ -105,7 +105,7 @@ private struct ThrowingLifecycleDynamicProfile: LanguageModelSession.DynamicProf
   }
 }
 
-private final class NonSendableProfileState {
+final class NonSendableProfileState {
   let instructions: String
 
   init(instructions: String) {
@@ -113,7 +113,7 @@ private final class NonSendableProfileState {
   }
 }
 
-private struct NonSendableStateProfile: LanguageModelSession.DynamicProfile {
+struct NonSendableStateProfile: LanguageModelSession.DynamicProfile {
   let state: NonSendableProfileState
 
   var body: some LanguageModelSession.DynamicProfile {
@@ -124,8 +124,8 @@ private struct NonSendableStateProfile: LanguageModelSession.DynamicProfile {
   }
 }
 
-private final class ProfileFactoryCounter: @unchecked Sendable {
-  private let lock = NSLock()
+final class ProfileFactoryCounter: @unchecked Sendable {
+  let lock = NSLock()
   private var value = 0
 
   func increment() {
@@ -137,7 +137,7 @@ private final class ProfileFactoryCounter: @unchecked Sendable {
   }
 }
 
-private struct TestCustomSegment: Transcript.CustomSegment {
+struct TestCustomSegment: Transcript.CustomSegment {
   struct Content: Codable, Equatable, Sendable {
     let value: String
   }
@@ -146,7 +146,7 @@ private struct TestCustomSegment: Transcript.CustomSegment {
   let content: Content
 }
 
-private actor RequestCapture {
+actor RequestCapture {
   private(set) var requests: [CoreAgentToolRequest] = []
 
   func append(_ request: CoreAgentToolRequest) {
@@ -154,7 +154,7 @@ private actor RequestCapture {
   }
 }
 
-private actor EventCapture {
+actor EventCapture {
   private(set) var events: [CoreAgentEvent] = []
 
   func append(_ event: CoreAgentEvent) {
@@ -162,7 +162,7 @@ private actor EventCapture {
   }
 }
 
-private actor PartialCount {
+actor PartialCount {
   private(set) var value = 0
 
   func increment() {
@@ -170,7 +170,7 @@ private actor PartialCount {
   }
 }
 
-private actor AuthorizationSignal {
+actor AuthorizationSignal {
   private(set) var started = false
 
   func markStarted() {
@@ -178,21 +178,21 @@ private actor AuthorizationSignal {
   }
 }
 
-private enum AuthorizationServiceError: Error {
+enum AuthorizationServiceError: Error {
   case unavailable
 }
 
-private struct FailingAuthorizationPolicy: CoreAgentToolPolicy {
+struct FailingAuthorizationPolicy: CoreAgentToolPolicy {
   func authorize(_ request: CoreAgentToolRequest) async throws {
     throw AuthorizationServiceError.unavailable
   }
 }
 
-private enum RetentionError: Error {
+enum RetentionError: Error {
   case shouldNotRunAutomatically
 }
 
-private actor ObserverGate {
+actor ObserverGate {
   private var isOpen = false
   private var waiters: [CheckedContinuation<Void, Never>] = []
 
@@ -213,7 +213,7 @@ private actor ObserverGate {
   }
 }
 
-private actor BooleanCapture {
+actor BooleanCapture {
   private(set) var values: [Bool] = []
 
   func append(_ value: Bool) {
@@ -221,7 +221,7 @@ private actor BooleanCapture {
   }
 }
 
-private actor SessionReference {
+actor SessionReference {
   private var session: CoreAgentSession?
 
   func set(_ session: CoreAgentSession) {
@@ -233,11 +233,11 @@ private actor SessionReference {
   }
 }
 
-private enum FailingCheckpointError: Error {
+enum FailingCheckpointError: Error {
   case intentional
 }
 
-private actor FailingCheckpointStore: CoreAgentCheckpointStore {
+actor FailingCheckpointStore: CoreAgentCheckpointStore {
   func loadCheckpoint(for key: String) throws -> CoreAgentCheckpoint? {
     nil
   }
@@ -682,491 +682,9 @@ struct CoreAgentTests {
       })
   }
 
-  @Test("Recreates a dynamic profile and restores only its native history")
-  func dynamicProfileRestore() async throws {
-    let store = InMemoryCheckpointStore()
-    let firstModel = RecordedLanguageModel(steps: [.response(text: "first")])
-    let first = try CoreAgentSession(
-      checkpointCompatibilityID: "assistant-profile-v1",
-      model: firstModel,
-      checkpointStore: store,
-      checkpointKey: "dynamic-profile"
-    ) {
-      TestDynamicProfile(instructions: "Old profile instructions.")
-    }
-    _ = try await first.respond(to: "One")
-
-    let secondModel = RecordedLanguageModel(steps: [.response(text: "second")])
-    let second = try CoreAgentSession(
-      checkpointCompatibilityID: "assistant-profile-v1",
-      model: secondModel,
-      checkpointStore: store,
-      checkpointKey: "dynamic-profile"
-    ) {
-      TestDynamicProfile(instructions: "New profile instructions.")
-    }
-    _ = try await second.respond(to: "Two")
-
-    let restored = try #require(secondModel.recorder.capturedTranscripts().first)
-    #expect(restored.history.count >= 3)
-    let instructionText = restored.compactMap { entry -> String? in
-      guard case .instructions(let instructions) = entry else { return nil }
-      return instructions.segments.compactMap { segment in
-        guard case .text(let text) = segment else { return nil }
-        return text.content
-      }.joined(separator: " ")
-    }.joined(separator: " ")
-    #expect(instructionText.contains("New profile instructions."))
-    #expect(!instructionText.contains("Old profile instructions."))
-
-    let incompatible = try CoreAgentSession(
-      checkpointCompatibilityID: "assistant-profile-v2",
-      model: RecordedLanguageModel(steps: [.response(text: "unused")]),
-      checkpointStore: store,
-      checkpointKey: "dynamic-profile"
-    ) {
-      TestDynamicProfile()
-    }
-    await #expect(throws: CoreAgentError.self) {
-      _ = try await incompatible.respond(to: "Mismatch")
-    }
-  }
-
-  @Test("Creates fresh non-Sendable profile state when rebuilding on reset")
-  func dynamicProfileSendingFactory() async throws {
-    let counter = ProfileFactoryCounter()
-    let model = RecordedLanguageModel(steps: [])
-    let session = try CoreAgentSession(
-      checkpointCompatibilityID: "stateful-profile-v1",
-      model: model
-    ) {
-      counter.increment()
-      return NonSendableStateProfile(state: NonSendableProfileState(instructions: "Stateful profile instructions."))
-    }
-
-    _ = try await session.transcript()
-    try await session.reset()
-
-    #expect(counter.count == 2)
-  }
-
-  @Test("Rejects retries for an opaque dynamic profile")
-  func dynamicProfileRetrySafety() throws {
-    let retry = try CoreAgentRetryPolicy(maximumAttempts: 2) { _ in true }
-
-    #expect(throws: CoreAgentError.self) {
-      _ = try CoreAgentSession(
-        checkpointCompatibilityID: "profile-v1",
-        model: RecordedLanguageModel(steps: [.response(text: "unused")]),
-        configuration: .init(
-          retryPolicy: retry,
-          allowsRetryAfterToolInvocation: true
-        )
-      ) {
-        TestDynamicProfile()
-      }
-    }
-  }
-
-  @Test("Audits a profile-owned tool even when the model continuation fails")
-  func dynamicProfileFailedToolAudit() async throws {
-    let counter = InvocationCounter()
-    let model = RecordedLanguageModel(steps: [
-      .toolCall(name: "echo", argumentsJSON: #"{"value":"side-effect"}"#),
-      .failure("continuation failed"),
-    ])
-    let echoTool = EchoTool(counter: counter)
-    let session = try CoreAgentSession(
-      checkpointCompatibilityID: "tool-profile-v1",
-      model: model,
-      scriptedTools: [echoTool]
-    ) {
-      TestToolDynamicProfile(tool: echoTool)
-    }
-
-    await #expect(throws: (any Error).self) {
-      _ = try await session.respond(to: "Use echo")
-    }
-
-    #expect(await counter.count == 1)
-    let run = try #require(await session.lastRun())
-    #expect(run.events.contains { $0.kind == .nativeToolCallRecorded })
-    #expect(run.events.contains { $0.kind == .nativeToolOutputRecorded })
-    #expect(run.events.last?.kind == .runFailed)
-  }
-
-  @Test("Marks profile tool audit as best effort when an inner hook hides its output")
-  func dynamicProfileLifecycleAuditBoundary() async throws {
-    let counter = InvocationCounter()
-    let echoTool = EchoTool(counter: counter)
-    let session = try CoreAgentSession(
-      checkpointCompatibilityID: "throwing-hook-profile-v1",
-      model: RecordedLanguageModel(steps: [
-        .toolCall(name: "echo", argumentsJSON: #"{"value":"side-effect"}"#)
-      ]),
-      scriptedTools: [echoTool],
-      scriptedSuppressProfileToolOutputAudit: true
-    ) {
-      ThrowingLifecycleDynamicProfile(tool: echoTool)
-    }
-
-    await #expect(throws: (any Error).self) {
-      _ = try await session.respond(to: "Use echo")
-    }
-
-    #expect(await counter.count == 1)
-    let run = try #require(await session.lastRun())
-    #expect(run.events.contains { $0.kind == .profileToolAuditBestEffort })
-    #expect(run.events.contains { $0.kind == .nativeToolCallRecorded })
-    #expect(!run.events.contains { $0.kind == .nativeToolOutputRecorded })
-  }
-
-  @Test("Applies bounded transcript retention only to persisted history")
-  func transcriptRetention() async throws {
-    let store = InMemoryCheckpointStore()
-    let session = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [
-        .response(text: "one"),
-        .response(text: "two"),
-      ]),
-      instructions: Instructions("Retain me."),
-      checkpointStore: store,
-      checkpointKey: "bounded",
-      transcriptRetention: .latestHistoryEntries(2)
-    )
-
-    _ = try await session.respond(to: "First")
-    _ = try await session.respond(to: "Second")
-
-    let checkpoint = try #require(await store.loadCheckpoint(for: "bounded"))
-    #expect(checkpoint.transcript.history.count == 2)
-    #expect(
-      checkpoint.transcript.contains { entry in
-        if case .instructions = entry { return true }
-        return false
-      })
-    #expect(try await session.transcript().history.count > 2)
-  }
-
-  @Test("Never truncates persisted history into an orphaned tool turn")
-  func transcriptRetentionKeepsTurnBoundaries() async throws {
-    let store = InMemoryCheckpointStore()
-    let session = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [
-        .toolCall(name: "echo", argumentsJSON: #"{"value":"turn"}"#),
-        .response(text: "done"),
-      ]),
-      tools: [EchoTool(counter: InvocationCounter())],
-      checkpointStore: store,
-      checkpointKey: "tool-turn",
-      transcriptRetention: .latestHistoryEntries(2)
-    )
-
-    _ = try await session.respond(to: "Use echo")
-
-    let checkpoint = try #require(await store.loadCheckpoint(for: "tool-turn"))
-    #expect(checkpoint.transcript.history.isEmpty)
-  }
-
-  @Test("Replaces restored instructions when current instructions are supplied")
-  func instructionRebasing() async throws {
-    let store = InMemoryCheckpointStore()
-    let first = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "saved")]),
-      instructions: Instructions("Old instructions"),
-      checkpointStore: store,
-      checkpointKey: "instructions"
-    )
-    _ = try await first.respond(to: "Save")
-
-    let model = RecordedLanguageModel(steps: [.response(text: "rebased")])
-    let second = try CoreAgentSession(
-      model: model,
-      instructions: Instructions("New instructions"),
-      checkpointStore: store,
-      checkpointKey: "instructions"
-    )
-    _ = try await second.respond(to: "Restore")
-
-    let transcript = try #require(model.recorder.capturedTranscripts().first)
-    let instructionText = transcript.compactMap { entry -> String? in
-      guard case .instructions(let instructions) = entry else { return nil }
-      return instructions.segments.compactMap { segment in
-        guard case .text(let text) = segment else { return nil }
-        return text.content
-      }.joined(separator: " ")
-    }.joined(separator: " ")
-    #expect(instructionText.contains("New instructions"))
-    #expect(!instructionText.contains("Old instructions"))
-  }
-
-  @Test("Rejects a checkpoint restored with a different toolset")
-  func checkpointConfigurationMismatch() async throws {
-    let store = InMemoryCheckpointStore()
-    let first = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "saved")]),
-      checkpointStore: store,
-      checkpointKey: "toolset"
-    )
-    _ = try await first.respond(to: "Save")
-
-    let second = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "unused")]),
-      tools: [EchoTool(counter: InvocationCounter())],
-      checkpointStore: store,
-      checkpointKey: "toolset"
-    )
-
-    await #expect(throws: CoreAgentError.self) {
-      _ = try await second.respond(to: "Restore")
-    }
-  }
-
-  @Test("File checkpoints encode and decode native transcripts")
-  func fileCheckpointRoundTrip() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let store = FileCheckpointStore(directory: directory)
-    let checkpoint = CoreAgentCheckpoint(
-      compatibilityRevision: "revision",
-      transcript: Transcript(entries: [
-        .prompt(.init(segments: [.text(.init(content: "persisted"))]))
-      ])
-    )
-
-    try await store.saveCheckpoint(checkpoint, for: "../../unsafe-key")
-    let restored = try #require(try await store.loadCheckpoint(for: "../../unsafe-key"))
-
-    #expect(restored.compatibilityRevision == "revision")
-    #expect(restored.transcript == checkpoint.transcript)
-    #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == 1)
-  }
-
-  @Test("File checkpoints reject typed metadata instead of silently erasing its type")
-  func fileCheckpointRejectsLossyMetadata() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let store = FileCheckpointStore(directory: directory)
-    let checkpoint = CoreAgentCheckpoint(
-      compatibilityRevision: "revision",
-      transcript: Transcript(entries: [
-        .prompt(
-          .init(
-            metadata: ["provider_flag": true],
-            segments: [.text(.init(content: "typed metadata"))]
-          )
-        )
-      ])
-    )
-
-    await #expect(throws: CoreAgentCheckpointStoreError.self) {
-      try await store.saveCheckpoint(checkpoint, for: "lossy")
-    }
-  }
-
-  @Test("File checkpoints reject custom segments without a rehydration codec")
-  func fileCheckpointRejectsCustomSegments() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let store = FileCheckpointStore(directory: directory)
-    let custom = TestCustomSegment(
-      id: "video",
-      content: .init(value: "provider-specific")
-    )
-    let checkpoint = CoreAgentCheckpoint(
-      compatibilityRevision: "revision",
-      transcript: Transcript(entries: [
-        .prompt(.init(segments: [.custom(custom)]))
-      ])
-    )
-
-    await #expect(throws: CoreAgentCheckpointStoreError.self) {
-      try await store.saveCheckpoint(checkpoint, for: "custom")
-    }
-  }
-
-  @Test("Checkpoint failures are recorded without turning a completed side effect into a retry")
-  func checkpointFailureRecordsAndContinues() async throws {
-    let session = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "completed")]),
-      checkpointStore: FailingCheckpointStore()
-    )
-
-    let response = try await session.respond(to: "Complete")
-
-    #expect(response.content == "completed")
-    #expect(response.run.events.contains { $0.kind == .transcriptCheckpointFailed })
-    #expect(response.run.events.last?.kind == .runCompleted)
-  }
-
-  @Test("Skips automatic retention work when no checkpoint store is configured")
-  func disabledPersistenceSkipsRetention() async throws {
-    let session = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "completed")]),
-      configuration: .init(checkpointFailurePolicy: .failRun),
-      transcriptRetention: .custom { _ in
-        throw RetentionError.shouldNotRunAutomatically
-      }
-    )
-
-    let response = try await session.respond(to: "Complete without persistence")
-
-    #expect(response.content == "completed")
-    #expect(!response.run.events.contains { $0.kind == .transcriptCheckpointFailed })
-    await #expect(throws: RetentionError.self) {
-      _ = try await session.checkpoint()
-    }
-  }
-
-  @Test("Receipt verification detects tampering")
-  func receiptTampering() async throws {
-    let response = try await CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "ok")])
-    ).respond(to: "Receipt")
-    let valid = try CoreAgentRunReceipt(run: response.run)
-    let first = try #require(valid.receipts.first)
-    let changedEvent = CoreAgentEvent(
-      id: first.event.id,
-      runID: first.event.runID,
-      timestamp: first.event.timestamp,
-      kind: first.event.kind,
-      message: "tampered",
-      attributes: first.event.attributes
-    )
-    var changedReceipts = valid.receipts
-    changedReceipts[0] = CoreAgentEventReceipt(
-      index: first.index,
-      previousHash: first.previousHash,
-      hash: first.hash,
-      event: changedEvent
-    )
-    let tampered = CoreAgentRunReceipt(
-      runID: valid.runID,
-      receipts: changedReceipts,
-      rootHash: valid.rootHash
-    )
-
-    #expect(valid.verify())
-    #expect(!tampered.verify())
-
-    let changedRunID = CoreAgentRunReceipt(
-      runID: UUID(),
-      receipts: valid.receipts,
-      rootHash: valid.rootHash
-    )
-    #expect(!changedRunID.verify())
-  }
-
-  @Test("Exported receipts decode and verify with stable date encoding")
-  func receiptExportRoundTrip() async throws {
-    let response = try await CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "ok")])
-    ).respond(to: "Export")
-    let exporter = CoreAgentReceiptExporter()
-
-    let decoded = try exporter.decode(exporter.data(for: response.run))
-
-    #expect(decoded.verify())
-  }
-
-  @Test("Redacts common credentials before observers and receipts see them")
-  func eventRedaction() async throws {
-    let capture = EventCapture()
-    let model = RecordedLanguageModel(steps: [.failure("Bearer super-secret-token")])
-    let session = try CoreAgentSession(
-      model: model,
-      observers: [ClosureCoreAgentObserver { await capture.append($0) }]
-    )
-
-    await #expect(throws: (any Error).self) {
-      _ = try await session.respond(to: "Fail")
-    }
-
-    await session.flushObservers()
-    let messages = await capture.events.map(\.message).joined(separator: "\n")
-    #expect(!messages.contains("super-secret-token"))
-    #expect(messages.contains("[REDACTED]"))
-  }
-
-  @Test("Bounds a stalled observer and times out flush instead of blocking the runtime")
-  func boundedObserverDelivery() async throws {
-    let gate = ObserverGate()
-    let capture = EventCapture()
-    let session = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "done")]),
-      observers: [
-        ClosureCoreAgentObserver { event in
-          await gate.wait()
-          await capture.append(event)
-        }
-      ],
-      observerDeliveryConfiguration: .init(
-        maximumPendingEvents: 1,
-        overflowPolicy: .dropNewest,
-        defaultFlushTimeout: .milliseconds(10)
-      )
-    )
-
-    let response = try await session.respond(to: "Do not wait for the observer")
-
-    let timedOut = await session.flushObservers()
-    #expect(timedOut.status == .timedOut)
-    #expect(!timedOut.deliveredAllEvents)
-    await gate.open()
-    let drained = await session.flushObservers(timeout: .seconds(1))
-    #expect(drained.status == .drained)
-    #expect(drained.cumulativeDroppedEventCount > 0)
-    #expect(!drained.deliveredAllEvents)
-    #expect(await capture.events.count < response.run.events.count)
-  }
-
-  @Test("Reports a cancelled observer flush separately from a timeout")
-  func cancelledObserverFlush() async throws {
-    let gate = ObserverGate()
-    let session = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "done")]),
-      observers: [ClosureCoreAgentObserver { _ in await gate.wait() }]
-    )
-    _ = try await session.respond(to: "Wait")
-    let flush = Task { await session.flushObservers(timeout: .seconds(5)) }
-
-    flush.cancel()
-
-    #expect(await flush.value.status == .cancelled)
-    await gate.open()
-    #expect(await session.flushObservers(timeout: .seconds(1)).deliveredAllEvents)
-  }
-
-  @Test("Rejects a reentrant observer flush without deadlocking")
-  func reentrantObserverFlush() async throws {
-    let reference = SessionReference()
-    let results = BooleanCapture()
-    let session = try CoreAgentSession(
-      model: RecordedLanguageModel(steps: [.response(text: "done")]),
-      observers: [
-        ClosureCoreAgentObserver { _ in
-          guard let session = await reference.get() else { return }
-          let flush = await session.flushObservers(timeout: .seconds(1))
-          await results.append(flush.status == .reentrant)
-        }
-      ]
-    )
-    await reference.set(session)
-
-    _ = try await session.respond(to: "Observe")
-
-    #expect(await session.flushObservers(timeout: .seconds(1)).deliveredAllEvents)
-    let values = await results.values
-    #expect(!values.isEmpty)
-    #expect(values.allSatisfy { $0 })
-  }
-
 }
 
-private actor StringCapture {
+actor StringCapture {
   private(set) var values: [String] = []
 
   func append(_ value: String) {
