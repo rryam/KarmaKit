@@ -33,7 +33,9 @@ struct CoreAgentDeepHITLTests {
     #expect(response.content == "approved")
     #expect(await recorder.values == ["original"])
     #expect(await reviewer.requests.map(\.toolRequest.manifest.name) == ["hitl_probe"])
-    #expect(await reviewer.requests.first?.allowedDecisions == CoreAgentDeepHITLRule.defaultAllowedDecisions)
+    #expect(
+      await reviewer.requests.first?.allowedDecisions
+        == CoreAgentDeepHITLRule.defaultAllowedDecisions)
     #expect(response.run.events.contains { $0.kind == .toolInterventionApproved })
     #expect(response.run.events.contains { $0.kind == .toolExecutionCompleted })
     #expect(response.run.occursBefore(.toolInterventionApproved, .toolAuthorizationStarted))
@@ -67,13 +69,14 @@ struct CoreAgentDeepHITLTests {
 
     #expect(response.content == "edited")
     #expect(await recorder.values == ["edited"])
-    #expect(response.run.events.contains { event in
-      event.kind == .toolInterventionEdited
-        && event.attributes["edited_arguments_digest"] != nil
-        && event.attributes["arguments_source"] == "intervention_edit"
-        && event.attributes["requested_arguments_json"]?.contains("original") == true
-        && event.attributes["executed_arguments_json"]?.contains("edited") == true
-    })
+    #expect(
+      response.run.events.contains { event in
+        event.kind == .toolInterventionEdited
+          && event.attributes["edited_arguments_digest"] != nil
+          && event.attributes["arguments_source"] == "intervention_edit"
+          && event.attributes["requested_arguments_json"]?.contains("original") == true
+          && event.attributes["executed_arguments_json"]?.contains("edited") == true
+      })
     let authorization = try #require(
       response.run.events.first { $0.kind == .toolAuthorizationSucceeded }
     )
@@ -290,7 +293,8 @@ struct CoreAgentDeepHITLTests {
       response.run.events.first { $0.kind == .nativeToolOutputRecorded }
     )
     #expect(nativeOutput.attributes["output_source"] == "intervention_respond")
-    #expect(nativeOutput.attributes["tool_invocation_id"] == responseEvent.attributes["invocation_id"])
+    #expect(
+      nativeOutput.attributes["tool_invocation_id"] == responseEvent.attributes["invocation_id"])
     let transcripts = model.recorder.capturedTranscripts()
     #expect(transcripts.count == 2)
     #expect(transcripts[1].containsText("Use the account ending in 1234."))
@@ -572,12 +576,13 @@ private struct PrecheckFailingInterventionPolicy: CoreAgentToolInterventionPolic
   }
 }
 
-private extension CoreAgentRun {
-  var eventKinds: [CoreAgentEventKind] {
+extension CoreAgentRun {
+  fileprivate var eventKinds: [CoreAgentEventKind] {
     events.map(\.kind)
   }
 
-  func occursBefore(_ earlier: CoreAgentEventKind, _ later: CoreAgentEventKind) -> Bool {
+  fileprivate func occursBefore(_ earlier: CoreAgentEventKind, _ later: CoreAgentEventKind) -> Bool
+  {
     guard let earlierIndex = eventKinds.firstIndex(of: earlier),
       let laterIndex = eventKinds.firstIndex(of: later)
     else {
@@ -587,15 +592,15 @@ private extension CoreAgentRun {
   }
 }
 
-private extension Optional where Wrapped == any Error {
-  func containsHITLError(_ expected: CoreAgentDeepHITLError) -> Bool {
+extension Optional where Wrapped == any Error {
+  fileprivate func containsHITLError(_ expected: CoreAgentDeepHITLError) -> Bool {
     guard let self else { return false }
     return self.containsHITLError(expected)
   }
 }
 
-private extension Error {
-  func containsHITLError(_ expected: CoreAgentDeepHITLError) -> Bool {
+extension Error {
+  fileprivate func containsHITLError(_ expected: CoreAgentDeepHITLError) -> Bool {
     if let error = self as? CoreAgentDeepHITLError {
       return error == expected
     }
@@ -606,8 +611,8 @@ private extension Error {
   }
 }
 
-private extension Transcript {
-  func containsText(_ expected: String) -> Bool {
+extension Transcript {
+  fileprivate func containsText(_ expected: String) -> Bool {
     contains { entry in
       switch entry {
       case .instructions(let instructions):
@@ -629,8 +634,8 @@ private extension Transcript {
   }
 }
 
-private extension [Transcript.Segment] {
-  func containsText(_ expected: String) -> Bool {
+extension [Transcript.Segment] {
+  fileprivate func containsText(_ expected: String) -> Bool {
     contains { segment in
       if case .text(let text) = segment {
         return text.content.contains(expected)

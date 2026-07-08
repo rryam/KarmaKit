@@ -19,7 +19,7 @@ struct CoreAgentDeepRLMTests {
               content: "done:\(request.description)"
             )
           }
-        ),
+        )
       ]
     )
     let orchestrator = CoreAgentDeepRLMOrchestrator(
@@ -60,7 +60,7 @@ struct CoreAgentDeepRLMTests {
               content: request.description
             )
           }
-        ),
+        )
       ]
     )
     let orchestrator = CoreAgentDeepRLMOrchestrator(
@@ -83,20 +83,21 @@ struct CoreAgentDeepRLMTests {
   @Test("FoundationModels RLM decomposer filters unknown subagents")
   func foundationModelsRLMDecomposerFiltersUnknownSubagents() async throws {
     let model = RecordedLanguageModel(steps: [
-      .response(text: """
-        {
-          "subtasks": [
-            {
-              "description": "Research the topic",
-              "subagentType": "researcher"
-            },
-            {
-              "description": "Should be ignored",
-              "subagentType": "unknown"
-            }
-          ]
-        }
-        """),
+      .response(
+        text: """
+          {
+            "subtasks": [
+              {
+                "description": "Research the topic",
+                "subagentType": "researcher"
+              },
+              {
+                "description": "Should be ignored",
+                "subagentType": "unknown"
+              }
+            ]
+          }
+          """)
     ])
     let session = try CoreAgentSession(model: model)
     let decomposer = CoreAgentDeepFoundationModelsRLMDecomposer(session: session)

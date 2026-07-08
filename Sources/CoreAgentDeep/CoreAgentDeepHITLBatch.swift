@@ -243,7 +243,7 @@ public struct ClosureCoreAgentDeepHITLBatchReviewer: CoreAgentDeepHITLBatchRevie
   public init(
     _ handler:
       @escaping @Sendable (CoreAgentDeepHITLBatchReviewRequest) async throws
-        -> [CoreAgentDeepHITLBatchDecision]
+      -> [CoreAgentDeepHITLBatchDecision]
   ) {
     self.handler = handler
   }
@@ -636,8 +636,8 @@ public enum CoreAgentDeepHITLBatchResolver {
   }
 }
 
-public extension CoreAgentGraphRuntimeContext {
-  func requestDeepHITLReview(
+extension CoreAgentGraphRuntimeContext {
+  public func requestDeepHITLReview(
     _ bundle: CoreAgentDeepHITLReviewBundle,
     id: CoreAgentGraphInterruptID? = nil
   ) throws -> [CoreAgentDeepHITLBatchResolution] {

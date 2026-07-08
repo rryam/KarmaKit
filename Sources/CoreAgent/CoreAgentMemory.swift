@@ -39,10 +39,11 @@ public struct CoreAgentCheckpoint: Codable, Sendable {
     self.savedAt = try container.decode(Date.self, forKey: .savedAt)
     self.compatibilityRevision = try container.decode(String.self, forKey: .compatibilityRevision)
     self.transcript = try container.decode(Transcript.self, forKey: .transcript)
-    self.artifacts = try container.decodeIfPresent(
-      [CoreAgentCheckpointArtifact].self,
-      forKey: .artifacts
-    ) ?? []
+    self.artifacts =
+      try container.decodeIfPresent(
+        [CoreAgentCheckpointArtifact].self,
+        forKey: .artifacts
+      ) ?? []
   }
 
   public func encode(to encoder: any Encoder) throws {
@@ -140,7 +141,6 @@ public enum CoreAgentCheckpointPersistenceValidation {
     }
   }
 
-
   public static func sanitizedForFilePersistence(_ transcript: Transcript) -> Transcript {
     var sanitized = Transcript()
     for entry in transcript {
@@ -149,7 +149,8 @@ public enum CoreAgentCheckpointPersistenceValidation {
     return sanitized
   }
 
-  private static func sanitizeEntryForFilePersistence(_ entry: Transcript.Entry) -> Transcript.Entry {
+  private static func sanitizeEntryForFilePersistence(_ entry: Transcript.Entry) -> Transcript.Entry
+  {
     switch entry {
     case .prompt(let prompt):
       guard !prompt.metadata.isEmpty else { return entry }

@@ -28,7 +28,7 @@ jobs:
 
       - name: Large file detection
         env:
-          COREAGENT_MAX_FILE_LINES: 6000
+          COREAGENT_MAX_FILE_LINES: 800
         run: ./scripts/check-large-files.sh
 
       - name: Duplicate code scan

@@ -36,6 +36,7 @@ public enum RecordedLanguageModelStep: Sendable {
   case failure(String)
 }
 
+// swift-format-ignore
 public final class RecordedLanguageModelRecorder: @unchecked Sendable, CoreAgentScriptedModelResponding {
   private let lock = NSLock()
   private var steps: [RecordedLanguageModelStep]
@@ -151,7 +152,8 @@ public final class RecordedLanguageModelRecorder: @unchecked Sendable, CoreAgent
         )
       )
 
-    case .response(let text, let inputTokens, let cachedInputTokens, let outputTokens, let reasoningTokens):
+    case .response(
+      let text, let inputTokens, let cachedInputTokens, let outputTokens, let reasoningTokens):
       let (partial, rawContent) = try makePartial(text, contentType: contentType)
       await onPartialResponse(partial, rawContent)
       return CoreAgentScriptedStreamSnapshot(
@@ -186,7 +188,6 @@ public final class RecordedLanguageModelRecorder: @unchecked Sendable, CoreAgent
       )
     }
   }
-
 
   private func makePartial<Content: Generable & Sendable>(
     _ text: String,
@@ -266,7 +267,6 @@ public struct RecordedLanguageModel: Sendable {
   }
 }
 
-
 public struct RecordedLanguageModelUnimplementedExecutor: LanguageModelExecutor {
   public typealias Model = RecordedLanguageModel
 
@@ -289,11 +289,12 @@ public struct RecordedLanguageModelUnimplementedExecutor: LanguageModelExecutor 
   }
 
   nonisolated(nonsending)
-  public func respond(
-    to request: LanguageModelExecutorGenerationRequest,
-    model: RecordedLanguageModel,
-    streamingInto channel: LanguageModelExecutorGenerationChannel
-  ) async throws {
+    public func respond(
+      to request: LanguageModelExecutorGenerationRequest,
+      model: RecordedLanguageModel,
+      streamingInto channel: LanguageModelExecutorGenerationChannel
+    ) async throws
+  {
     _ = (request, model, channel, recorder)
     throw RecordedLanguageModelError.scriptedFailure(
       "RecordedLanguageModel must run through CoreAgentSession scripted routing."

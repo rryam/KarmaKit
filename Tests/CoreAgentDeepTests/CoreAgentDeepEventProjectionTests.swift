@@ -180,7 +180,7 @@ struct CoreAgentDeepEventProjectionTests {
           argsJSON: #"{"path":"/workspace/notes.md"}"#,
           description: "Review second write",
           toolCallID: "tool-2"
-        )
+        ),
       ],
       reviewConfigs: [
         CoreAgentDeepHITLReviewConfig(
@@ -192,7 +192,7 @@ struct CoreAgentDeepEventProjectionTests {
           actionName: "write_file",
           allowedDecisions: [.respond],
           description: "Human review"
-        )
+        ),
       ]
     )
 

@@ -68,7 +68,7 @@ public struct ClosureCoreAgentDeepSubagentSpawnFactory: CoreAgentDeepSubagentSpa
   public init(
     _ handler:
       @escaping @Sendable (CoreAgentDeepSubagentDescriptorProposal) async throws
-        -> any CoreAgentDeepSubagent
+      -> any CoreAgentDeepSubagent
   ) {
     self.handler = handler
   }
@@ -100,6 +100,7 @@ public struct CoreAgentDeepStaticSubagentSpawnFactory: CoreAgentDeepSubagentSpaw
 
 @Generable
 public struct CoreAgentDeepProposeSubagentArguments: Sendable {
+  // swift-format-ignore: AlwaysUseLowerCamelCase
   public let task_description: String
 
   public init(task_description: String) {
@@ -143,7 +144,8 @@ public struct CoreAgentDeepProposeSubagentTool: Tool {
     let invocation = CoreAgentToolInvocation.current
     let context = CoreAgentDeepSubagentDescriptorGenerationContext(
       parentRunID: invocation?.runID,
-      requestedTaskDescriptionDigest: CoreAgentDeepSubagentDescriptorProposalBuilder
+      requestedTaskDescriptionDigest:
+        CoreAgentDeepSubagentDescriptorProposalBuilder
         .proposalDigest(name: "task", description: taskDescription)
     )
     let proposals = try await generator.proposeDescriptors(context: context)
@@ -176,8 +178,11 @@ public struct CoreAgentDeepProposeSubagentTool: Tool {
 
 @Generable
 public struct CoreAgentDeepApproveSubagentArguments: Sendable {
+  // swift-format-ignore: AlwaysUseLowerCamelCase
   public let proposal_id: String
+  // swift-format-ignore: AlwaysUseLowerCamelCase
   public let proposal_digest: String
+  // swift-format-ignore: AlwaysUseLowerCamelCase
   public let approver_id: String
 
   public init(

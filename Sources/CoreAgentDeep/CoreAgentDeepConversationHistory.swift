@@ -308,19 +308,21 @@ public struct CoreAgentDeepConversationHistoryCompactor: Sendable {
     offload: CoreAgentDeepConversationHistoryOffload,
     offloadedHistory: [Transcript.Entry]
   ) -> String {
-    let sampledEntries = offloadedHistory
+    let sampledEntries =
+      offloadedHistory
       .prefix(configuration.summaryEntryLimit)
       .compactMap(entrySummary)
-    let entries = sampledEntries.isEmpty
+    let entries =
+      sampledEntries.isEmpty
       ? "- No text-only excerpts were available."
       : sampledEntries.map { "- \($0)" }.joined(separator: "\n")
     return """
-    COREAGENT_DEEP_CONVERSATION_HISTORY_OFFLOADED_V1 artifact_id=\(offload.id) offloaded_entries=\(offload.offloadedHistoryEntryCount) retained_entries=\(offload.retainedHistoryEntryCount) original_history_entries=\(offload.originalHistoryEntryCount)
-    The full native transcript snapshot is registered as checkpoint artifact metadata. This summary is a lossy projection for continuity only.
+      COREAGENT_DEEP_CONVERSATION_HISTORY_OFFLOADED_V1 artifact_id=\(offload.id) offloaded_entries=\(offload.offloadedHistoryEntryCount) retained_entries=\(offload.retainedHistoryEntryCount) original_history_entries=\(offload.originalHistoryEntryCount)
+      The full native transcript snapshot is registered as checkpoint artifact metadata. This summary is a lossy projection for continuity only.
 
-    Summary excerpts:
-    \(entries)
-    """
+      Summary excerpts:
+      \(entries)
+      """
   }
 
   private func entrySummary(_ entry: Transcript.Entry) -> String? {
@@ -473,8 +475,8 @@ public struct CoreAgentDeepConversationHistoryCompactor: Sendable {
   }
 }
 
-public extension CoreAgentTranscriptRetention {
-  static func deepConversationHistory(
+extension CoreAgentTranscriptRetention {
+  public static func deepConversationHistory(
     filesystem: any CoreAgentDeepFilesystemBackend,
     configuration: CoreAgentDeepConversationHistoryConfiguration = .init(),
     redactionPolicy: CoreAgentRedactionPolicy = .standard,
@@ -482,22 +484,23 @@ public extension CoreAgentTranscriptRetention {
   ) -> CoreAgentTranscriptRetention {
     .customPreparation(
       prepare: { transcript in
-      let compactor = CoreAgentDeepConversationHistoryCompactor(
-        filesystem: filesystem,
-        configuration: configuration,
-        redactionPolicy: redactionPolicy
-      )
-      return try await compactor.prepareForCheckpoint(
-        transcript: transcript,
-        scopeID: await scopeID()
-      )
-    }, remove: { artifacts in
-      let compactor = CoreAgentDeepConversationHistoryCompactor(
-        filesystem: filesystem,
-        configuration: configuration,
-        redactionPolicy: redactionPolicy
-      )
-      try await compactor.removeCheckpointArtifacts(artifacts)
-    })
+        let compactor = CoreAgentDeepConversationHistoryCompactor(
+          filesystem: filesystem,
+          configuration: configuration,
+          redactionPolicy: redactionPolicy
+        )
+        return try await compactor.prepareForCheckpoint(
+          transcript: transcript,
+          scopeID: await scopeID()
+        )
+      },
+      remove: { artifacts in
+        let compactor = CoreAgentDeepConversationHistoryCompactor(
+          filesystem: filesystem,
+          configuration: configuration,
+          redactionPolicy: redactionPolicy
+        )
+        try await compactor.removeCheckpointArtifacts(artifacts)
+      })
   }
 }

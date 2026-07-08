@@ -81,9 +81,11 @@ struct CoreAgentDeepHITLExecutionTests {
       backend: backend
     )
 
-    await #expect(throws: CoreAgentDeepHITLError.missingExecutableManifest(
-      toolName: "append_file"
-    )) {
+    await #expect(
+      throws: CoreAgentDeepHITLError.missingExecutableManifest(
+        toolName: "append_file"
+      )
+    ) {
       _ = try await executor.execute(
         action,
         runID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
@@ -106,9 +108,11 @@ struct CoreAgentDeepHITLExecutionTests {
       backend: backend
     )
 
-    await #expect(throws: CoreAgentDeepHITLError.invalidExecutableArguments(
-      toolName: "append_file"
-    )) {
+    await #expect(
+      throws: CoreAgentDeepHITLError.invalidExecutableArguments(
+        toolName: "append_file"
+      )
+    ) {
       _ = try await executor.execute(
         action,
         runID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
@@ -132,9 +136,11 @@ struct CoreAgentDeepHITLExecutionTests {
       backend: backend
     )
 
-    await #expect(throws: CoreAgentDeepHITLError.invalidRequestedArguments(
-      toolName: "write_file"
-    )) {
+    await #expect(
+      throws: CoreAgentDeepHITLError.invalidRequestedArguments(
+        toolName: "write_file"
+      )
+    ) {
       _ = try await executor.execute(
         action,
         runID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
@@ -169,7 +175,8 @@ struct CoreAgentDeepHITLExecutionTests {
     #expect(requests.map(\.manifest.name) == ["append_file", "append_file"])
   }
 
-  @Test("Graph HITL executable dispatch changes invocation identity when executable arguments change")
+  @Test(
+    "Graph HITL executable dispatch changes invocation identity when executable arguments change")
   func executableDispatchChangesInvocationIdentityWhenExecutableArgumentsChange() async throws {
     let firstAction = try Self.retargetedAction(
       argsJSON: #"{"path":"/safe/report.md","content":"first"}"#
@@ -195,7 +202,9 @@ struct CoreAgentDeepHITLExecutionTests {
     #expect(first.executableArgumentsDigest != second.executableArgumentsDigest)
   }
 
-  @Test("Graph HITL executable dispatch keeps invocation identity stable for canonical argument equivalents")
+  @Test(
+    "Graph HITL executable dispatch keeps invocation identity stable for canonical argument equivalents"
+  )
   func executableDispatchKeepsInvocationIdentityStableForCanonicalArgumentEquivalents()
     async throws
   {
@@ -246,7 +255,8 @@ struct CoreAgentDeepHITLExecutionTests {
     #expect(first.request.invocationID != second.request.invocationID)
   }
 
-  @Test("Graph HITL executable dispatch changes invocation identity when graph call identity changes")
+  @Test(
+    "Graph HITL executable dispatch changes invocation identity when graph call identity changes")
   func executableDispatchChangesInvocationIdentityWhenGraphCallIdentityChanges() async throws {
     let firstAction = try Self.retargetedAction(toolCallID: "call-1")
     let secondAction = try Self.retargetedAction(toolCallID: "call-2")
@@ -294,7 +304,8 @@ struct CoreAgentDeepHITLExecutionTests {
     #expect(first.request.invocationID != second.request.invocationID)
   }
 
-  @Test("Graph HITL executable dispatch returns redacted requested and executable argument evidence")
+  @Test(
+    "Graph HITL executable dispatch returns redacted requested and executable argument evidence")
   func executableDispatchReturnsRedactedArgumentEvidence() async throws {
     let action = try Self.retargetedAction(
       requestedArgsJSON: #"{"path":"/tmp/report.md","api_key":"raw-key"}"#,
@@ -317,7 +328,8 @@ struct CoreAgentDeepHITLExecutionTests {
 
     #expect(result.requestedArgumentsDigest != result.executableArgumentsDigest)
     #expect(result.requestedArgumentsDigest == CoreAgentArgumentAudit.digest(requestedArguments))
-    #expect(result.executableArgumentsDigest == CoreAgentArgumentAudit.digest(result.request.arguments))
+    #expect(
+      result.executableArgumentsDigest == CoreAgentArgumentAudit.digest(result.request.arguments))
     #expect(!result.requestedArgumentsRedactedJSON.contains("raw-key"))
     #expect(!result.executableArgumentsRedactedJSON.contains("raw-password"))
     #expect(result.requestedArgumentsRedactedJSON.contains("[REDACTED]"))
@@ -349,9 +361,11 @@ struct CoreAgentDeepHITLExecutionTests {
 
   @Test("Duplicate executable target manifests fail closed at executor construction")
   func duplicateExecutableTargetManifestsFailClosedAtConstruction() {
-    #expect(throws: CoreAgentDeepHITLError.duplicateExecutableManifest(
-      toolName: "append_file"
-    )) {
+    #expect(
+      throws: CoreAgentDeepHITLError.duplicateExecutableManifest(
+        toolName: "append_file"
+      )
+    ) {
       _ = try CoreAgentDeepHITLExecutableActionExecutor(
         manifests: [
           Self.manifest(name: "append_file"),
@@ -386,9 +400,11 @@ struct CoreAgentDeepHITLExecutionTests {
       ]
     )
     let identity = try CoreAgentDeepHITLBatchResolver.identities(for: bundle)[0]
-    let resume = CoreAgentDeepHITLBatchResume(interruptID: "deep-hitl", decisions: [
-      .edit(action: identity, name: "append_file", argsJSON: argsJSON)
-    ])
+    let resume = CoreAgentDeepHITLBatchResume(
+      interruptID: "deep-hitl",
+      decisions: [
+        .edit(action: identity, name: "append_file", argsJSON: argsJSON)
+      ])
     let resolutions = try CoreAgentDeepHITLBatchResolver.resolve(
       bundle: bundle,
       resume: resume,

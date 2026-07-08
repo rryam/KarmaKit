@@ -94,9 +94,9 @@ public enum CoreAgentEngineStoreError: Error, Equatable, Sendable {
   )
 }
 
-public extension CoreAgentEngineStore {
+extension CoreAgentEngineStore {
   @discardableResult
-  func ingest(
+  public func ingest(
     _ run: CoreAgentRun,
     projectID: String,
     threadID: String? = nil
@@ -104,11 +104,11 @@ public extension CoreAgentEngineStore {
     try await ingest(run, projectID: projectID, threadID: threadID)
   }
 
-  func traces(projectID: String) async -> [CoreAgentEngineTrace] {
+  public func traces(projectID: String) async -> [CoreAgentEngineTrace] {
     await traces(projectID: projectID, threadID: nil)
   }
 
-  func issues(projectID: String) async -> [CoreAgentEngineIssue] {
+  public func issues(projectID: String) async -> [CoreAgentEngineIssue] {
     await issues(projectID: projectID, status: nil)
   }
 }
@@ -255,7 +255,8 @@ public actor InMemoryCoreAgentEngineStore: CoreAgentEngineStore {
       let existingRuns = Set(existing.contributingRunIDs)
       let incomingRuns = Set(issue.contributingRunIDs)
       let hasNewRuns = !incomingRuns.isSubset(of: existingRuns)
-      let mergedRunIDs = existing.contributingRunIDs
+      let mergedRunIDs =
+        existing.contributingRunIDs
         + issue.contributingRunIDs.filter { !existingRuns.contains($0) }
       let nextStatus =
         existing.status == .resolved && hasNewRuns
@@ -352,9 +353,11 @@ public struct CoreAgentEngineIssueScanner: Sendable {
 
     var issues: [CoreAgentEngineIssue] = []
     for fingerprint in groups.keys.sorted() {
-      guard let evidence = groups[fingerprint]?.sorted(by: { lhs, rhs in
-        lhs.trace.run.startedAt < rhs.trace.run.startedAt
-      }) else {
+      guard
+        let evidence = groups[fingerprint]?.sorted(by: { lhs, rhs in
+          lhs.trace.run.startedAt < rhs.trace.run.startedAt
+        })
+      else {
         continue
       }
       let first = evidence[0]

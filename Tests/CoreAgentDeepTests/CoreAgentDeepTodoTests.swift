@@ -151,7 +151,9 @@ struct CoreAgentDeepTodoTests {
       )
     )
 
-    #expect(await store.todos() == [CoreAgentDeepTodo(content: "Second direct call", status: .inProgress)])
+    #expect(
+      await store.todos() == [CoreAgentDeepTodo(content: "Second direct call", status: .inProgress)]
+    )
   }
 
   @Test("write_todos lifecycle cleanup clears a finished run scope")
@@ -177,9 +179,10 @@ struct CoreAgentDeepTodoTests {
       )
     )
 
-    #expect(await store.todos() == [
-      CoreAgentDeepTodo(content: "Same run scope after cleanup", status: .completed)
-    ])
+    #expect(
+      await store.todos() == [
+        CoreAgentDeepTodo(content: "Same run scope after cleanup", status: .completed)
+      ])
   }
 
   @Test("Todos plugin binds write_todos to the CoreAgent run turn scope")
@@ -212,9 +215,10 @@ struct CoreAgentDeepTodoTests {
     let run = try #require(await session.lastRun())
 
     #expect(turnID == run.id.uuidString.lowercased())
-    #expect(await store.todos() == [
-      CoreAgentDeepTodo(content: "Plan the work", status: .pending)
-    ])
+    #expect(
+      await store.todos() == [
+        CoreAgentDeepTodo(content: "Plan the work", status: .pending)
+      ])
   }
 
   @Test("Todos plugin allows one write per later CoreAgent run")
@@ -244,9 +248,10 @@ struct CoreAgentDeepTodoTests {
     _ = try await session.respond(to: "Write todos once.")
     _ = try await session.respond(to: "Write todos once again.")
 
-    #expect(await store.todos() == [
-      CoreAgentDeepTodo(content: "Second run", status: .completed)
-    ])
+    #expect(
+      await store.todos() == [
+        CoreAgentDeepTodo(content: "Second run", status: .completed)
+      ])
   }
 }
 

@@ -40,7 +40,7 @@ public struct ClosureCoreAgentDeepRLMDecomposer: CoreAgentDeepRLMDecomposer {
   public init(
     _ handler:
       @escaping @Sendable (CoreAgentDeepRLMDecompositionRequest) async throws
-        -> [CoreAgentDeepRLMSubtask]
+      -> [CoreAgentDeepRLMSubtask]
   ) {
     self.handler = handler
   }
@@ -181,8 +181,8 @@ public struct CoreAgentDeepRLMOrchestrator: Sendable {
             maximumDepth: budget.maximumDepth,
             delegationsUsed: results.count,
             maximumDelegations: budget.maximumDelegations,
-      totalTokensUsed: 0,
-      maximumTotalTokens: budget.maximumTotalTokens
+            totalTokensUsed: 0,
+            maximumTotalTokens: budget.maximumTotalTokens
           )
         )
       }
@@ -204,8 +204,8 @@ public struct CoreAgentDeepRLMOrchestrator: Sendable {
         maximumDepth: budget.maximumDepth,
         delegationsUsed: results.count,
         maximumDelegations: budget.maximumDelegations,
-      totalTokensUsed: 0,
-      maximumTotalTokens: budget.maximumTotalTokens
+        totalTokensUsed: 0,
+        maximumTotalTokens: budget.maximumTotalTokens
       )
     )
   }
@@ -246,7 +246,9 @@ public struct CoreAgentDeepFoundationModelsRLMDecomposer: CoreAgentDeepRLMDecomp
   private static func prompt(for request: CoreAgentDeepRLMDecompositionRequest) -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let available = request.availableSubagents.map { ["name": $0.name, "description": $0.description] }
+    let available = request.availableSubagents.map {
+      ["name": $0.name, "description": $0.description]
+    }
     let availableJSON = (try? String(data: encoder.encode(available), encoding: .utf8)) ?? "[]"
     let budgetJSON: String
     if let maximumDelegations = request.budget.maximumDelegations {
@@ -286,7 +288,8 @@ public struct CoreAgentDeepFoundationModelsRLMDecomposer: CoreAgentDeepRLMDecomp
       if let maximumDelegations = request.budget.maximumDelegations,
         subtasks.count > maximumDelegations
       {
-        throw CoreAgentDeepSubagentBudgetError.delegationLimitExceeded(maximumDelegations: maximumDelegations)
+        throw CoreAgentDeepSubagentBudgetError.delegationLimitExceeded(
+          maximumDelegations: maximumDelegations)
       }
     }
     return subtasks

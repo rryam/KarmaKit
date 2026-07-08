@@ -109,8 +109,8 @@ public protocol CoreAgentRunLifecycleTool: Sendable {
   func coreAgentRunDidFinish(_ runID: UUID) async
 }
 
-public extension CoreAgentToolInterventionPolicy {
-  func shouldIntervene(_ request: CoreAgentToolRequest) async throws -> Bool {
+extension CoreAgentToolInterventionPolicy {
+  public func shouldIntervene(_ request: CoreAgentToolRequest) async throws -> Bool {
     true
   }
 }

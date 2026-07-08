@@ -55,10 +55,12 @@ struct CoreAgentEngineTests {
     }
 
     let otherID = Self.uuid(152)
-    await #expect(throws: CoreAgentEngineStoreError.eventRunIDMismatch(
-      eventRunID: otherID,
-      runID: runID
-    )) {
+    await #expect(
+      throws: CoreAgentEngineStoreError.eventRunIDMismatch(
+        eventRunID: otherID,
+        runID: runID
+      )
+    ) {
       try await store.ingest(
         Self.run(
           id: runID,
@@ -80,13 +82,15 @@ struct CoreAgentEngineTests {
     try await store.ingest(Self.run(id: Self.uuid(202)), projectID: "coreagent", threadID: "b")
     try await store.ingest(Self.run(id: Self.uuid(203)), projectID: "other", threadID: "a")
 
-    #expect(await store.traces(projectID: "coreagent").map(\.run.id) == [
-      Self.uuid(201),
-      Self.uuid(202),
-    ])
-    #expect(await store.traces(projectID: "coreagent", threadID: "a").map(\.run.id) == [
-      Self.uuid(201)
-    ])
+    #expect(
+      await store.traces(projectID: "coreagent").map(\.run.id) == [
+        Self.uuid(201),
+        Self.uuid(202),
+      ])
+    #expect(
+      await store.traces(projectID: "coreagent", threadID: "a").map(\.run.id) == [
+        Self.uuid(201)
+      ])
   }
 
   @Test("Redacts secret-marked fields before trace storage")
@@ -113,7 +117,7 @@ struct CoreAgentEngineTests {
             "api_key": "canary-not-a-token-regex",
             "tool": "search",
           ]
-        )
+        ),
       ]
     )
 
@@ -145,15 +149,17 @@ struct CoreAgentEngineTests {
     let scanner = CoreAgentEngineIssueScanner(store: store)
     let issues = try await scanner.scan(projectID: "coreagent")
 
-    #expect(issues.map(\.contributingRunIDs) == [
-      [Self.uuid(401), Self.uuid(402)],
-      [Self.uuid(403)],
-    ])
+    #expect(
+      issues.map(\.contributingRunIDs) == [
+        [Self.uuid(401), Self.uuid(402)],
+        [Self.uuid(403)],
+      ])
     #expect(issues.map(\.status) == [.open, .open])
-    #expect(issues.map(\.fingerprint) == [
-      "9:runFailed|13:authorization|10:write_file",
-      "9:runFailed|7:timeout|7:browser",
-    ])
+    #expect(
+      issues.map(\.fingerprint) == [
+        "9:runFailed|13:authorization|10:write_file",
+        "9:runFailed|7:timeout|7:browser",
+      ])
   }
 
   @Test("Resolved issues reopen when a new contributing run appears")
@@ -192,16 +198,17 @@ struct CoreAgentEngineTests {
     )
     _ = try await store.upsertIssue(issue)
 
-    let merged = try await store.upsertIssue(CoreAgentEngineIssue(
-      id: "issue-partial",
-      projectID: "coreagent",
-      fingerprint: "fingerprint",
-      title: "Second",
-      contributingRunIDs: [Self.uuid(462)],
-      status: .open,
-      firstSeenAt: Date(timeIntervalSince1970: 150),
-      lastSeenAt: Date(timeIntervalSince1970: 300)
-    ))
+    let merged = try await store.upsertIssue(
+      CoreAgentEngineIssue(
+        id: "issue-partial",
+        projectID: "coreagent",
+        fingerprint: "fingerprint",
+        title: "Second",
+        contributingRunIDs: [Self.uuid(462)],
+        status: .open,
+        firstSeenAt: Date(timeIntervalSince1970: 150),
+        lastSeenAt: Date(timeIntervalSince1970: 300)
+      ))
 
     #expect(merged.status == .reopened)
     #expect(merged.contributingRunIDs == [Self.uuid(461), Self.uuid(462)])
@@ -212,34 +219,38 @@ struct CoreAgentEngineTests {
   @Test("Issue upserts reject project or fingerprint identity collisions")
   func issueUpsertsRejectProjectOrFingerprintIdentityCollisions() async throws {
     let store = InMemoryCoreAgentEngineStore()
-    _ = try await store.upsertIssue(CoreAgentEngineIssue(
-      id: "issue-collision",
-      projectID: "coreagent",
-      fingerprint: "fingerprint-a",
-      title: "First",
-      contributingRunIDs: [Self.uuid(471)],
-      status: .open,
-      firstSeenAt: Date(timeIntervalSince1970: 100),
-      lastSeenAt: Date(timeIntervalSince1970: 200)
-    ))
-
-    await #expect(throws: CoreAgentEngineStoreError.issueIdentityMismatch(
-      issueID: "issue-collision",
-      existingProjectID: "coreagent",
-      incomingProjectID: "other",
-      existingFingerprint: "fingerprint-a",
-      incomingFingerprint: "fingerprint-b"
-    )) {
-      _ = try await store.upsertIssue(CoreAgentEngineIssue(
+    _ = try await store.upsertIssue(
+      CoreAgentEngineIssue(
         id: "issue-collision",
-        projectID: "other",
-        fingerprint: "fingerprint-b",
-        title: "Collision",
-        contributingRunIDs: [Self.uuid(472)],
+        projectID: "coreagent",
+        fingerprint: "fingerprint-a",
+        title: "First",
+        contributingRunIDs: [Self.uuid(471)],
         status: .open,
-        firstSeenAt: Date(timeIntervalSince1970: 300),
-        lastSeenAt: Date(timeIntervalSince1970: 400)
+        firstSeenAt: Date(timeIntervalSince1970: 100),
+        lastSeenAt: Date(timeIntervalSince1970: 200)
       ))
+
+    await #expect(
+      throws: CoreAgentEngineStoreError.issueIdentityMismatch(
+        issueID: "issue-collision",
+        existingProjectID: "coreagent",
+        incomingProjectID: "other",
+        existingFingerprint: "fingerprint-a",
+        incomingFingerprint: "fingerprint-b"
+      )
+    ) {
+      _ = try await store.upsertIssue(
+        CoreAgentEngineIssue(
+          id: "issue-collision",
+          projectID: "other",
+          fingerprint: "fingerprint-b",
+          title: "Collision",
+          contributingRunIDs: [Self.uuid(472)],
+          status: .open,
+          firstSeenAt: Date(timeIntervalSince1970: 300),
+          lastSeenAt: Date(timeIntervalSince1970: 400)
+        ))
     }
   }
 
@@ -260,9 +271,10 @@ struct CoreAgentEngineTests {
     let issue = try #require(issues.first)
     try await store.updateIssueStatus(issue.id, status: .resolved)
 
-    #expect(await store.issues(projectID: "coreagent", status: .resolved).map(\.id) == [
-      issue.id
-    ])
+    #expect(
+      await store.issues(projectID: "coreagent", status: .resolved).map(\.id) == [
+        issue.id
+      ])
     #expect(await store.issues(projectID: "coreagent", status: .open).isEmpty)
     #expect(await store.issues(projectID: "other", status: .open).isEmpty)
   }

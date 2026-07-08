@@ -244,7 +244,7 @@ public struct ClosureCoreAgentDeepHITLReviewer: CoreAgentDeepHITLReviewer {
   public init(
     _ handler:
       @escaping @Sendable (CoreAgentDeepHITLReviewRequest) async throws
-        -> CoreAgentDeepHITLDecision
+      -> CoreAgentDeepHITLDecision
   ) {
     self.handler = handler
   }

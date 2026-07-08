@@ -243,9 +243,10 @@ public struct CoreAgentDeepRubricMiddleware: Sendable {
         }
         currentPrompt = Self.revisionPrompt(
           originalPrompt: prompt,
-          revisionMessage: evaluation.revisionMessage ?? defaultRevisionMessage(
-            criteria: evaluation.criteria
-          )
+          revisionMessage: evaluation.revisionMessage
+            ?? defaultRevisionMessage(
+              criteria: evaluation.criteria
+            )
         )
       }
     }
@@ -279,7 +280,8 @@ public struct CoreAgentDeepRubricMiddleware: Sendable {
   private func defaultRevisionMessage(
     criteria: [CoreAgentDeepRubricCriterionFeedback]
   ) -> String {
-    let lines = criteria
+    let lines =
+      criteria
       .filter { !$0.passed }
       .map { feedback in
         if let detail = feedback.feedback, !detail.isEmpty {
@@ -327,7 +329,9 @@ public struct CoreAgentDeepFoundationModelsRubricGrader: CoreAgentDeepRubricGrad
     return try Self.evaluation(from: response.content, iteration: request.iteration)
   }
 
-  private static func prompt(for request: CoreAgentDeepRubricGradeRequest, instructions: String?) -> String {
+  private static func prompt(for request: CoreAgentDeepRubricGradeRequest, instructions: String?)
+    -> String
+  {
     let baseInstructions = """
       Grade the candidate response against the rubric using structured output only.
       Supported verdict literals: satisfied, needsRevision, failed.

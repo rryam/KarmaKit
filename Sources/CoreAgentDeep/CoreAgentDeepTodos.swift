@@ -1,6 +1,6 @@
+import CoreAgent
 import Foundation
 import FoundationModels
-import CoreAgent
 
 public enum CoreAgentDeepTodoError: Error, Equatable, Sendable {
   case invalidStatus(String)

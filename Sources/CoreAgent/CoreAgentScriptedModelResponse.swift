@@ -1,7 +1,6 @@
 import Foundation
 import FoundationModels
 
-
 package protocol CoreAgentScriptedLanguageModelHarness: LanguageModel {
   var scriptedRecorder: any CoreAgentScriptedModelResponding { get }
 }
@@ -56,7 +55,8 @@ package enum CoreAgentScriptedModelSupport {
     name: String,
     arguments: GeneratedContent
   ) -> Transcript.Entry {
-    .toolCalls(Transcript.ToolCalls([Transcript.ToolCall(id: id, toolName: name, arguments: arguments)]))
+    .toolCalls(
+      Transcript.ToolCalls([Transcript.ToolCall(id: id, toolName: name, arguments: arguments)]))
   }
 
   package static func toolOutputEntry(

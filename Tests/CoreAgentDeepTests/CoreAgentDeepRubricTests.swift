@@ -10,7 +10,7 @@ struct CoreAgentDeepRubricTests {
   @Test("Rubric middleware is a no-op when rubric is empty")
   func rubricMiddlewareIsNoOpWhenRubricIsEmpty() async throws {
     let model = RecordedLanguageModel(steps: [
-      .response(text: "final answer"),
+      .response(text: "final answer")
     ])
     let session = try CoreAgentSession(model: model)
     let middleware = CoreAgentDeepRubricMiddleware(
@@ -40,7 +40,7 @@ struct CoreAgentDeepRubricTests {
   @Test("Rubric middleware stops when grader is satisfied")
   func rubricMiddlewareStopsWhenGraderIsSatisfied() async throws {
     let model = RecordedLanguageModel(steps: [
-      .response(text: "includes required token"),
+      .response(text: "includes required token")
     ])
     let session = try CoreAgentSession(model: model)
     let middleware = CoreAgentDeepRubricMiddleware(
@@ -54,7 +54,7 @@ struct CoreAgentDeepRubricTests {
                 criterion: "mentions required token",
                 passed: true,
                 feedback: nil
-              ),
+              )
             ],
             revisionMessage: nil
           )
@@ -107,7 +107,7 @@ struct CoreAgentDeepRubricTests {
               criterion: "mentions required token",
               passed: false,
               feedback: "Add the required token."
-            ),
+            )
           ],
           revisionMessage: "Add the required token."
         )
@@ -167,7 +167,7 @@ struct CoreAgentDeepRubricTests {
   @Test("Rubric middleware fails closed on grader errors")
   func rubricMiddlewareFailsClosedOnGraderErrors() async throws {
     let model = RecordedLanguageModel(steps: [
-      .response(text: "answer"),
+      .response(text: "answer")
     ])
     let session = try CoreAgentSession(model: model)
     let middleware = CoreAgentDeepRubricMiddleware(
@@ -188,8 +188,8 @@ struct CoreAgentDeepRubricTests {
   }
 }
 
-private extension Transcript {
-  func containsText(_ expected: String) -> Bool {
+extension Transcript {
+  fileprivate func containsText(_ expected: String) -> Bool {
     contains { entry in
       switch entry {
       case .instructions(let instructions):
@@ -211,8 +211,8 @@ private extension Transcript {
   }
 }
 
-private extension [Transcript.Segment] {
-  func containsText(_ expected: String) -> Bool {
+extension [Transcript.Segment] {
+  fileprivate func containsText(_ expected: String) -> Bool {
     contains { segment in
       if case .text(let text) = segment {
         return text.content.contains(expected)
@@ -221,7 +221,6 @@ private extension [Transcript.Segment] {
     }
   }
 }
-
 
 private actor GradingCallCounter {
   private var count = 0
@@ -232,23 +231,23 @@ private actor GradingCallCounter {
     count += 1
   }
 
-
   @Test("FoundationModels rubric grader maps structured verdicts")
   func foundationModelsRubricGraderMapsStructuredVerdict() async throws {
     let model = RecordedLanguageModel(steps: [
-      .response(text: """
-        {
-          "verdict": "needsRevision",
-          "criteria": [
-            {
-              "criterion": "mentions required token",
-              "passed": false,
-              "feedback": "Add the required token."
-            }
-          ],
-          "revisionMessage": "Add the required token."
-        }
-        """),
+      .response(
+        text: """
+          {
+            "verdict": "needsRevision",
+            "criteria": [
+              {
+                "criterion": "mentions required token",
+                "passed": false,
+                "feedback": "Add the required token."
+              }
+            ],
+            "revisionMessage": "Add the required token."
+          }
+          """)
     ])
     let session = try CoreAgentSession(model: model)
     let grader = CoreAgentDeepFoundationModelsRubricGrader(session: session)
