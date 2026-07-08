@@ -19,6 +19,13 @@ public enum CoreAgentEventKind: String, Codable, Equatable, Sendable {
   case toolAuthorizationDenied
   case toolAuthorizationCancelled
   case toolAuthorizationFailed
+  case toolInterventionStarted
+  case toolInterventionApproved
+  case toolInterventionEdited
+  case toolInterventionRejected
+  case toolInterventionResponded
+  case toolInterventionCancelled
+  case toolInterventionFailed
   case toolExecutionStarted
   case toolExecutionCompleted
   case toolExecutionFailed
@@ -26,6 +33,7 @@ public enum CoreAgentEventKind: String, Codable, Equatable, Sendable {
   case nativeToolOutputRecorded
   case transcriptCheckpointed
   case transcriptCheckpointFailed
+  case transcriptActiveSessionCompacted
   case runCompleted
   case runFailed
 }

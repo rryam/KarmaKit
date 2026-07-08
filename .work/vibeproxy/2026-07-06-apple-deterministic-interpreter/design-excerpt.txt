@@ -1,0 +1,56 @@
+  authority, cancellation, checkpoint/readback, and receipt-visible audit.
+
+Current Xcode 27 SDK interface checks confirm useful primitives exist:
+
+- SwiftData exposes `ModelContainer`, `ModelContext`, `DataStore`,
+  `DataStoreSnapshot`, and `DefaultSnapshot`.
+- App Intents exposes `AppIntent`, `supportedModes`, OS 27
+  `allowedExecutionTargets`, `donate()`, `IntentDonationManager`, and
+  `RelevantIntentManager`.
+- SwiftUI/Observation should use `@Observable` main-actor view models with
+  narrow, equatable UI projections rather than passing full trace/checkpoint
+  payloads through views.
+
+Recommended adapters:
+
+- `CoreAgentApplePlatformContracts`
+  - Shared Apple-only protocol vocabulary for capability IDs, policy versions,
+    consent records, artifact handles, security-scoped resource metadata,
+    cancellation snapshots, and platform audit envelopes.
+  - This target should contain no UI and no executable sandbox backend. Its job
+    is to keep SwiftData, SwiftUI, App Intents, and sandbox adapters from
+    inventing incompatible names for the same authority or artifact concepts.
+  - Core portable products still must not depend on this target.
+
+- `CoreAgentAppleSandbox`
+  - Capability-scoped executors for code interpretation, filesystem access,
+    network access, app automation, and computer-use actions.
+  - No default arbitrary shell/code execution.
+  - Every side-effecting executor enters through the same HITL/intervention,
+    authorization, timeout, cancellation, and audit path as any other governed
+    CoreAgent tool. Sandbox approval is not a separate bypass.
+  - Implementations can target `JavaScriptCore`, WASI/WebAssembly, Apple
+    Container/macOS helper tools, or remote execution, but all must declare
+    entitlements, filesystem roots, network policy, timeout, memory budget,
+    cancellation, transcript/audit semantics, and teardown behavior.
+  - Treat interpreter support as tiers, not one feature flag:
+    deterministic in-process interpreters first, WASI/WebAssembly for bounded
+    artifact execution next, then opt-in helper/remote execution only when the
+    app can prove entitlement, consent, isolation, cancellation, and artifact
+    readback. iOS/iPadOS must not assume arbitrary subprocess execution.
+  - Computer-use is a separate consent-gated capability because it operates
+    UI state and accessibility privileges, not just agent data.
+  - Code interpreters should checkpoint declared inputs, outputs, stdout/stderr,
+    artifact handles, resource usage, and sandbox policy version. They should
+    not checkpoint incidental process state as the canonical contract.
+
+2. `CoreAgentAppleSandbox`
+   - Capability-scoped code interpreter and artifact executor APIs.
+   - Initial adapters should prefer JavaScriptCore or WASI/WebAssembly for
+     deterministic, bounded execution before considering host shells or remote
+     execution. Host shell helpers are high-risk and must be opt-in, entitlement
+     documented, timeout/cancellation bounded, and HITL-gated.
+   - Required tests: denied-by-default execution, filesystem root containment,
+     network-deny behavior, timeout/cancellation, stdout/stderr/artifact
+     checkpointing, and audit records that include sandbox policy version.
+

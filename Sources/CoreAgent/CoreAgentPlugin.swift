@@ -164,6 +164,11 @@ public protocol CoreAgentSessionPlugin: Sendable {
   func didFail(_ failure: CoreAgentPluginFailure) async -> [CoreAgentPluginEvent]
 }
 
+/// Receives the finalized CoreAgent run object after all run events are recorded.
+public protocol CoreAgentRunObserver: Sendable {
+  func coreAgentRunDidFinish(_ run: CoreAgentRun) async
+}
+
 extension CoreAgentSessionPlugin {
   public var tools: [any Tool] { [] }
   public var failurePolicies: CoreAgentPluginFailurePolicies { .default }

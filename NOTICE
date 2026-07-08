@@ -1,0 +1,82 @@
+CoreAgent (this fork)
+=====================
+
+This repository (https://github.com/24601/coreagent) is a HARD FORK of the
+upstream CoreAgent project and is developed and released independently of it.
+It is not endorsed by or affiliated with the upstream authors, LangChain, Inc.,
+or Apple Inc.
+
+--------------------------------------------------------------------------------
+Upstream CoreAgent
+--------------------------------------------------------------------------------
+
+Portions of this project derive from the upstream CoreAgent project:
+
+  CoreAgent
+  Copyright (c) 2025 Rudrank Riyam
+  Licensed under the MIT License.
+  Source: https://github.com/rudrankriyam/CoreAgent
+
+The upstream MIT license text is retained in the LICENSE file at the root of
+this repository. The upstream harness around Apple's Foundation Models API
+(session, tool policy, checkpoints, memory, tracing, and provider seams) is the
+foundation this fork builds on.
+
+--------------------------------------------------------------------------------
+Behavioral port attribution (LangChain / LangGraph / Deep Agents / LangSmith)
+--------------------------------------------------------------------------------
+
+The CoreAgentGraph, CoreAgentDeep, CoreAgentEngine, CoreAgentSkills, and
+CoreAgentTalon modules are an independent Swift re-implementation of runtime
+*concepts and behaviors* popularized by the following LangChain, Inc. projects.
+No source code was copied from them; only observable behavior, public API
+semantics, and documented design contracts informed the Swift implementation:
+
+  LangGraph            - durable super-step graph runtime, checkpoints,
+                         pending writes, interrupts/resume, time travel,
+                         Send fan-out, parent command routing, subgraphs,
+                         deferred nodes.
+                         https://github.com/langchain-ai/langgraph
+
+  Deep Agents          - task-ledger / planning harness, virtual filesystem,
+                         sub-agent orchestration, human-in-the-loop review,
+                         rubric middleware, RLM orchestration.
+                         https://github.com/langchain-ai/deepagents
+
+  LangChain            - agent/middleware composition patterns.
+                         https://github.com/langchain-ai/langchain
+
+  LangSmith (Engine)   - run tracing, evidence/receipt ingestion, and the
+                         closed-loop issue/feedback scanner that CoreAgentEngine
+                         models.
+                         https://www.langchain.com/langsmith
+
+LangGraph, Deep Agents, and LangChain are open-source and licensed by LangChain,
+Inc. under the MIT License. LangSmith is a proprietary hosted product of
+LangChain, Inc. (only its client SDK, langsmith-sdk, is MIT-licensed); no
+LangSmith source or service is used here — CoreAgentEngine independently models
+observable closed-loop behaviors it popularized. Their names and trademarks
+belong to their respective owners and are used here only to describe the origin
+of the ported behaviors, not to imply endorsement.
+
+CoreAgent keeps Apple's Foundation Models types (Prompt, Transcript, Tool,
+GeneratedContent, Generable, LanguageModelSession) as the native primitives; the
+ported concepts are adapted to that contract rather than reproducing the Python
+message/model abstractions.
+
+--------------------------------------------------------------------------------
+Third-party dependencies
+--------------------------------------------------------------------------------
+
+Optional, trait-gated provider integrations pull in the following packages,
+which remain under their own licenses:
+
+  foundation-models-utilities  - Apache License 2.0, Apple Inc.
+                                 https://github.com/apple/foundation-models-utilities
+  ClaudeForFoundationModels    - Apache License 2.0, Anthropic
+                                 https://github.com/anthropics/ClaudeForFoundationModels
+  firebase-ios-sdk             - Apache License 2.0, Google LLC
+                                 https://github.com/firebase/firebase-ios-sdk
+
+These dependencies are not enabled by default; see the SwiftPM traits described
+in README.md and AGENTS.md.

@@ -1,0 +1,1 @@
+BLOCK: The diff under review is empty or was not provided. Please provide the Swift 6.4 implementation changes for the `CoreAgentSkills` sleep/recursive optimization loop so that they can be evaluated against the SkillOpt contract requirements (validation gates, heldout split isolation, edit drift limits, protected slow-update mutations, and concurrency safety).

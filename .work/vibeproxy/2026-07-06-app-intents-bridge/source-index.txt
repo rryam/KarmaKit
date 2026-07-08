@@ -1,0 +1,4 @@
+Package.swift: CoreAgentAppIntents product/target and CoreAgentAppIntentsTests target
+Sources/CoreAgentAppIntents/CoreAgentAppIntents.swift: new AppIntents package marker, OS policy mapper, run intent catalog, bridge, runtime boundary, concrete run intents
+Tests/CoreAgentAppIntentsTests/CoreAgentAppIntentsTests.swift: focused Swift Testing coverage for catalog policy, bridge gating/checkpoint/cancellation, unsupported mode denial, run ID validation
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift: relevant CoreAgent action-gate App Intent descriptor/consent contracts

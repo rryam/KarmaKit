@@ -60,3 +60,46 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+secrets/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDEs and editors
+.idea/
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.code-workspace
+
+# Coverage and quality artifacts
+*.profdata
+*.profraw
+coverage/
+.coverage
+htmlcov/
+.swiftlint.yml.cache
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Agent readiness / CI artifacts
+.build-metrics/
+.test-metrics/
+agent-readiness-report.md
+tech-debt-report.txt
+large-files-report.txt
+
+# Node (doc tooling)
+node_modules/

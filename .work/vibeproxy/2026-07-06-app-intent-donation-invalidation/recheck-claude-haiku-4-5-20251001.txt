@@ -1,0 +1,95 @@
+Reviewing L19 Swift/App Intent donation invalidation slice against the specified scope and prior fixes...
+
+**Reading the donation record codable validation**
+<function_calls>
+<invoke name="bash">
+<parameter name="tool_name">bash</parameter>
+<parameter name="arguments">
+<argument name="command">cd /tmp && grep -n "gateFingerprint" Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift | head -20</parameter>
+</invoke>
+</function_calls>
+<function_calls>
+<invoke name="bash">
+<parameter name="tool_name">bash</parameter>
+<parameter name="arguments">
+<argument name="command">cd /tmp && sed -n '3889,3921p' Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift</parameter>
+</invoke>
+</function_calls>
+
+**Checking consent requirement fingerprint construction for donation records**
+<function_calls>
+<invoke name="bash">
+<parameter name="command">cd /tmp && sed -n '2106,2120p' Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift</parameter>
+</invoke>
+</function_calls>
+
+**Verifying store tombstoning behavior**
+<function_calls>
+<invoke name="bash">
+<parameter name="command">cd /tmp && sed -n '3981,4025p' Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift</parameter>
+</invoke>
+</function_calls>
+
+**Checking full invalidation flow**
+<function_calls>
+<invoke name="bash">
+<parameter name="command">cd /tmp && sed -n '4000,4040p' Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift</parameter>
+</invoke>
+</function_calls>
+
+**Verifying gate fingerprint does not leak identifiers in consent**
+<function_calls>
+<invoke name="bash">
+<parameter name="command">cd /tmp && sed -n '1950,1965p' Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift</parameter>
+</invoke>
+</function_calls>
+
+**Checking test for stale reactivation prevention**
+<function_calls>
+<invoke name="bash">
+<parameter name="command">cd /tmp && sed -n '2007,2024p' Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift</parameter>
+</invoke>
+</function_calls>
+
+**Critical issue found: gateFingerprint includes raw stableIdentifier and scopeID**
+
+The `gateFingerprint` at CoreAgentApplePlatform.swift:3889-3900 includes:
+- `subject.stableIdentifier` (e.g., "workflow:daily-review/outcome:completed")
+- `subject.scopeID` (e.g., "workspace:coreagent")
+
+These are then used in the consent request fingerprint at line 2111:
+```swift
+requestFingerprint: fingerprint(["app-intent-donation-record", record.gateFingerprint])
+```
+
+This means the consent request fingerprint **contains raw stable workflow IDs and scope IDs**, violating the requirement: *"consent request fingerprints should not contain raw stable workflow IDs or scope IDs."*
+
+The test at line 1956-1957 only verifies that the request fingerprint doesn't directly contain the identifier strings, but when `gateFingerprint` itself embeds them, they appear in the final `requestFingerprint` passed to consent validation.
+
+**Fix needed:** The `gateFingerprint` should hash the subject fields rather than including them raw:
+
+```swift
+var gateFingerprint: String {
+  "sha256:" + sha256Hex(framed([
+    donationIdentifier,
+    descriptorIdentifier,
+    descriptorExposureFingerprint,
+    subject.kind.rawValue,
+    // Hash these instead:
+    "sha256:" + sha256Hex(subject.stableIdentifier),
+    "sha256:" + sha256Hex(subject.scopeID),
+    authorityBoundaryID,
+    String(policyVersion),
+  ]))
+}
+```
+
+---
+
+**Verdict: BLOCK**
+
+**Findings:**
+- [High] CoreAgentApplePlatform.swift:3889-3900 — `gateFingerprint` includes raw `subject.stableIdentifier` and `subject.scopeID` values, which are then embedded in consent request fingerprints, exposing stable workflow/scope identifiers to consent records and Siri/Spotlight donation APIs.
+
+**Residual risks:**
+- The test at line 1956–1957 validates the wrong property—it checks that the final `requestFingerprint` string doesn't contain the literal identifier, but that's not the same as ensuring the hashed `gateFingerprint` doesn't leak them via intermediate framing.

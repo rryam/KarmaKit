@@ -1,0 +1,9 @@
+Verdict: PASS
+
+Findings:
+- None.
+
+Residual risks:
+- Decoding validates record self-consistency, not authenticity/provenance. If records are accepted from untrusted storage or IPC, a separate signature/trust boundary would still be needed.
+- `donatedAt` is intentionally not part of `donationIdentifier`/`gateFingerprint`; acceptable if donation identity is meant to be semantic rather than event-instance-specific.
+- Invalidation tombstone behavior appears covered for scope and explicit donation invalidation based on the supplied tests.

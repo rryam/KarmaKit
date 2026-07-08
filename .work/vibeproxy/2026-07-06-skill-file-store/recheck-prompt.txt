@@ -1,0 +1,532 @@
+Recheck this Swift CoreAgentSkills file-backed SkillOpt store slice after fixes for the previous VibeProxy blockers.
+
+Return STRICT JSON only:
+{
+  "verdict": "PASS" | "BLOCK",
+  "findings": [
+    {"severity":"P0|P1|P2|P3", "file":"path", "line":123, "title":"short", "description":"specific", "concrete_fix":"specific"}
+  ],
+  "testing_gaps": ["..."],
+  "residual_risks": ["..."]
+}
+
+Previous blockers to verify are fixed:
+1. Existing but corrupted optimizer-memory JSON must not be treated as missing or overwritten by recordRejected/recordMetaObservation. Mutation must throw and preserve the corrupted file.
+2. allCurrentSkills/currentSkill must reject misplaced rows and filename/version mismatches instead of accepting rows from the wrong skill directory or a version-N file with decoded version M.
+3. Saving a skill version must use exclusive creation and preserve versionCollision after resume.
+4. Arbitrary skill IDs such as ../swift/planner must not write outside the root; paths are generated from SHA-256 path components and tests now normalize symlinks.
+5. best_skill export should support safe explicit filenames and reject path-like filenames.
+
+Scope boundaries:
+- In scope: FileCoreAgentSkillStore and tests shown below.
+- Future scope, do not block solely on this: multi-process locking, SQLite/cloud stores, encryption-at-rest, schema migration/recovery UI, model-powered proposal, scheduled daemon.
+- Do block if any previous blocker remains or if the fix introduces a new compile/runtime/persistence correctness issue.
+
+Post-fix verification:
+- swift test --skip-update --filter CoreAgentSkillsTests: PASS, 27 tests
+- swift test --skip-update --filter 'CoreAgentEngineTests|CoreAgentSkillsTests': PASS, 38 tests
+- swift build --skip-update: PASS
+- swift test --skip-update: PASS full package
+
+
+=== Sources/CoreAgentSkills/CoreAgentSkills.swift lines 600-835 ===
+   600	    metaObservations: [CoreAgentSkillMetaObservation] = []
+   601	  ) {
+   602	    self.rejectedEdits = rejectedEdits
+   603	    self.metaObservations = metaObservations
+   604	  }
+   605	}
+   606	
+   607	public protocol CoreAgentSkillStore: Sendable {
+   608	  func save(_ skill: CoreAgentSkill) async throws
+   609	  func currentSkill(id: CoreAgentSkillID) async -> CoreAgentSkill?
+   610	  func allCurrentSkills() async -> [CoreAgentSkill]
+   611	  func optimizerMemory(skillID: CoreAgentSkillID) async -> CoreAgentSkillOptimizerMemory
+   612	  func recordRejected(_ rejected: CoreAgentRejectedSkillEdit, skillID: CoreAgentSkillID)
+   613	    async throws
+   614	  func recordMetaObservation(
+   615	    _ observation: CoreAgentSkillMetaObservation,
+   616	    skillID: CoreAgentSkillID
+   617	  ) async throws
+   618	}
+   619	
+   620	public actor InMemoryCoreAgentSkillStore: CoreAgentSkillStore {
+   621	  private var historyByID: [CoreAgentSkillID: [CoreAgentSkill]] = [:]
+   622	  private var memoryByID: [CoreAgentSkillID: CoreAgentSkillOptimizerMemory] = [:]
+   623	
+   624	  public init() {}
+   625	
+   626	  public func save(_ skill: CoreAgentSkill) async throws {
+   627	    if historyByID[skill.id, default: []].contains(where: { $0.version == skill.version }) {
+   628	      throw CoreAgentSkillOptimizationError.versionCollision(skill.id, skill.version)
+   629	    }
+   630	    historyByID[skill.id, default: []].append(skill)
+   631	    historyByID[skill.id]?.sort { $0.version < $1.version }
+   632	  }
+   633	
+   634	  public func currentSkill(id: CoreAgentSkillID) async -> CoreAgentSkill? {
+   635	    historyByID[id]?.max { $0.version < $1.version }
+   636	  }
+   637	
+   638	  public func allCurrentSkills() async -> [CoreAgentSkill] {
+   639	    historyByID.values
+   640	      .compactMap { $0.max { $0.version < $1.version } }
+   641	      .sorted { lhs, rhs in
+   642	        if lhs.priority != rhs.priority {
+   643	          return lhs.priority > rhs.priority
+   644	        }
+   645	        return lhs.id.rawValue < rhs.id.rawValue
+   646	      }
+   647	  }
+   648	
+   649	  public func optimizerMemory(skillID: CoreAgentSkillID) async -> CoreAgentSkillOptimizerMemory {
+   650	    memoryByID[skillID] ?? CoreAgentSkillOptimizerMemory()
+   651	  }
+   652	
+   653	  public func recordRejected(
+   654	    _ rejected: CoreAgentRejectedSkillEdit,
+   655	    skillID: CoreAgentSkillID
+   656	  ) async throws {
+   657	    var memory = memoryByID[skillID] ?? CoreAgentSkillOptimizerMemory()
+   658	    memory.rejectedEdits.append(rejected)
+   659	    memoryByID[skillID] = memory
+   660	  }
+   661	
+   662	  public func recordMetaObservation(
+   663	    _ observation: CoreAgentSkillMetaObservation,
+   664	    skillID: CoreAgentSkillID
+   665	  ) async throws {
+   666	    var memory = memoryByID[skillID] ?? CoreAgentSkillOptimizerMemory()
+   667	    memory.metaObservations.append(observation)
+   668	    memoryByID[skillID] = memory
+   669	  }
+   670	}
+   671	
+   672	public actor FileCoreAgentSkillStore: CoreAgentSkillStore {
+   673	  private let rootDirectory: URL
+   674	
+   675	  public init(rootDirectory: URL) throws {
+   676	    self.rootDirectory = rootDirectory
+   677	    try FileManager.default.createDirectory(
+   678	      at: Self.skillsDirectory(rootDirectory: rootDirectory),
+   679	      withIntermediateDirectories: true
+   680	    )
+   681	    try FileManager.default.createDirectory(
+   682	      at: Self.memoryDirectory(rootDirectory: rootDirectory),
+   683	      withIntermediateDirectories: true
+   684	    )
+   685	  }
+   686	
+   687	  public func save(_ skill: CoreAgentSkill) async throws {
+   688	    let directory = skillDirectory(for: skill.id)
+   689	    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+   690	    let url = skillURL(id: skill.id, version: skill.version)
+   691	    let data = try encoded(skill)
+   692	    do {
+   693	      try writeNewFile(data, to: url)
+   694	    } catch FileCoreAgentSkillStoreError.fileAlreadyExists {
+   695	      throw CoreAgentSkillOptimizationError.versionCollision(skill.id, skill.version)
+   696	    }
+   697	  }
+   698	
+   699	  public func currentSkill(id: CoreAgentSkillID) async -> CoreAgentSkill? {
+   700	    skillHistory(id: id)?.max { $0.version < $1.version }
+   701	  }
+   702	
+   703	  public func allCurrentSkills() async -> [CoreAgentSkill] {
+   704	    guard let directories = try? FileManager.default.contentsOfDirectory(
+   705	      at: Self.skillsDirectory(rootDirectory: rootDirectory),
+   706	      includingPropertiesForKeys: [.isDirectoryKey]
+   707	    ) else {
+   708	      return []
+   709	    }
+   710	    return directories
+   711	      .filter { url in
+   712	        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+   713	      }
+   714	      .compactMap { currentSkill(in: $0) }
+   715	      .sorted { lhs, rhs in
+   716	        if lhs.priority != rhs.priority {
+   717	          return lhs.priority > rhs.priority
+   718	        }
+   719	        return lhs.id.rawValue < rhs.id.rawValue
+   720	      }
+   721	  }
+   722	
+   723	  public func optimizerMemory(skillID: CoreAgentSkillID) async -> CoreAgentSkillOptimizerMemory {
+   724	    readMemory(skillID: skillID) ?? CoreAgentSkillOptimizerMemory()
+   725	  }
+   726	
+   727	  public func recordRejected(
+   728	    _ rejected: CoreAgentRejectedSkillEdit,
+   729	    skillID: CoreAgentSkillID
+   730	  ) async throws {
+   731	    var memory = try readMemoryForMutation(skillID: skillID)
+   732	    memory.rejectedEdits.append(rejected)
+   733	    try write(memory, to: memoryURL(for: skillID))
+   734	  }
+   735	
+   736	  public func recordMetaObservation(
+   737	    _ observation: CoreAgentSkillMetaObservation,
+   738	    skillID: CoreAgentSkillID
+   739	  ) async throws {
+   740	    var memory = try readMemoryForMutation(skillID: skillID)
+   741	    memory.metaObservations.append(observation)
+   742	    try write(memory, to: memoryURL(for: skillID))
+   743	  }
+   744	
+   745	  @discardableResult
+   746	  public func exportBestSkillMarkdown(
+   747	    id: CoreAgentSkillID,
+   748	    to directory: URL,
+   749	    filename: String = "best_skill.md"
+   750	  ) async throws -> URL {
+   751	    guard let skill = await currentSkill(id: id) else {
+   752	      throw CoreAgentSkillOptimizationError.missingSkill(id)
+   753	    }
+   754	    try validateExportFilename(filename)
+   755	    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+   756	    let url = directory.appending(path: filename)
+   757	    try CoreAgentSkillExporter.bestSkillMarkdown(skill).write(
+   758	      to: url,
+   759	      atomically: true,
+   760	      encoding: .utf8
+   761	    )
+   762	    return url
+   763	  }
+   764	
+   765	  private func skillHistory(id: CoreAgentSkillID) -> [CoreAgentSkill]? {
+   766	    let directory = skillDirectory(for: id)
+   767	    guard FileManager.default.fileExists(atPath: directory.path) else {
+   768	      return []
+   769	    }
+   770	    guard let urls = try? FileManager.default.contentsOfDirectory(
+   771	      at: directory,
+   772	      includingPropertiesForKeys: nil
+   773	    ) else {
+   774	      return nil
+   775	    }
+   776	    var skills: [CoreAgentSkill] = []
+   777	    for url in urls where url.pathExtension == "json" {
+   778	      guard let skill: CoreAgentSkill = read(url),
+   779	        skill.id == id,
+   780	        rowFilenameMatches(url: url, skill: skill)
+   781	      else {
+   782	        return nil
+   783	      }
+   784	      skills.append(skill)
+   785	    }
+   786	    return skills.sorted { $0.version < $1.version }
+   787	  }
+   788	
+   789	  private func currentSkill(in directory: URL) -> CoreAgentSkill? {
+   790	    guard let urls = try? FileManager.default.contentsOfDirectory(
+   791	      at: directory,
+   792	      includingPropertiesForKeys: nil
+   793	    ) else {
+   794	      return nil
+   795	    }
+   796	    var skills: [CoreAgentSkill] = []
+   797	    for url in urls where url.pathExtension == "json" {
+   798	      guard let skill: CoreAgentSkill = read(url),
+   799	        rowFilenameMatches(url: url, skill: skill),
+   800	        skillDirectory(for: skill.id).standardizedFileURL == directory.standardizedFileURL
+   801	      else {
+   802	        return nil
+   803	      }
+   804	      skills.append(skill)
+   805	    }
+   806	    return skills.max { $0.version < $1.version }
+   807	  }
+   808	
+   809	  private func readMemory(skillID: CoreAgentSkillID) -> CoreAgentSkillOptimizerMemory? {
+   810	    read(memoryURL(for: skillID))
+   811	  }
+   812	
+   813	  private func readMemoryForMutation(
+   814	    skillID: CoreAgentSkillID
+   815	  ) throws -> CoreAgentSkillOptimizerMemory {
+   816	    let url = memoryURL(for: skillID)
+   817	    guard FileManager.default.fileExists(atPath: url.path) else {
+   818	      return CoreAgentSkillOptimizerMemory()
+   819	    }
+   820	    guard let memory: CoreAgentSkillOptimizerMemory = read(url) else {
+   821	      throw CoreAgentSkillOptimizationError.corruptSkillStore(
+   822	        "optimizer memory could not be decoded for \(skillID.rawValue)"
+   823	      )
+   824	    }
+   825	    return memory
+   826	  }
+   827	
+   828	  private func skillDirectory(for id: CoreAgentSkillID) -> URL {
+   829	    Self.skillsDirectory(rootDirectory: rootDirectory)
+   830	      .appending(path: Self.pathComponent(prefix: "skill", value: id.rawValue), directoryHint: .isDirectory)
+   831	  }
+   832	
+   833	  private func skillURL(id: CoreAgentSkillID, version: Int) -> URL {
+   834	    skillDirectory(for: id).appending(path: "version-\(version).json")
+   835	  }
+=== Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift lines 270-450 and 850-930 ===
+   270	  @Test("File-backed store persists skill history optimizer memory and best_skill export")
+   271	  func fileBackedStorePersistsSkillHistoryOptimizerMemoryAndBestSkillExport() async throws {
+   272	    let root = try Self.temporaryDirectory()
+   273	    defer { try? FileManager.default.removeItem(at: root) }
+   274	    let store = try FileCoreAgentSkillStore(rootDirectory: root)
+   275	    let base = Self.skill(id: "../swift/planner", body: "Use XCTest.", tags: ["swift"])
+   276	    try await store.save(base)
+   277	    let optimizer = CoreAgentSkillOptimizer(store: store)
+   278	
+   279	    let rejected = try await optimizer.propose(
+   280	      CoreAgentSkillOptimizationProposal(
+   281	        skillID: base.id,
+   282	        baselineScore: 0.90,
+   283	        candidateEdits: [.append("\nAlways force unwrap.")],
+   284	        validation: Self.validation(score: 0.10, passed: false)
+   285	      )
+   286	    )
+   287	    let accepted = try await optimizer.propose(
+   288	      CoreAgentSkillOptimizationProposal(
+   289	        skillID: base.id,
+   290	        baselineScore: 0.70,
+   291	        candidateEdits: [.replace(target: "Use XCTest.", replacement: "Use Swift Testing.")],
+   292	        validation: Self.validation(score: 0.88)
+   293	      )
+   294	    )
+   295	
+   296	    let resumed = try FileCoreAgentSkillStore(rootDirectory: root)
+   297	    let current = try #require(await resumed.currentSkill(id: base.id))
+   298	    let memory = await resumed.optimizerMemory(skillID: base.id)
+   299	    let exportURL = try await resumed.exportBestSkillMarkdown(
+   300	      id: base.id,
+   301	      to: root.appending(path: "exports", directoryHint: .isDirectory)
+   302	    )
+   303	    let markdown = try String(contentsOf: exportURL, encoding: .utf8)
+   304	
+   305	    #expect(!rejected.accepted)
+   306	    #expect(accepted.accepted)
+   307	    #expect(current.version == 2)
+   308	    #expect(current.body == "Use Swift Testing.")
+   309	    #expect(memory.rejectedEdits.count == 1)
+   310	    #expect(exportURL.lastPathComponent == "best_skill.md")
+   311	    #expect(exportURL.path.hasPrefix(root.path))
+   312	    #expect(markdown.contains("Version: 2"))
+   313	    #expect(markdown.contains("Use Swift Testing."))
+   314	    #expect(!FileManager.default.fileExists(atPath: root.deletingLastPathComponent().appending(path: "swift").path))
+   315	    let rootPath = root.resolvingSymlinksInPath().path
+   316	    #expect(Self.allFiles(under: root).allSatisfy {
+   317	      $0.resolvingSymlinksInPath().path.hasPrefix(rootPath)
+   318	    })
+   319	  }
+   320	
+   321	  @Test("File-backed store rejects duplicate versions after resume")
+   322	  func fileBackedStoreRejectsDuplicateVersionsAfterResume() async throws {
+   323	    let root = try Self.temporaryDirectory()
+   324	    defer { try? FileManager.default.removeItem(at: root) }
+   325	    let base = Self.skill(id: "swift", body: "Use Swift Testing.")
+   326	    try await FileCoreAgentSkillStore(rootDirectory: root).save(base)
+   327	    let resumed = try FileCoreAgentSkillStore(rootDirectory: root)
+   328	
+   329	    await #expect(throws: CoreAgentSkillOptimizationError.versionCollision(base.id, 1)) {
+   330	      try await resumed.save(base)
+   331	    }
+   332	  }
+   333	
+   334	  @Test("File-backed store fails closed on corrupted skill rows")
+   335	  func fileBackedStoreFailsClosedOnCorruptedSkillRows() async throws {
+   336	    let root = try Self.temporaryDirectory()
+   337	    defer { try? FileManager.default.removeItem(at: root) }
+   338	    let base = Self.skill(id: "swift", body: "Use Swift Testing.")
+   339	    let store = try FileCoreAgentSkillStore(rootDirectory: root)
+   340	    try await store.save(base)
+   341	    let skillFile = try #require(Self.firstFile(named: "version-1.json", under: root))
+   342	    try Data("not-json".utf8).write(to: skillFile, options: [.atomic])
+   343	    let resumed = try FileCoreAgentSkillStore(rootDirectory: root)
+   344	
+   345	    #expect(await resumed.currentSkill(id: base.id) == nil)
+   346	    #expect(await resumed.allCurrentSkills().isEmpty)
+   347	  }
+   348	
+   349	  @Test("File-backed store rejects misplaced rows and filename version mismatches")
+   350	  func fileBackedStoreRejectsMisplacedRowsAndFilenameVersionMismatches() async throws {
+   351	    let root = try Self.temporaryDirectory()
+   352	    defer { try? FileManager.default.removeItem(at: root) }
+   353	    let store = try FileCoreAgentSkillStore(rootDirectory: root)
+   354	    let skillA = Self.skill(id: "skill-a", body: "A")
+   355	    let skillB = CoreAgentSkill(
+   356	      id: "skill-b",
+   357	      version: 2,
+   358	      title: "skill-b",
+   359	      body: "B"
+   360	    )
+   361	    try await store.save(skillA)
+   362	    let skillAFile = try #require(Self.skillFile(id: skillA.id, version: 1, under: root))
+   363	    let skillADirectory = skillAFile.deletingLastPathComponent()
+   364	    let encoder = JSONEncoder()
+   365	    encoder.dateEncodingStrategy = .millisecondsSince1970
+   366	    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+   367	
+   368	    try encoder.encode(skillB).write(
+   369	      to: skillADirectory.appending(path: "version-2.json"),
+   370	      options: [.atomic]
+   371	    )
+   372	    let misplaced = try FileCoreAgentSkillStore(rootDirectory: root)
+   373	
+   374	    #expect(await misplaced.currentSkill(id: skillA.id) == nil)
+   375	    #expect(await misplaced.allCurrentSkills().isEmpty)
+   376	
+   377	    try FileManager.default.removeItem(at: root)
+   378	    let mismatchRoot = try Self.temporaryDirectory()
+   379	    defer { try? FileManager.default.removeItem(at: mismatchRoot) }
+   380	    let mismatchStore = try FileCoreAgentSkillStore(rootDirectory: mismatchRoot)
+   381	    let versionMismatch = CoreAgentSkill(
+   382	      id: "skill-c",
+   383	      version: 99,
+   384	      title: "skill-c",
+   385	      body: "C"
+   386	    )
+   387	    try await mismatchStore.save(Self.skill(id: "skill-c", body: "C"))
+   388	    let skillCFile = try #require(Self.skillFile(id: versionMismatch.id, version: 1, under: mismatchRoot))
+   389	    try encoder.encode(versionMismatch).write(to: skillCFile, options: [.atomic])
+   390	    let mismatched = try FileCoreAgentSkillStore(rootDirectory: mismatchRoot)
+   391	
+   392	    #expect(await mismatched.currentSkill(id: versionMismatch.id) == nil)
+   393	    #expect(await mismatched.allCurrentSkills().isEmpty)
+   394	  }
+   395	
+   396	  @Test("File-backed store does not overwrite corrupted optimizer memory")
+   397	  func fileBackedStoreDoesNotOverwriteCorruptedOptimizerMemory() async throws {
+   398	    let root = try Self.temporaryDirectory()
+   399	    defer { try? FileManager.default.removeItem(at: root) }
+   400	    let store = try FileCoreAgentSkillStore(rootDirectory: root)
+   401	    let base = Self.skill(id: "swift", body: "Use Swift Testing.")
+   402	    try await store.save(base)
+   403	    let optimizer = CoreAgentSkillOptimizer(store: store)
+   404	    _ = try await optimizer.propose(
+   405	      CoreAgentSkillOptimizationProposal(
+   406	        skillID: base.id,
+   407	        baselineScore: 0.90,
+   408	        candidateEdits: [.append("\nNever validate.")],
+   409	        validation: Self.validation(score: 0.10, passed: false)
+   410	      )
+   411	    )
+   412	    let memoryFile = try #require(Self.firstFile(suffix: "-optimizer-memory.json", under: root))
+   413	    try Data("not-json".utf8).write(to: memoryFile, options: [.atomic])
+   414	
+   415	    await #expect(throws: CoreAgentSkillOptimizationError.corruptSkillStore(
+   416	      "optimizer memory could not be decoded for swift"
+   417	    )) {
+   418	      _ = try await optimizer.propose(
+   419	        CoreAgentSkillOptimizationProposal(
+   420	          skillID: base.id,
+   421	          baselineScore: 0.90,
+   422	          candidateEdits: [.append("\nStill invalid.")],
+   423	          validation: Self.validation(score: 0.10, passed: false)
+   424	        )
+   425	      )
+   426	    }
+   427	    await #expect(throws: CoreAgentSkillOptimizationError.corruptSkillStore(
+   428	      "optimizer memory could not be decoded for swift"
+   429	    )) {
+   430	      try await store.recordMetaObservation(
+   431	        CoreAgentSkillMetaObservation(
+   432	          runID: "sleep",
+   433	          proposalID: "proposal",
+   434	          reason: .validationDidNotImprove,
+   435	          notes: "corrupt"
+   436	        ),
+   437	        skillID: base.id
+   438	      )
+   439	    }
+   440	    #expect(try String(contentsOf: memoryFile, encoding: .utf8) == "not-json")
+   441	  }
+   442	
+   443	  @Test("File-backed best_skill export supports explicit safe filenames")
+   444	  func fileBackedBestSkillExportSupportsExplicitSafeFilenames() async throws {
+   445	    let root = try Self.temporaryDirectory()
+   446	    defer { try? FileManager.default.removeItem(at: root) }
+   447	    let store = try FileCoreAgentSkillStore(rootDirectory: root)
+   448	    let skill = Self.skill(id: "swift", body: "Use Swift Testing.")
+   449	    try await store.save(skill)
+   450	    let exportDirectory = root.appending(path: "exports", directoryHint: .isDirectory)
+   850	    )
+   851	    let partialRun = Self.run(
+   852	      id: partialID,
+   853	      events: [
+   854	        Self.event(runID: partialID, kind: .toolExecutionStarted, message: "partial")
+   855	      ]
+   856	    )
+   857	    let store = StaticEngineStore(traces: [
+   858	      CoreAgentEngineTrace(
+   859	        projectID: "coreagent",
+   860	        threadID: nil,
+   861	        run: validRun,
+   862	        receipt: try CoreAgentRunReceipt(run: validRun)
+   863	      ),
+   864	      CoreAgentEngineTrace(
+   865	        projectID: "coreagent",
+   866	        threadID: nil,
+   867	        run: changedTamperedRun,
+   868	        receipt: try CoreAgentRunReceipt(run: originalTamperedRun)
+   869	      ),
+   870	      CoreAgentEngineTrace(
+   871	        projectID: "coreagent",
+   872	        threadID: nil,
+   873	        run: partialRun,
+   874	        receipt: try CoreAgentRunReceipt(run: partialRun)
+   875	      ),
+   876	    ])
+   877	    let harvester = CoreAgentSkillEngineTraceHarvester(engineStore: store)
+   878	
+   879	    let evidence = await harvester.harvest(projectID: "coreagent")
+   880	
+   881	    #expect(evidence.map { $0.metadata["run_id"] } == [validID.uuidString.lowercased()])
+   882	    #expect(evidence.map(\.score) == [1])
+   883	  }
+   884	
+   885	  @Test("Replay generator creates deterministic replay and dream rollout requests")
+   886	  func replayGeneratorCreatesDeterministicReplayAndDreamRolloutRequests() throws {
+   887	    let failed = CoreAgentSkillRolloutEvidence(
+   888	      id: "engine-trace-failed",
+   889	      taskID: "issue-authorization",
+   890	      transcriptDigest: "sha256:failed-transcript",
+   891	      toolEventDigest: "sha256:failed-tools",
+   892	      verifierFeedback: "typed failure secret-feedback",
+   893	      score: 0,
+   894	      metadata: [
+   895	        "project_id": "coreagent",
+   896	        "run_id": "failed-run",
+   897	        "run_status": "failed",
+   898	        "suite_id": "source-train",
+   899	      ]
+   900	    )
+   901	    let completed = CoreAgentSkillRolloutEvidence(
+   902	      id: "engine-trace-completed",
+   903	      taskID: "run-completed",
+   904	      transcriptDigest: "sha256:completed-transcript",
+   905	      toolEventDigest: "sha256:completed-tools",
+   906	      verifierFeedback: "typed success secret-feedback",
+   907	      score: 1,
+   908	      metadata: [
+   909	        "project_id": "coreagent",
+   910	        "run_id": "completed-run",
+   911	        "run_status": "completed",
+   912	        "suite_id": "source-heldout",
+   913	      ]
+   914	    )
+   915	    let generator = CoreAgentSkillReplayGenerator()
+   916	    let unknownSuite = CoreAgentSkillRolloutEvidence(
+   917	      id: "engine-trace-unknown-suite",
+   918	      taskID: "run-unknown-suite",
+   919	      transcriptDigest: "sha256:unknown-suite-transcript",
+   920	      toolEventDigest: "sha256:unknown-suite-tools",
+   921	      verifierFeedback: "unknown suite secret-feedback",
+   922	      score: 1,
+   923	      metadata: [
+   924	        "project_id": "coreagent",
+   925	        "run_id": "unknown-suite-run",
+   926	        "run_status": "completed",
+   927	      ]
+   928	    )
+   929	
+   930	    let splitSafe = try generator.generate(
+

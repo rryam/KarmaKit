@@ -1,0 +1,75 @@
+```json
+{
+  "findings": [
+    {
+      "severity": "P1",
+      "file": "Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift",
+      "line": 1447,
+      "title": "Checkpoint predicate allows fallback to threadID+namespace without scope key validation",
+      "description": "The checkpointRecords predicate uses OR logic: `record.checkpointScopeKey == scopeKey || (record.threadID == threadID && record.namespace == namespace)`. The OR branch bypasses scope key validation, allowing rows with mismatched or forged scope keys to be returned and decoded. This violates the intended contract that 'matching corrupt rows fail closed with CoreAgentSwiftDataGraphPersistenceError; no stale fallback.' A row with correct threadID+namespace but forged scopeKey will pass the OR condition and reach decoding, causing data corruption or silent failures.",
+      "evidence": "Line 1448-1450 predicate allows `(record.threadID == threadID && record.namespace == namespace)` without requiring `record.checkpointScopeKey == scopeKey`. The scope key is computed deterministically from threadID+namespace (line 1443), so the OR condition is redundant and weakens integrity checks.",
+      "concrete_fix": "Remove the OR fallback branch. Use only: `predicate: #Predicate<CoreAgentSwiftDataGraphCheckpointRecord> { record in record.checkpointScopeKey == scopeKey }`. This forces all returned rows to pass scope key validation in the checkpoint() method (line 1153)."
+    },
+    {
+      "severity": "P1",
+      "file": "Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift",
+      "line": 1585,
+      "title": "Store records predicate incomplete—missing storeRecords implementation",
+      "description": "The storeRecords method (line 1580) is cut off in the supplied code at line 1585. The predicate for FetchDescriptor is incomplete, likely containing the same OR fallback vulnerability as checkpointRecords. Without the full predicate, scope key validation cannot be verified for store reads.",
+      "evidence": "Line 1584-1585 shows `predicate: #Predicate<CoreAgentSwiftDataGraphStoreRecord> { record in` followed by incomplete code. Based on checkpoint pattern (line 1448-1450), the store likely has the same OR fallback bug.",
+      "concrete_fix": "Complete storeRecords predicate to validate scope key only: `predicate: #Predicate<CoreAgentSwiftDataGraphStoreRecord> { record in record.storeScopeKey == scopeKey }` without OR fallback to namespace+key."
+    },
+    {
+      "severity": "P2",
+      "file": "Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift",
+      "line": 1400,
+      "title": "checkpoint(id:) does not validate all fetched candidates, only returns first",
+      "description": "The checkpoint(id:) method fetches multiple candidates sorted by saveSequence (newest first), then returns the first without validating all candidates. Per the contract, 'Checkpointer history/checkpoint(id:) validate all fetched candidates; latest validates the newest candidate only for O(1) resume.' If the first candidate is corrupt, an exception is thrown, but no fallback chain through older candidates occurs. This is correct fail-closed behavior, but the implementation doesn't explicitly document why only the first is validated (O(1) intent).",
+      "evidence": "Lines 1395-1410: fetch returns multiple records sorted by saveSequence descending, but line 1409 returns only `checkpoints.first` after mapping. The map at line 1408 validates all fetched records via checkpoint(as:), so all are checked before line 1410.",
+      "concrete_fix": "The implementation is actually correct—all records are validated in the map before the guard. No fix needed, but add a comment clarifying O(1) intent: `// Validate all candidates before returning first (O(1) on success, fail-closed on any corruption)` at line 1395."
+    },
+    {
+      "severity": "P2",
+      "file": "Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift",
+      "line": 1500,
+      "title": "Store put() validates existing rows but does not validate the new record before insert",
+      "description": "In put(), line 1500 creates a new record via CoreAgentSwiftDataGraphStoreRecord constructor, but the record is not validated for integrity before modelContext.insert(). Existing rows are validated (line 1503), which is correct, but the newly created record's integrity is not independently checked. If encoding fails silently or digest computation is wrong, corrupt data is inserted.",
+      "evidence": "Lines 1500-1511: graphRecord is created and encoded, a new CoreAgentSwiftDataGraphStoreRecord is constructed with the encoded value and computed digest (via constructor), but there is no call to validateIntegrity() on the newly created record before insert at line 1510.",
+      "concrete_fix": "After line 1500, add: `try record.validateIntegrity()` before insert. This ensures digest and scope key are correct at write time, catching encoding bugs early."
+    },
+    {
+      "severity": "P2",
+      "file": "Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift",
+      "line": 1378,
+      "title": "Checkpointer save() does not validate the new checkpoint record before insert",
+      "description": "In save(), line 1378 creates a CoreAgentSwiftDataGraphCheckpointRecord, but there is no validation of the record (scope key, digest) before modelContext.insert() at line 1383. This mirrors the store put() issue—newly created records should validate their own integrity before persistence.",
+      "evidence": "Lines 1378-1384: record is constructed with encoded checkpoint and computed digest, then inserted without validating scope key or digest. The checkpoint() method validates on read (line 1153), but writes should also validate to catch encoding bugs early.",
+      "concrete_fix": "After line 1378, add: `try record.checkpoint(as: State.self)` to trigger all validations (scope key, digest, payload) before insert. Or add a validate method to CoreAgentSwiftDataGraphCheckpointRecord and call it."
+    },
+    {
+      "severity": "P3",
+      "file": "Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift",
+      "line": 2201,
+      "title": "Test swiftDataGraphStoreFailsClosedOnForgedScopeKeysBeforeReadOrMutation is incomplete",
+      "description": "The test at line 2201 is cut off in the supplied code. The test name suggests it should verify that forged scope keys fail on store read and mutation operations, but the test body is missing. This is a testing gap.",
+      "evidence": "Line 2207 inserts a CoreAgentSwiftDataGraphStoreRecord with forged scope key, then lines 2217-2223 call store operations. Lines beyond 2223 are missing, so the assertions are incomplete.",
+      "concrete_fix": "Complete the test with assertions verifying that put(), record(), removeValue(), and keys() all throw CoreAgentSwiftDataGraphPersistenceError when scope key is forged."
+    }
+  ],
+  "residual_risks": [
+    "OR fallback in checkpoint/store predicates allows rows with correct threadID+namespace but forged or mismatched scopeKey to bypass validation on read. Scope key is deterministic from threadID+namespace, so the OR is a logic error that weakens the integrity model.",
+    "New records are not validated before insert in save() and put(). Encoding errors or digest computation bugs at write time are not caught until the next read, risking silent data corruption.",
+    "storeRecords() predicate implementation is incomplete in supplied code; likely contains the same OR fallback vulnerability as checkpointRecords().",
+    "No explicit test coverage for write-time validation failures (encoding errors in save/put that should fail before insert).",
+    "history() and latest() do not document or enforce that all fetched candidates are validated before returning; reliance on map() for validation is implicit."
+  ],
+  "testing_gaps": [
+    "Missing test: checkpoint save() should fail closed if record validation (scope key or digest) fails at write time, not just at read time.",
+    "Missing test: store put() should fail closed if record validation fails at write time.",
+    "Missing test: checkpoint(id:) should validate all fetched candidates before returning first, blocking stale fallback.",
+    "Missing test: store read operations (record/value) should fail closed on any forged or mismatched scope key in matching rows, without fallback to threadID/namespace only.",
+    "Missing test: store keys() should fail closed on corrupt integrity in any row with matching namespace, not just matching key.",
+    "Incomplete test: swiftDataGraphStoreFailsClosedOnForgedScopeKeysBeforeReadOrMutation (line 2201) lacks full assertions."
+  ]
+}
+```

@@ -1,0 +1,58 @@
+VERDICT: BLOCK
+
+FINDINGS:
+
+**P1: Actor Isolation Violation in CoreAgentSwiftDataCheckpointStore**
+- File: `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift`, lines 271–330
+- Symbol: `CoreAgentSwiftDataCheckpointStore.scopedRecords(for:)`
+- Issue: `scopedRecords` calls `modelContext.fetch(...)` without `await` and returns a mutable array that is then filtered/sorted in place. SwiftData `ModelContext` is main-actor isolated; the method must be `async` or the fetch must be called through a main-actor boundary. Current code will crash at runtime when called from async contexts.
+- Fix: Mark `scopedRecords` as `async throws` and add `await` before `modelContext.fetch()`. All callsites already use `try await`, so this is a straightforward fix.
+
+**P1: Checkpoint Digest Does Not Bind Checkpoint ID**
+- File: `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift`, lines 168–188 (`digest` function)
+- Symbol: `CoreAgentSwiftDataCheckpointSnapshot.digest(...)`
+- Issue: The digest includes `checkpointID.uuidString.lowercased()`, which is correct. However, the test at line 247 (`swiftDataCheckpointSnapshotsBindSidecarMetadataIntoDigest`) manually constructs a `CoreAgentSwiftDataCheckpointSnapshot` with a replayed checkpoint ID and expects it to fail digest verification. The test passes, meaning the digest computation is working. However, re-reading the test: it constructs `replayedID` with a different checkpoint ID but the **same** checkpointDigest, and then calls `decodeCheckpoint`. The decode should fail on digest mismatch because the checkpoint ID is now different. The test correctly expects this. No issue here—test is valid.
+
+**P2: Scope Key May Collide Under Rare Conditions**
+- File: `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift`, lines 234–246 (`scopeKey`)
+- Symbol: `CoreAgentSwiftDataCheckpointRecord.scopeKey(...)`
+- Issue: The scope key uses length-prefixed concatenation (`"\($0.utf8.count):\($0)"|...`) but does not include a version or algorithm prefix. If the hash function ever changes (e.g., to SHA-512), old scope keys will become orphaned. More critically, if `checkpointKey`, `authorityBoundaryID`, or `policyVersion` contain the separator `"|"` literally, collision is possible (though unlikely with typical IDs).
+- Fix: Add a version prefix like `"scope-sha256-v1:"` and either ban `"|"` in authority boundary IDs or use a safer delimiter encoding (e.g., JSON encoding or nested length prefixes).
+
+**P2: Hard-Delete Semantics Not Documented**
+- File: `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift`, lines 304–316 (`removeCheckpoint`)
+- Symbol: `CoreAgentSwiftDataCheckpointStore.removeCheckpoint(for:)`
+- Issue: The method calls `modelContext.delete(record)` for all scoped records, then `modelContext.save()`. If `save()` fails after partial deletion, the database state is inconsistent. The method rolls back on error, but the rollback is a no-op if records have already been deleted in-memory. SwiftData's `rollback()` should revert the transaction, but this is not explicitly documented in the call site. The comment or docstring should clarify: "Atomically deletes all scoped rows or rolls back all changes on error. No partial deletes are persisted."
+- Fix: Add an explicit docstring to `removeCheckpoint` documenting the atomic delete guarantee and rollback behavior.
+
+**P2: Lossy Time Token Encoding for Subsecond Precision**
+- File: `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift`, lines 191–193 (`timeToken`)
+- Symbol: `CoreAgentSwiftDataCheckpointSnapshot.timeToken(...)`
+- Issue: The code computes `Int64((date.timeIntervalSinceReferenceDate * 1_000_000_000).rounded())`. If two checkpoints are saved with savedAt times that differ by < 0.5 nanoseconds (extremely unlikely but theoretically possible), they will have the same timeToken and thus the same digest. The test `swiftDataCheckpointSnapshotsPreserveSubsecondDatePrecision` uses a savedAt of `987_654_321.987654` seconds and verifies round-trip equality, which is sound. However, the digest comparison at line 180 uses exact string equality on `checkpointDigest`, which will fail if the timeToken rounds differently on decode vs. encode. This is prevented by the test's use of exact Date equality, but the code does not prevent clock skew or floating-point rounding surprises.
+- Fix: Document that checkpoint digests are sensitive to sub-nanosecond clock jitter, or store timestamps as Integer nanoseconds in the snapshot to eliminate rounding ambiguity. Current tests pass, so this is a lower-priority hardening issue.
+
+**P3: Cross-Scope Metadata Tampering Not Fully Blocked**
+- File: `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift`, lines 271–330 (`scopedRecords`)
+- Symbol: `CoreAgentSwiftDataCheckpointStore.scopedRecords(for:)`
+- Issue: The method filters records by `record.scopeKey == scopeKey && record.checkpointKey == key && record.authorityBoundaryID == authorityBoundaryID && record.policyVersion == policyVersion`. This is redundant: if `scopeKey` is correctly computed as a hash of the other three fields, filtering on all four is belt-and-suspenders. If SwiftData corruption allows a row with a mismatched scopeKey to exist, the filter will catch it. However, the redundancy suggests the implementer was unsure. Consider removing the redundant checks or documenting why they are defensive.
+- Fix: Add a comment explaining the redundant checks are defensive against SwiftData row corruption, or simplify to filter on scopeKey only if scopeKey is truly deterministic and collision-free.
+
+**P3: Test Assertions Use Exact Prose for Digest Format**
+- File: `Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift`, lines 32 (`snapshot.checkpointDigest.hasPrefix("sha256:")`)
+- Symbol: Test assertion in `swiftDataCheckpointSnapshotsPreserveCanonicalBytesAndPolicyMetadata`
+- Issue: The test asserts `snapshot.checkpointDigest.hasPrefix("sha256:")` as a brittle prose contract. If the digest format ever changes to `"sha256-v2:"` or similar, the test will fail even if the checkpoint is still secure. This is not a correctness issue but a test-maintainability issue.
+- Fix: Replace the exact prefix assertion with a contract test that verifies the digest is a valid hex string of the expected length, or define a `DigestAlgorithm` enum and check `snapshot.checkpointDigest.starts(with: DigestAlgorithm.sha256.prefix)`.
+
+TEST GAPS:
+
+1. **Digest Collision Under Scope-Key Reuse**: No test verifies that two different (checkpointKey, authorityBoundaryID, policyVersion) tuples with identical string representations after length-prefixing produce different scope keys. Add a test with keys like `"1:a|1:b"` vs. `"1a:1:b"` to catch future collision bugs.
+
+2. **ModelContext Isolation Under Concurrent Access**: No test verifies that `CoreAgentSwiftDataCheckpointStore` correctly isolates concurrent `save` / `load` / `remove` calls through the main-actor boundary. Add a test that calls `store.saveCheckpoint(...)` concurrently from multiple tasks and verifies no data loss or corruption.
+
+3. **Checkpoint Readback After Store Failure**: No test covers the scenario where `modelContext.save()` fails mid-transaction (e.g., a constraint violation or disk full). The current test assumes `save()` succeeds atomically. Add a test that mocks `ModelContext.save()` to throw and verifies `rollback()` is called and the store recovers for the next operation.
+
+4. **Authority Boundary Denial at Decode Time**: The test `swiftDataCheckpointSnapshotsEnforceReadBarriersBeforeDecode` manually constructs a snapshot with a mismatched authority boundary and verifies the decode throws. However, no test verifies that a corrupted SwiftData row with a valid digest but mismatched authority boundary is rejected by `scopedRecords(for:)` during normal operation. Add a test that inserts a cross-scope record directly and verifies `loadCheckpoint(for:)` rejects it.
+
+5. **Portable Checkpoint Store Existential Over Swift Data**: The test `swiftDataCheckpointStoreWorksThroughPortableCheckpointStoreProtocol` is a smoke test. Add a test that verifies a `CoreAgentSession` can restore history from a SwiftData-backed store when run on a clean app launch (not just within a test), and that the restored transcript matches the saved one exactly, including order and metadata.
+
+6. **Lossless Date Codec Drift**: Add a regression test that encodes a checkpoint with a date at the boundary of nanosecond precision (e.g., `Date(timeIntervalSinceReferenceDate: 0.999999999)`) and decodes it, verifying exact round-trip equality. Current subsecond test uses `987_654_321.987654`, which is not a precision boundary.

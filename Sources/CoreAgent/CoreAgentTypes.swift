@@ -203,6 +203,26 @@ public struct CoreAgentUsage: Codable, Equatable, Sendable {
       reasoningTokens: usage.output.reasoningTokenCount
     )
   }
+
+  public static let zero = CoreAgentUsage(
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0
+  )
+
+  public var totalTokenCount: Int {
+    inputTokens + outputTokens + reasoningTokens
+  }
+
+  public func adding(_ other: CoreAgentUsage) -> CoreAgentUsage {
+    CoreAgentUsage(
+      inputTokens: inputTokens + other.inputTokens,
+      cachedInputTokens: cachedInputTokens + other.cachedInputTokens,
+      outputTokens: outputTokens + other.outputTokens,
+      reasoningTokens: reasoningTokens + other.reasoningTokens
+    )
+  }
 }
 
 public struct CoreAgentResponse<Content>: Sendable where Content: Generable & Sendable {

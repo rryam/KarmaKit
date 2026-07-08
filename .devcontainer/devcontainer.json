@@ -1,0 +1,31 @@
+{
+  "name": "CoreAgent",
+  "image": "mcr.microsoft.com/devcontainers/swift:6.1",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "username": "vscode"
+    },
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "postCreateCommand": "./scripts/setup.sh --devcontainer",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "sswg.swift-lang",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "swift.path": "/usr/bin/swift"
+      }
+    }
+  },
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"
+  ],
+  "forwardPorts": [],
+  "containerEnv": {
+    "COREAGENT_DEVCONTAINER": "1"
+  }
+}

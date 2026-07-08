@@ -1,0 +1,7 @@
+Verdict: PASS
+
+Findings:
+- None
+
+Residual risks:
+- Line 3922-3924: `fingerprint(_:)` method is defined but never called. The `gateFingerprint` property (3891-3902) and `makeDonationIdentifier` (3911-3919) both use `framed()` directly rather than this helper. This is benign dead code but worth noting for future cleanup.

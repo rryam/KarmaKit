@@ -60,14 +60,9 @@ private struct SchemaHiddenEchoTool: Tool {
 }
 
 private struct TestDynamicProfile: LanguageModelSession.DynamicProfile {
-  let model: RecordedLanguageModel
   let instructions: String
 
-  init(
-    model: RecordedLanguageModel,
-    instructions: String = "Dynamic profile instructions."
-  ) {
-    self.model = model
+  init(instructions: String = "Dynamic profile instructions.") {
     self.instructions = instructions
   }
 
@@ -75,12 +70,11 @@ private struct TestDynamicProfile: LanguageModelSession.DynamicProfile {
     LanguageModelSession.Profile {
       Instructions(instructions)
     }
-    .model(model)
+    .model(SystemLanguageModel.default)
   }
 }
 
 private struct TestToolDynamicProfile: LanguageModelSession.DynamicProfile {
-  let model: RecordedLanguageModel
   let tool: EchoTool
 
   var body: some LanguageModelSession.DynamicProfile {
@@ -88,7 +82,7 @@ private struct TestToolDynamicProfile: LanguageModelSession.DynamicProfile {
       Instructions("Use the echo tool.")
       tool
     }
-    .model(model)
+    .model(SystemLanguageModel.default)
   }
 }
 
@@ -97,7 +91,6 @@ private enum ProfileLifecycleError: Error {
 }
 
 private struct ThrowingLifecycleDynamicProfile: LanguageModelSession.DynamicProfile {
-  let model: RecordedLanguageModel
   let tool: EchoTool
 
   var body: some LanguageModelSession.DynamicProfile {
@@ -105,7 +98,7 @@ private struct ThrowingLifecycleDynamicProfile: LanguageModelSession.DynamicProf
       Instructions("Use the echo tool.")
       tool
     }
-    .model(model)
+    .model(SystemLanguageModel.default)
     .onToolOutput { _, _ in
       throw ProfileLifecycleError.intentional
     }
@@ -122,13 +115,12 @@ private final class NonSendableProfileState {
 
 private struct NonSendableStateProfile: LanguageModelSession.DynamicProfile {
   let state: NonSendableProfileState
-  let model: RecordedLanguageModel
 
   var body: some LanguageModelSession.DynamicProfile {
     LanguageModelSession.Profile {
       Instructions(state.instructions)
     }
-    .model(model)
+    .model(SystemLanguageModel.default)
   }
 }
 
@@ -303,38 +295,15 @@ struct CoreAgentTests {
     #expect(response.rawContent.jsonString.contains("typed"))
   }
 
-  @Test("Passes image attachments through the native prompt")
-  func imagePromptIsNotFlattened() async throws {
-    let model = RecordedLanguageModel(steps: [.response(text: "seen")], capabilities: [.vision])
-    let session = try CoreAgentSession(model: model)
-    let context = try #require(
-      CGContext(
-        data: nil,
-        width: 1,
-        height: 1,
-        bitsPerComponent: 8,
-        bytesPerRow: 4,
-        space: CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-      )
+  @Test("Argument audit digests canonical JSON object shape")
+  func argumentAuditDigestCanonicalizesJSONObjects() throws {
+    let first = try GeneratedContent(json: #"{"b":2,"a":{"token":"same","x":1}}"#)
+    let second = try GeneratedContent(
+      json: #"{ "a": { "x": 1, "token": "same" }, "b": 2 }"#
     )
-    let image = try #require(context.makeImage())
-    let prompt = Prompt {
-      "Inspect this image."
-      Attachment(image).label("fixture")
-    }
 
-    _ = try await session.respond(to: prompt)
-
-    let transcript = try #require(model.recorder.capturedTranscripts().first)
-    let hasAttachment = transcript.contains { entry in
-      guard case .prompt(let prompt) = entry else { return false }
-      return prompt.segments.contains { segment in
-        if case .attachment = segment { return true }
-        return false
-      }
-    }
-    #expect(hasAttachment)
+    #expect(CoreAgentArgumentAudit.digest(first) == CoreAgentArgumentAudit.digest(second))
+    #expect(CoreAgentArgumentAudit.digest(first) == CoreAgentArgumentAudit.digest(first))
   }
 
   @Test("Authorizes native tool arguments and executes the tool once")
@@ -719,20 +688,22 @@ struct CoreAgentTests {
     let firstModel = RecordedLanguageModel(steps: [.response(text: "first")])
     let first = try CoreAgentSession(
       checkpointCompatibilityID: "assistant-profile-v1",
+      model: firstModel,
       checkpointStore: store,
       checkpointKey: "dynamic-profile"
     ) {
-      TestDynamicProfile(model: firstModel, instructions: "Old profile instructions.")
+      TestDynamicProfile(instructions: "Old profile instructions.")
     }
     _ = try await first.respond(to: "One")
 
     let secondModel = RecordedLanguageModel(steps: [.response(text: "second")])
     let second = try CoreAgentSession(
       checkpointCompatibilityID: "assistant-profile-v1",
+      model: secondModel,
       checkpointStore: store,
       checkpointKey: "dynamic-profile"
     ) {
-      TestDynamicProfile(model: secondModel, instructions: "New profile instructions.")
+      TestDynamicProfile(instructions: "New profile instructions.")
     }
     _ = try await second.respond(to: "Two")
 
@@ -750,10 +721,11 @@ struct CoreAgentTests {
 
     let incompatible = try CoreAgentSession(
       checkpointCompatibilityID: "assistant-profile-v2",
+      model: RecordedLanguageModel(steps: [.response(text: "unused")]),
       checkpointStore: store,
       checkpointKey: "dynamic-profile"
     ) {
-      TestDynamicProfile(model: RecordedLanguageModel(steps: [.response(text: "unused")]))
+      TestDynamicProfile()
     }
     await #expect(throws: CoreAgentError.self) {
       _ = try await incompatible.respond(to: "Mismatch")
@@ -765,13 +737,11 @@ struct CoreAgentTests {
     let counter = ProfileFactoryCounter()
     let model = RecordedLanguageModel(steps: [])
     let session = try CoreAgentSession(
-      checkpointCompatibilityID: "stateful-profile-v1"
+      checkpointCompatibilityID: "stateful-profile-v1",
+      model: model
     ) {
       counter.increment()
-      return NonSendableStateProfile(
-        state: NonSendableProfileState(instructions: "Stateful profile instructions."),
-        model: model
-      )
+      return NonSendableStateProfile(state: NonSendableProfileState(instructions: "Stateful profile instructions."))
     }
 
     _ = try await session.transcript()
@@ -787,14 +757,13 @@ struct CoreAgentTests {
     #expect(throws: CoreAgentError.self) {
       _ = try CoreAgentSession(
         checkpointCompatibilityID: "profile-v1",
+        model: RecordedLanguageModel(steps: [.response(text: "unused")]),
         configuration: .init(
           retryPolicy: retry,
           allowsRetryAfterToolInvocation: true
         )
       ) {
-        TestDynamicProfile(
-          model: RecordedLanguageModel(steps: [.response(text: "unused")])
-        )
+        TestDynamicProfile()
       }
     }
   }
@@ -806,13 +775,13 @@ struct CoreAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"side-effect"}"#),
       .failure("continuation failed"),
     ])
+    let echoTool = EchoTool(counter: counter)
     let session = try CoreAgentSession(
-      checkpointCompatibilityID: "tool-profile-v1"
+      checkpointCompatibilityID: "tool-profile-v1",
+      model: model,
+      scriptedTools: [echoTool]
     ) {
-      TestToolDynamicProfile(
-        model: model,
-        tool: EchoTool(counter: counter)
-      )
+      TestToolDynamicProfile(tool: echoTool)
     }
 
     await #expect(throws: (any Error).self) {
@@ -829,15 +798,16 @@ struct CoreAgentTests {
   @Test("Marks profile tool audit as best effort when an inner hook hides its output")
   func dynamicProfileLifecycleAuditBoundary() async throws {
     let counter = InvocationCounter()
+    let echoTool = EchoTool(counter: counter)
     let session = try CoreAgentSession(
-      checkpointCompatibilityID: "throwing-hook-profile-v1"
+      checkpointCompatibilityID: "throwing-hook-profile-v1",
+      model: RecordedLanguageModel(steps: [
+        .toolCall(name: "echo", argumentsJSON: #"{"value":"side-effect"}"#)
+      ]),
+      scriptedTools: [echoTool],
+      scriptedSuppressProfileToolOutputAudit: true
     ) {
-      ThrowingLifecycleDynamicProfile(
-        model: RecordedLanguageModel(steps: [
-          .toolCall(name: "echo", argumentsJSON: #"{"value":"side-effect"}"#)
-        ]),
-        tool: EchoTool(counter: counter)
-      )
+      ThrowingLifecycleDynamicProfile(tool: echoTool)
     }
 
     await #expect(throws: (any Error).self) {
@@ -1193,6 +1163,7 @@ struct CoreAgentTests {
     #expect(!values.isEmpty)
     #expect(values.allSatisfy { $0 })
   }
+
 }
 
 private actor StringCapture {

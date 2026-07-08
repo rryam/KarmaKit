@@ -1,0 +1,36 @@
+Verdict: BLOCK
+
+Findings:
+- [critical] `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:3788`: The synthesized `Decodable` implementation of `CoreAgentAppIntentDonationRecord` bypasses the validation rules defined in its custom initializer. A serialized payload can be decoded with disallowed subject kinds (e.g., `promptText`, `toolArguments` containing sensitive PII) or with a tampered `donationIdentifier` that does not match the actual properties of the record.
+  *Fix*: Implement a custom `init(from decoder: Decoder) throws` that explicitly validates the subject and verifies that the decoded `donationIdentifier` matches the calculated hash:
+  ```swift
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.descriptorIdentifier = try container.decode(String.self, forKey: .descriptorIdentifier)
+    self.descriptorExposureFingerprint = try container.decode(String.self, forKey: .descriptorExposureFingerprint)
+    let decodedSubject = try container.decode(CoreAgentAppIntentDonationSubject.self, forKey: .subject)
+    self.subject = try decodedSubject.validatedForDonation()
+    self.authorityBoundaryID = try container.decode(String.self, forKey: .authorityBoundaryID)
+    self.policyVersion = try container.decode(Int.self, forKey: .policyVersion)
+    self.donatedAt = try container.decode(Date.self, forKey: .donatedAt)
+    
+    let decodedIdentifier = try container.decode(String.self, forKey: .donationIdentifier)
+    let expectedIdentifier = Self.makeDonationIdentifier(
+      descriptorExposureFingerprint: self.descriptorExposureFingerprint,
+      subject: self.subject,
+      authorityBoundaryID: self.authorityBoundaryID,
+      policyVersion: self.policyVersion
+    )
+    guard decodedIdentifier == expectedIdentifier else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .donationIdentifier,
+        in: container,
+        debugDescription: "donationIdentifier mismatch"
+      )
+    }
+    self.donationIdentifier = decodedIdentifier
+  }
+  ```
+
+Residual risks:
+- `CoreAgentAppleConsentReceipt` has an optional `expiresAt` property, but the `issue` helper requires a non-optional `expiresAt: Date`. Ensure that downstream verification explicitly rejects missing expiry dates if the policy demands it, since a manually constructed or decoded receipt could have `expiresAt` set to `nil`.

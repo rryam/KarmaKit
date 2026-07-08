@@ -1,0 +1,46 @@
+I'll review this Swift 6.4 CoreAgent slice focusing on App Intent donation identity, invalidation, authority/consent, privacy, and concurrency issues.
+
+## Analysis
+
+**Identity & Invalidation Foundation:**
+- `CoreAgentAppIntentDonationRecord` uses SHA256-based stable identity (line 3851) derived from descriptor fingerprint + subject kind/stableIdentifier/scopeID + authority boundary + policy version. Identity excludes sensitive fields (line 1885-1886 tests verify this).
+- `InMemoryCoreAgentAppIntentDonationStore` invalidation logic (lines 3933-3959) correctly matches by `donationIdentifier` OR `scopeID`, removes from active records, appends to invalidation log. Scope-based invalidation works as intended (test lines 1992-2003).
+
+**Authority & Consent Binding:**
+- `CoreAgentAppleActionGate` validates donation records against sandbox authority boundary + policy version (lines 3168-3179). Mismatches deny with specific errors (lines 1962-1963).
+- Consent receipt binding uses `gateFingerprint` (line 3833) which includes donation identity, descriptor identity, scope ID, and boundary/policy. This prevents cross-boundary/cross-policy replay.
+- Test line 1956-1962 confirms receipts tied to specific donation identities cannot be replayed.
+
+**Privacy in Identifiers:**
+- Donation identifier is hashed (line 3851), does not expose descriptor ID or subject details in the hash itself.
+- `gateFingerprint` includes `subject.scopeID` (line 3839) which is intentional for scope-based invalidation, but this is used internally for gate validation, not exposed to Siri/Spotlight.
+- `descriptorIdentifier` stored plaintext (line 3819) — this is the AppIntent identifier, acceptable for authorization checks.
+
+**Swift Concurrency:**
+- `InMemoryCoreAgentAppIntentDonationStore` is properly marked `actor` (line 3909) with no `@unchecked Sendable`.
+- `CoreAgentAppleActionGate` is `Sendable` (line 1980) with `@escaping @Sendable` closure for `now` (line 1985).
+- All public types conform to `Sendable`.
+- No data races detected in isolation logic.
+
+**Potential Issues:**
+
+1. **CRITICAL - Privacy leak in gateFingerprint:** Line 3839 includes `subject.scopeID` in the fingerprint used for consent binding. While this enables scope-based invalidation, the `gateFingerprint` is computed from donation records which may be persisted or transmitted. If `scopeID` contains sensitive workspace/entity information, it could leak via fingerprint comparison or logs. The scope should be included in the donation identity hash, not exposed in plaintext within the gate fingerprint.
+
+2. **Invalidation semantic gap:** The `invalidate()` method (line 3936-3943) matches records by `donationIdentifier OR scopeID`, but there's no guarantee that invalidation records are immutable or tamper-proof. An attacker could construct fake `CoreAgentAppIntentDonationInvalidationRequest` objects. However, this appears to be internal-only (not public API), so trust boundary may be acceptable.
+
+3. **Missing invalidation of consumed consents:** When a donation is invalidated (line 3955), the corresponding consent receipt should also be invalidated. Currently, `CoreAgentAppleConsumedConsentReceipts` (line 2914) has no mechanism to clear consumed receipts on donation erasure, potentially allowing stale consent reuse if the donation record is re-created with the same ID after invalidation.
+
+---
+
+## Verdict: BLOCK
+
+## Findings:
+
+- **[HIGH]** Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:3839 — `gateFingerprint` includes plaintext `subject.scopeID`, which may leak scope/workspace identity information. Scope identifiers should be hashed or excluded from the gate fingerprint used for consent binding. Consider: `subject.scopeID.hashed()` or move scope validation to a separate, non-fingerprinted check.
+
+- **[MEDIUM]** Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2914-2927 — `CoreAgentAppleConsumedConsentReceipts` does not clear consumed receipts when corresponding donation records are invalidated. If a donation is erased and re-created with the same fingerprint, a stale consent from the invalidated donation could be replayed. Add a method to clear consumed receipts by donation ID, called from invalidation logic.
+
+## Residual risks:
+
+- Invalidation records are logged but never pruned; long-running services could accumulate unbounded memory.
+- `CoreAgentAppIntentDonationRecord.init()` throws but does not document which errors are recoverable vs. fatal.

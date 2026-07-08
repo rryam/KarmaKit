@@ -1,0 +1,396 @@
+Recheck Swift CoreAgentSkills L25 replay executor after fixes. Return STRICT JSON only:
+{
+  "verdict": "PASS" | "BLOCK",
+  "findings": [
+    {"severity":"P0|P1|P2|P3", "file":"path", "line":123, "title":"short", "description":"specific", "concrete_fix":"specific"}
+  ],
+  "testing_gaps": ["..."],
+  "residual_risks": ["..."]
+}
+
+Scope only L25 replay execution fixes:
+- Canonical digest validation requires sha256: plus lowercase 64-character hex.
+- Whole request batch is preflighted before backend calls, including invalid second request after a valid first request.
+- source_suite_id cannot be empty, cannot equal heldoutSuiteID, and cannot be in excludedSourceSuiteIDs; these fail before backend execution.
+- Backend verifierFeedback is not copied verbatim into rollout evidence; evidence stores a digest and sanitized mode-level feedback.
+- Request metadata is allowlisted so raw_prompt is not copied.
+
+Latest verification:
+- swift test --skip-update --filter CoreAgentSkillsTests: PASS, 34 tests.
+
+=== Sources/CoreAgentSkills/CoreAgentSkills.swift lines 452-610 ===
+  452	}
+  453	
+  454	public struct CoreAgentSkillReplayOutcome: Codable, Equatable, Sendable {
+  455	  public let requestID: String
+  456	  public let transcriptDigest: String
+  457	  public let toolEventDigest: String
+  458	  public let verifierFeedback: String
+  459	  public let score: Double
+  460	
+  461	  public init(
+  462	    requestID: String,
+  463	    transcriptDigest: String,
+  464	    toolEventDigest: String,
+  465	    verifierFeedback: String,
+  466	    score: Double
+  467	  ) {
+  468	    self.requestID = requestID
+  469	    self.transcriptDigest = transcriptDigest
+  470	    self.toolEventDigest = toolEventDigest
+  471	    self.verifierFeedback = verifierFeedback
+  472	    self.score = score
+  473	  }
+  474	}
+  475	
+  476	public protocol CoreAgentSkillReplayBackend: Sendable {
+  477	  func execute(_ request: CoreAgentSkillReplayRequest) async throws
+  478	    -> CoreAgentSkillReplayOutcome
+  479	}
+  480	
+  481	public struct CoreAgentSkillReplayExecutionPolicy: Codable, Equatable, Sendable {
+  482	  public let excludedSourceSuiteIDs: Set<String>
+  483	
+  484	  public init(excludedSourceSuiteIDs: Set<String> = []) {
+  485	    self.excludedSourceSuiteIDs = excludedSourceSuiteIDs
+  486	  }
+  487	}
+  488	
+  489	public struct CoreAgentSkillReplayExecutor: Sendable {
+  490	  private let backend: any CoreAgentSkillReplayBackend
+  491	  private let policy: CoreAgentSkillReplayExecutionPolicy
+  492	
+  493	  public init(
+  494	    backend: any CoreAgentSkillReplayBackend,
+  495	    policy: CoreAgentSkillReplayExecutionPolicy = CoreAgentSkillReplayExecutionPolicy()
+  496	  ) {
+  497	    self.backend = backend
+  498	    self.policy = policy
+  499	  }
+  500	
+  501	  public func execute(
+  502	    _ requests: [CoreAgentSkillReplayRequest]
+  503	  ) async throws -> [CoreAgentSkillRolloutEvidence] {
+  504	    try Self.validate(requests, policy: policy)
+  505	    var evidence: [CoreAgentSkillRolloutEvidence] = []
+  506	    for request in requests {
+  507	      let outcome = try await backend.execute(request)
+  508	      try Self.validate(outcome, for: request)
+  509	      evidence.append(Self.evidence(from: outcome, request: request))
+  510	    }
+  511	    return evidence
+  512	  }
+  513	
+  514	  private static func validate(
+  515	    _ requests: [CoreAgentSkillReplayRequest],
+  516	    policy: CoreAgentSkillReplayExecutionPolicy
+  517	  ) throws {
+  518	    var seen: Set<String> = []
+  519	    for request in requests {
+  520	      guard seen.insert(request.id).inserted else {
+  521	        throw CoreAgentSkillOptimizationError.duplicateReplayRequest(request.id)
+  522	      }
+  523	      guard !request.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+  524	        !request.sourceEvidenceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+  525	        !request.taskID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  526	      else {
+  527	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  528	          "replay request identity fields must be non-empty"
+  529	        )
+  530	      }
+  531	      guard !request.heldoutSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+  532	        throw CoreAgentSkillOptimizationError.emptyHeldoutSuiteID
+  533	      }
+  534	      guard isSHA256Digest(request.transcriptDigest),
+  535	        isSHA256Digest(request.toolEventDigest)
+  536	      else {
+  537	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  538	          "replay request digests must be sha256"
+  539	        )
+  540	      }
+  541	      if let sourceSuiteID = request.metadata["source_suite_id"] {
+  542	        guard !sourceSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+  543	          throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  544	            "replay source suite ID cannot be empty"
+  545	          )
+  546	        }
+  547	        guard sourceSuiteID != request.heldoutSuiteID else {
+  548	          throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  549	            "replay source suite cannot match heldout suite"
+  550	          )
+  551	        }
+  552	        guard !policy.excludedSourceSuiteIDs.contains(sourceSuiteID) else {
+  553	          throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  554	            "replay source suite is excluded"
+  555	          )
+  556	        }
+  557	      }
+  558	    }
+  559	  }
+  560	
+  561	  private static func validate(
+  562	    _ outcome: CoreAgentSkillReplayOutcome,
+  563	    for request: CoreAgentSkillReplayRequest
+  564	  ) throws {
+  565	    guard outcome.requestID == request.id else {
+  566	      throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  567	        "replay outcome request ID mismatch"
+  568	      )
+  569	    }
+  570	    guard isSHA256Digest(outcome.transcriptDigest),
+  571	      isSHA256Digest(outcome.toolEventDigest)
+  572	    else {
+  573	      throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  574	        "replay outcome digests must be sha256"
+  575	      )
+  576	    }
+  577	    guard outcome.score.isFinite, outcome.score >= 0, outcome.score <= 1 else {
+  578	      throw CoreAgentSkillOptimizationError.invalidValidationScore(outcome.score)
+  579	    }
+  580	  }
+  581	
+  582	  private static func evidence(
+  583	    from outcome: CoreAgentSkillReplayOutcome,
+  584	    request: CoreAgentSkillReplayRequest
+  585	  ) -> CoreAgentSkillRolloutEvidence {
+  586	    var metadata: [String: String] = [
+  587	      "source": "coreagent-skill-replay-executor",
+  588	      "suite_id": request.heldoutSuiteID,
+  589	      "replay_request_id": request.id,
+  590	      "replay_mode": request.mode.rawValue,
+  591	      "source_evidence_id": request.sourceEvidenceID,
+  592	      "source_transcript_digest": request.transcriptDigest,
+  593	      "source_tool_event_digest": request.toolEventDigest,
+  594	      "verifier_feedback_digest": "sha256:\(sha256Hex(Data(outcome.verifierFeedback.utf8)))",
+  595	    ]
+  596	    for key in [
+  597	      "source_project_id",
+  598	      "source_thread_id",
+  599	      "source_run_id",
+  600	      "source_run_status",
+  601	      "source_issue_id_digest",
+  602	      "source_issue_status",
+  603	      "source_suite_id",
+  604	    ] {
+  605	      if let value = request.metadata[key] {
+  606	        metadata[key] = value
+  607	      }
+  608	    }
+  609	    return CoreAgentSkillRolloutEvidence(
+  610	      id: evidenceID(from: outcome, request: request),
+
+=== Sources/CoreAgentSkills/CoreAgentSkills.swift lines 2120-2175 ===
+ 2120	    self.objectiveID = evaluation.objectiveID
+ 2121	  }
+ 2122	
+ 2123	  var stableDescription: String {
+ 2124	    [
+ 2125	      candidateID,
+ 2126	      heldoutSuiteID,
+ 2127	      objectiveID.rawValue,
+ 2128	    ].joined(separator: ":")
+ 2129	  }
+ 2130	}
+ 2131	
+ 2132	public struct CoreAgentSkillMultiObjectiveValidationAdapter: Sendable {
+ 2133	  private let optimizer: CoreAgentHarnessOptimizer
+ 2134	
+ 2135	  public init(optimizer: CoreAgentHarnessOptimizer = CoreAgentHarnessOptimizer()) {
+ 2136	    self.optimizer = optimizer
+ 2137	  }
+ 2138	
+ 2139	  public func validationResult(
+ 2140	    candidateID: String,
+ 2141	    evaluations: [CoreAgentHarnessObjectiveEvaluation],
+ 2142	    objectives: [CoreAgentHarnessObjective],
+ 2143	    heldoutSuiteID: String,
+ 2144	    passingScore: Double = 0,
+ 2145	    notes: String = ""
+ 2146	  ) throws -> CoreAgentSkillValidationResult {
+ 2147	    guard !heldoutSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+ 2148	      throw CoreAgentSkillOptimizationError.emptyHeldoutSuiteID
+ 2149	    }
+ 2150	    guard passingScore.isFinite, passingScore >= 0, passingScore <= 1 else {
+ 2151	      throw CoreAgentSkillOptimizationError.invalidValidationScore(passingScore)
+ 2152	    }
+ 2153	    for evaluation in evaluations {
+ 2154	      guard !evaluation.heldoutSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+ 2155	      else {
+ 2156	        throw CoreAgentSkillOptimizationError.emptyHeldoutSuiteID
+ 2157	      }
+ 2158	    }
+ 2159	    let evaluationSuiteIDs = Set(evaluations.map(\.heldoutSuiteID))
+ 2160	    if !evaluationSuiteIDs.isEmpty, evaluationSuiteIDs != Set([heldoutSuiteID]) {
+ 2161	      throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 2162	        "adapter heldoutSuiteID must match objective evaluation suites"
+ 2163	      )
+ 2164	    }
+ 2165	    let result = try optimizer.selectBest(
+ 2166	      candidates: [CoreAgentHarnessCandidate(id: candidateID, parameters: [:])],
+ 2167	      objectiveEvaluations: evaluations,
+ 2168	      objectives: objectives
+ 2169	    )
+ 2170	    guard let entry = result.auditTrail.first else {
+ 2171	      throw CoreAgentSkillOptimizationError.missingHarnessEvaluation(candidateID)
+ 2172	    }
+ 2173	    return CoreAgentSkillValidationResult(
+ 2174	      score: entry.weightedScore,
+ 2175	      heldoutSuiteID: heldoutSuiteID,
+
+=== Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift lines 1340-1495 ===
+ 1340	  func replayExecutorExecutesRequestsIntoSanitizedRolloutEvidence() async throws {
+ 1341	    let replayRequest = Self.replayRequest(
+ 1342	      id: "request-replay",
+ 1343	      mode: .replay,
+ 1344	      metadata: [
+ 1345	        "source_project_id": "coreagent",
+ 1346	        "raw_prompt": "do not copy replay-secret",
+ 1347	      ]
+ 1348	    )
+ 1349	    let dreamRequest = Self.replayRequest(id: "request-dream", mode: .dream)
+ 1350	    let backend = StaticReplayBackend(outcomes: [
+ 1351	      replayRequest.id: CoreAgentSkillReplayOutcome(
+ 1352	        requestID: replayRequest.id,
+ 1353	        transcriptDigest: Self.digest(910),
+ 1354	        toolEventDigest: Self.digest(911),
+ 1355	        verifierFeedback: "replay passed with do not copy replay-secret",
+ 1356	        score: 0.75
+ 1357	      ),
+ 1358	      dreamRequest.id: CoreAgentSkillReplayOutcome(
+ 1359	        requestID: dreamRequest.id,
+ 1360	        transcriptDigest: Self.digest(920),
+ 1361	        toolEventDigest: Self.digest(921),
+ 1362	        verifierFeedback: "dream found a safer path with do not copy dream-secret",
+ 1363	        score: 0.55
+ 1364	      ),
+ 1365	    ])
+ 1366	    let executor = CoreAgentSkillReplayExecutor(backend: backend)
+ 1367	
+ 1368	    let first = try await executor.execute([replayRequest, dreamRequest])
+ 1369	    let second = try await executor.execute([replayRequest, dreamRequest])
+ 1370	    let encoded = String(data: try JSONEncoder().encode(first), encoding: .utf8) ?? ""
+ 1371	
+ 1372	    #expect(first.map(\.id) == second.map(\.id))
+ 1373	    #expect(first.map(\.taskID) == ["task-auth", "task-auth"])
+ 1374	    #expect(first.map(\.transcriptDigest) == [Self.digest(910), Self.digest(920)])
+ 1375	    #expect(first.map(\.toolEventDigest) == [Self.digest(911), Self.digest(921)])
+ 1376	    #expect(first.map(\.score) == [0.75, 0.55])
+ 1377	    #expect(first.map(\.verifierFeedback) == [
+ 1378	      "replay execution completed",
+ 1379	      "dream execution completed",
+ 1380	    ])
+ 1381	    #expect(first.map { $0.metadata["suite_id"] } == ["heldout-replay", "heldout-replay"])
+ 1382	    #expect(first.map { $0.metadata["replay_mode"] } == ["replay", "dream"])
+ 1383	    #expect(first.map { $0.metadata["replay_request_id"] } == ["request-replay", "request-dream"])
+ 1384	    #expect(first.first?.metadata["source_project_id"] == "coreagent")
+ 1385	    #expect(first.first?.metadata["verifier_feedback_digest"]?.hasPrefix("sha256:") == true)
+ 1386	    #expect(first.first?.metadata["raw_prompt"] == nil)
+ 1387	    #expect(first.allSatisfy { $0.id.hasPrefix("replay-evidence-") })
+ 1388	    #expect(!encoded.contains("replay-secret"))
+ 1389	    #expect(!encoded.contains("dream-secret"))
+ 1390	  }
+ 1391	
+ 1392	  @Test("Replay executor validates requests and backend outcomes fail closed")
+ 1393	  func replayExecutorValidatesRequestsAndBackendOutcomesFailClosed() async throws {
+ 1394	    let request = Self.replayRequest(id: "request-replay", mode: .replay)
+ 1395	    let countingBackend = CountingReplayBackend()
+ 1396	    let executor = CoreAgentSkillReplayExecutor(backend: countingBackend)
+ 1397	
+ 1398	    await #expect(throws: CoreAgentSkillOptimizationError.duplicateReplayRequest("request-replay")) {
+ 1399	      _ = try await executor.execute([request, request])
+ 1400	    }
+ 1401	    #expect(await countingBackend.callCount == 0)
+ 1402	
+ 1403	    await #expect(throws: CoreAgentSkillOptimizationError.emptyHeldoutSuiteID) {
+ 1404	      _ = try await executor.execute([
+ 1405	        Self.replayRequest(id: "empty-suite", mode: .replay, heldoutSuiteID: " ")
+ 1406	      ])
+ 1407	    }
+ 1408	    #expect(await countingBackend.callCount == 0)
+ 1409	
+ 1410	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1411	      "replay request digests must be sha256"
+ 1412	    )) {
+ 1413	      _ = try await executor.execute([
+ 1414	        Self.replayRequest(
+ 1415	          id: "uppercase-digest",
+ 1416	          mode: .replay,
+ 1417	          transcriptDigest: "sha256:\(String(repeating: "A", count: 64))"
+ 1418	        )
+ 1419	      ])
+ 1420	    }
+ 1421	    #expect(await countingBackend.callCount == 0)
+ 1422	
+ 1423	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1424	      "replay request digests must be sha256"
+ 1425	    )) {
+ 1426	      _ = try await executor.execute([
+ 1427	        request,
+ 1428	        Self.replayRequest(
+ 1429	          id: "later-invalid-digest",
+ 1430	          mode: .replay,
+ 1431	          transcriptDigest: "sha256:\(String(repeating: "0", count: 63))"
+ 1432	        ),
+ 1433	      ])
+ 1434	    }
+ 1435	    #expect(await countingBackend.callCount == 0)
+ 1436	
+ 1437	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1438	      "replay request identity fields must be non-empty"
+ 1439	    )) {
+ 1440	      _ = try await executor.execute([
+ 1441	        Self.replayRequest(id: " ", mode: .replay)
+ 1442	      ])
+ 1443	    }
+ 1444	    #expect(await countingBackend.callCount == 0)
+ 1445	
+ 1446	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1447	      "replay source suite ID cannot be empty"
+ 1448	    )) {
+ 1449	      _ = try await executor.execute([
+ 1450	        Self.replayRequest(
+ 1451	          id: "empty-source-suite",
+ 1452	          mode: .replay,
+ 1453	          metadata: ["source_suite_id": " "]
+ 1454	        )
+ 1455	      ])
+ 1456	    }
+ 1457	    #expect(await countingBackend.callCount == 0)
+ 1458	
+ 1459	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1460	      "replay source suite cannot match heldout suite"
+ 1461	    )) {
+ 1462	      _ = try await executor.execute([
+ 1463	        Self.replayRequest(
+ 1464	          id: "split-leak",
+ 1465	          mode: .replay,
+ 1466	          metadata: ["source_suite_id": "heldout-replay"]
+ 1467	        )
+ 1468	      ])
+ 1469	    }
+ 1470	    #expect(await countingBackend.callCount == 0)
+ 1471	
+ 1472	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1473	      "replay source suite is excluded"
+ 1474	    )) {
+ 1475	      _ = try await CoreAgentSkillReplayExecutor(
+ 1476	        backend: countingBackend,
+ 1477	        policy: CoreAgentSkillReplayExecutionPolicy(excludedSourceSuiteIDs: ["train"])
+ 1478	      ).execute([
+ 1479	        Self.replayRequest(
+ 1480	          id: "excluded-source",
+ 1481	          mode: .replay,
+ 1482	          metadata: ["source_suite_id": "train"]
+ 1483	        )
+ 1484	      ])
+ 1485	    }
+ 1486	    #expect(await countingBackend.callCount == 0)
+ 1487	
+ 1488	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1489	      "replay outcome request ID mismatch"
+ 1490	    )) {
+ 1491	      _ = try await CoreAgentSkillReplayExecutor(
+ 1492	        backend: StaticReplayBackend(outcomes: [
+ 1493	          request.id: CoreAgentSkillReplayOutcome(
+ 1494	            requestID: "other-request",
+ 1495	            transcriptDigest: Self.digest(930),

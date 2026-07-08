@@ -1,0 +1,1727 @@
+Focused recheck after fixing VibeProxy blockers for CoreAgent L21 App Intents bridge.
+
+Return STRICT JSON only:
+{
+  "verdict": "PASS" | "BLOCK",
+  "fixed_blockers_verified": ["..."],
+  "findings": [{"severity":"P0|P1|P2|P3", "file":"path", "line":123, "title":"short", "description":"specific", "concrete_fix":"specific"}],
+  "testing_gaps": ["..."],
+  "residual_risks": ["..."]
+}
+
+Previously reported blockers to recheck:
+1. Concrete AppIntent wrappers could invoke host work without CoreAgentAppIntentBridge/action gate/consent/checkpoint.
+2. CoreAgentAppIntentBridge allowed mutating/destructive host work with nil checkpointKey.
+3. Bridge did not check cancellation immediately before operation and mapped thrown CancellationError to failed instead of cancelled.
+4. Run ID validation allowed unsafe path/control/Unicode external identifiers.
+5. Catalog OS policy could drift from concrete AppIntent supportedModes.
+
+Scope boundaries remain: app-hosted AppIntentsTesting/XCUITest, real Siri/Shortcuts/Spotlight invocation, signing/team config, and OS donation-manager bridging are future scope. Do not block solely on those. Do block if any previous blocker remains in the current code.
+
+Updated source: Sources/CoreAgentAppIntents/CoreAgentAppIntents.swift
+
+import AppIntents
+import CoreAgentApplePlatform
+import Foundation
+
+public struct CoreAgentAppIntentsPackage: AppIntentsPackage {
+  public init() {}
+}
+
+public struct CoreAgentAppIntentOSPolicy: Equatable, Sendable {
+  public let descriptorIdentifier: String
+  public let supportedModes: IntentModes
+  public let allowedExecutionTargets: IntentExecutionTargets
+
+  public init(
+    descriptorIdentifier: String,
+    supportedModes: IntentModes,
+    allowedExecutionTargets: IntentExecutionTargets
+  ) {
+    self.descriptorIdentifier = descriptorIdentifier
+    self.supportedModes = supportedModes
+    self.allowedExecutionTargets = allowedExecutionTargets
+  }
+}
+
+public struct CoreAgentRunAppIntentCatalogEntry: Equatable, Sendable {
+  public let kind: CoreAgentRunAppIntentKind
+  public let descriptor: CoreAgentAppIntentDescriptor
+  public let osPolicy: CoreAgentAppIntentOSPolicy
+
+  public init(
+    kind: CoreAgentRunAppIntentKind,
+    descriptor: CoreAgentAppIntentDescriptor,
+    osPolicy: CoreAgentAppIntentOSPolicy
+  ) {
+    self.kind = kind
+    self.descriptor = descriptor
+    self.osPolicy = osPolicy
+  }
+}
+
+public enum CoreAgentRunAppIntentCatalog {
+  public static var entries: [CoreAgentRunAppIntentCatalogEntry] {
+    get throws {
+      [
+        CoreAgentRunAppIntentCatalogEntry(
+          kind: .openRun,
+          descriptor: CoreAgentOpenRunIntent.coreAgentDescriptor,
+          osPolicy: try CoreAgentOpenRunIntent.coreAgentOSPolicy
+        ),
+        CoreAgentRunAppIntentCatalogEntry(
+          kind: .pauseRun,
+          descriptor: CoreAgentPauseRunIntent.coreAgentDescriptor,
+          osPolicy: try CoreAgentPauseRunIntent.coreAgentOSPolicy
+        ),
+        CoreAgentRunAppIntentCatalogEntry(
+          kind: .continueRun,
+          descriptor: CoreAgentContinueRunIntent.coreAgentDescriptor,
+          osPolicy: try CoreAgentContinueRunIntent.coreAgentOSPolicy
+        ),
+      ]
+    }
+  }
+}
+
+public enum CoreAgentAppIntentOSPolicyMapper {
+  public static func policy(
+    for descriptor: CoreAgentAppIntentDescriptor
+  ) throws -> CoreAgentAppIntentOSPolicy {
+    try policy(
+      for: descriptor,
+      supportedModes: supportedModes(for: descriptor),
+      allowedExecutionTargets: .main
+    )
+  }
+
+  public static func policy(
+    for descriptor: CoreAgentAppIntentDescriptor,
+    supportedModes: IntentModes,
+    allowedExecutionTargets: IntentExecutionTargets
+  ) throws -> CoreAgentAppIntentOSPolicy {
+    let validated = try descriptor.validatedForAgentExposure()
+    return CoreAgentAppIntentOSPolicy(
+      descriptorIdentifier: validated.identifier,
+      supportedModes: supportedModes,
+      allowedExecutionTargets: allowedExecutionTargets
+    )
+  }
+
+  public static func supportedModes(
+    for descriptor: CoreAgentAppIntentDescriptor
+  ) -> IntentModes {
+    switch descriptor.mutability {
+    case .readOnly:
+      .foreground(.deferred)
+    case .mutating, .destructive:
+      .foreground(.dynamic)
+    }
+  }
+}
+
+public struct CoreAgentAppIntentBridgeRequest: Sendable {
+  public let actionID: String
+  public let descriptor: CoreAgentAppIntentDescriptor
+  public let mode: CoreAgentAppleAppIntentMode
+  public let target: CoreAgentAppleAppIntentExecutionTarget
+  public let consent: CoreAgentAppleConsent
+  public let checkpointKey: String?
+  public let isCancelled: @Sendable () -> Bool
+
+  public init(
+    actionID: String,
+    descriptor: CoreAgentAppIntentDescriptor,
+    mode: CoreAgentAppleAppIntentMode,
+    target: CoreAgentAppleAppIntentExecutionTarget,
+    consent: CoreAgentAppleConsent,
+    checkpointKey: String? = nil,
+    isCancelled: @escaping @Sendable () -> Bool = { Task.isCancelled }
+  ) {
+    self.actionID = actionID
+    self.descriptor = descriptor
+    self.mode = mode
+    self.target = target
+    self.consent = consent
+    self.checkpointKey = checkpointKey
+    self.isCancelled = isCancelled
+  }
+
+  public var executionRequest: CoreAgentAppleExecutionRequest {
+    .appIntent(descriptor: descriptor, mode: mode, target: target)
+  }
+}
+
+public struct CoreAgentAppIntentBridgeOperationResult: Equatable, Sendable {
+  public init() {}
+}
+
+public enum CoreAgentAppIntentBridgeStatus: Equatable, Sendable {
+  case completed
+  case cancelled
+  case denied(CoreAgentAppleActionGateDenial)
+  case missingCheckpoint
+  case failed(String)
+}
+
+public struct CoreAgentAppIntentBridgeResult: Equatable, Sendable {
+  public let actionID: String
+  public let descriptorIdentifier: String
+  public let checkpointKey: String?
+  public let status: CoreAgentAppIntentBridgeStatus
+
+  public init(
+    actionID: String,
+    descriptorIdentifier: String,
+    checkpointKey: String?,
+    status: CoreAgentAppIntentBridgeStatus
+  ) {
+    self.actionID = actionID
+    self.descriptorIdentifier = descriptorIdentifier
+    self.checkpointKey = checkpointKey
+    self.status = status
+  }
+}
+
+public struct CoreAgentAppIntentBridge: Sendable {
+  public typealias Checkpoint = @Sendable (CoreAgentAppIntentBridgeRequest) async throws -> Void
+  public typealias Operation = @Sendable (CoreAgentAppIntentBridgeRequest) async throws ->
+    CoreAgentAppIntentBridgeOperationResult
+
+  public let actionGate: CoreAgentAppleActionGate
+  private let checkpoint: Checkpoint
+
+  public init(
+    actionGate: CoreAgentAppleActionGate,
+    checkpoint: @escaping Checkpoint = { _ in }
+  ) {
+    self.actionGate = actionGate
+    self.checkpoint = checkpoint
+  }
+
+  public func perform(
+    _ request: CoreAgentAppIntentBridgeRequest,
+    operation: Operation
+  ) async -> CoreAgentAppIntentBridgeResult {
+    if request.isCancelled() {
+      return result(for: request, status: .cancelled)
+    }
+
+    switch actionGate.evaluate(request.executionRequest, consent: request.consent) {
+    case .allowed:
+      break
+    case .denied(let denial):
+      return result(for: request, status: .denied(denial))
+    }
+
+    guard request.descriptor.mutability == .readOnly || request.checkpointKey != nil else {
+      return result(for: request, status: .missingCheckpoint)
+    }
+
+    if request.checkpointKey != nil {
+      do {
+        try await checkpoint(request)
+      } catch is CancellationError {
+        return result(for: request, status: .cancelled)
+      } catch {
+        return result(for: request, status: .failed(String(describing: error)))
+      }
+      if request.isCancelled() {
+        return result(for: request, status: .cancelled)
+      }
+    }
+
+    if request.isCancelled() {
+      return result(for: request, status: .cancelled)
+    }
+    do {
+      _ = try await operation(request)
+    } catch is CancellationError {
+      return result(for: request, status: .cancelled)
+    } catch {
+      return result(for: request, status: .failed(String(describing: error)))
+    }
+
+    if request.isCancelled() {
+      return result(for: request, status: .cancelled)
+    }
+    return result(for: request, status: .completed)
+  }
+
+  private func result(
+    for request: CoreAgentAppIntentBridgeRequest,
+    status: CoreAgentAppIntentBridgeStatus
+  ) -> CoreAgentAppIntentBridgeResult {
+    CoreAgentAppIntentBridgeResult(
+      actionID: request.actionID,
+      descriptorIdentifier: request.descriptor.identifier,
+      checkpointKey: request.checkpointKey,
+      status: status
+    )
+  }
+}
+
+public enum CoreAgentRunAppIntentKind: String, Codable, Equatable, Sendable {
+  case openRun = "CoreAgentOpenRunIntent"
+  case pauseRun = "CoreAgentPauseRunIntent"
+  case continueRun = "CoreAgentContinueRunIntent"
+}
+
+public struct CoreAgentRunAppIntentRuntimeRequest: Equatable, Sendable {
+  public let kind: CoreAgentRunAppIntentKind
+  public let runID: String
+
+  public init(kind: CoreAgentRunAppIntentKind, runID: String) {
+    self.kind = kind
+    self.runID = runID
+  }
+}
+
+public enum CoreAgentRunAppIntentRuntimeStatus: Equatable, Sendable {
+  case completed
+  case cancelled
+  case denied(CoreAgentAppleActionGateDenial)
+  case failed(String)
+}
+
+public struct CoreAgentRunAppIntentRuntimeOutcome: Equatable, Sendable {
+  public let status: CoreAgentRunAppIntentRuntimeStatus
+
+  public init(status: CoreAgentRunAppIntentRuntimeStatus) {
+    self.status = status
+  }
+}
+
+public enum CoreAgentRunAppIntentRuntimeError: Error, Equatable, Sendable {
+  case invalidRunID(CoreAgentRunAppIntentKind)
+  case handlerUnavailable(CoreAgentRunAppIntentKind)
+  case cancelled(CoreAgentRunAppIntentKind)
+  case denied(CoreAgentRunAppIntentKind, CoreAgentAppleActionGateDenial)
+  case missingCheckpoint(CoreAgentRunAppIntentKind)
+  case failed(CoreAgentRunAppIntentKind, String)
+}
+
+public struct CoreAgentRunAppIntentRuntimeEnvironment: Sendable {
+  public typealias ModeProvider = @Sendable (CoreAgentRunAppIntentRuntimeRequest)
+    -> CoreAgentAppleAppIntentMode
+  public typealias TargetProvider = @Sendable (CoreAgentRunAppIntentRuntimeRequest)
+    -> CoreAgentAppleAppIntentExecutionTarget
+  public typealias ConsentProvider = @Sendable (CoreAgentRunAppIntentRuntimeRequest)
+    -> CoreAgentAppleConsent
+  public typealias CheckpointKeyProvider = @Sendable (CoreAgentRunAppIntentRuntimeRequest)
+    -> String?
+  public typealias Operation = @Sendable (CoreAgentRunAppIntentRuntimeRequest) async throws -> Void
+
+  public let bridge: CoreAgentAppIntentBridge
+  public let mode: ModeProvider
+  public let target: TargetProvider
+  public let consent: ConsentProvider
+  public let checkpointKey: CheckpointKeyProvider
+  public let operation: Operation
+
+  public init(
+    bridge: CoreAgentAppIntentBridge,
+    mode: @escaping ModeProvider,
+    target: @escaping TargetProvider,
+    consent: @escaping ConsentProvider,
+    checkpointKey: @escaping CheckpointKeyProvider,
+    operation: @escaping Operation
+  ) {
+    self.bridge = bridge
+    self.mode = mode
+    self.target = target
+    self.consent = consent
+    self.checkpointKey = checkpointKey
+    self.operation = operation
+  }
+}
+
+public actor CoreAgentRunAppIntentRuntime {
+  public static let shared = CoreAgentRunAppIntentRuntime()
+  private static let maxRunIDBytes = 128
+
+  private var environment: CoreAgentRunAppIntentRuntimeEnvironment?
+
+  public init(environment: CoreAgentRunAppIntentRuntimeEnvironment? = nil) {
+    self.environment = environment
+  }
+
+  public func setEnvironment(_ environment: CoreAgentRunAppIntentRuntimeEnvironment) {
+    self.environment = environment
+  }
+
+  public func resetEnvironment() {
+    environment = nil
+  }
+
+  public func perform(_ request: CoreAgentRunAppIntentRuntimeRequest) async throws {
+    guard Self.isValidRunID(request.runID) else {
+      throw CoreAgentRunAppIntentRuntimeError.invalidRunID(request.kind)
+    }
+    guard !Task.isCancelled else {
+      throw CoreAgentRunAppIntentRuntimeError.cancelled(request.kind)
+    }
+    guard let environment else {
+      throw CoreAgentRunAppIntentRuntimeError.handlerUnavailable(request.kind)
+    }
+    let mode = environment.mode(request)
+    let target = environment.target(request)
+    let descriptor = Self.descriptor(for: request.kind)
+    let bridgeRequest = CoreAgentAppIntentBridgeRequest(
+      actionID: "\(request.kind.rawValue):\(request.runID)",
+      descriptor: descriptor,
+      mode: mode,
+      target: target,
+      consent: environment.consent(request),
+      checkpointKey: environment.checkpointKey(request)
+    )
+    let result = await environment.bridge.perform(bridgeRequest) { _ in
+      try await environment.operation(request)
+      return CoreAgentAppIntentBridgeOperationResult()
+    }
+    switch result.status {
+    case .completed:
+      return
+    case .cancelled:
+      throw CoreAgentRunAppIntentRuntimeError.cancelled(request.kind)
+    case .denied(let denial):
+      throw CoreAgentRunAppIntentRuntimeError.denied(request.kind, denial)
+    case .missingCheckpoint:
+      throw CoreAgentRunAppIntentRuntimeError.missingCheckpoint(request.kind)
+    case .failed(let reason):
+      throw CoreAgentRunAppIntentRuntimeError.failed(request.kind, reason)
+    }
+  }
+
+  private static func isValidRunID(_ runID: String) -> Bool {
+    let trimmed = runID.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed == runID && !runID.isEmpty && runID.utf8.count <= maxRunIDBytes else {
+      return false
+    }
+    guard let first = runID.unicodeScalars.first, isASCIIAlphanumeric(first) else {
+      return false
+    }
+    return runID.unicodeScalars.allSatisfy { scalar in
+      isASCIIAlphanumeric(scalar)
+        || scalar.value == 45
+        || scalar.value == 46
+        || scalar.value == 95
+    }
+  }
+
+  private static func descriptor(
+    for kind: CoreAgentRunAppIntentKind
+  ) -> CoreAgentAppIntentDescriptor {
+    switch kind {
+    case .openRun:
+      CoreAgentOpenRunIntent.coreAgentDescriptor
+    case .pauseRun:
+      CoreAgentPauseRunIntent.coreAgentDescriptor
+    case .continueRun:
+      CoreAgentContinueRunIntent.coreAgentDescriptor
+    }
+  }
+
+  private static func isASCIIAlphanumeric(_ scalar: Unicode.Scalar) -> Bool {
+    (48...57).contains(scalar.value)
+      || (65...90).contains(scalar.value)
+      || (97...122).contains(scalar.value)
+  }
+}
+
+public struct CoreAgentOpenRunIntent: AppIntent {
+  public static let title = LocalizedStringResource("Open CoreAgent Run")
+  public static let supportedModes: IntentModes = .foreground(.immediate)
+  public static let allowedExecutionTargets: IntentExecutionTargets = .main
+  public static let coreAgentDescriptor = CoreAgentAppIntentDescriptor(
+    identifier: CoreAgentRunAppIntentKind.openRun.rawValue,
+    title: "Open CoreAgent Run",
+    mutability: .readOnly,
+    allowsAgentExecution: true,
+    allowedExecutionTargets: [.foreground],
+    supportedModes: [.app, .siri, .spotlight],
+    donationPolicy: .doNotDonate,
+    requiresAuthorization: false,
+    requiresHITLForSensitiveOperations: false
+  )
+  public static var coreAgentOSPolicy: CoreAgentAppIntentOSPolicy {
+    get throws {
+      try CoreAgentAppIntentOSPolicyMapper.policy(
+        for: coreAgentDescriptor,
+        supportedModes: supportedModes,
+        allowedExecutionTargets: allowedExecutionTargets
+      )
+    }
+  }
+
+  @Parameter(title: "Run ID")
+  public var runID: String
+
+  public init() {
+    self.runID = ""
+  }
+
+  public init(runID: String) {
+    self.runID = runID
+  }
+
+  public func perform() async throws -> some IntentResult {
+    try await CoreAgentRunAppIntentRuntime.shared.perform(
+      CoreAgentRunAppIntentRuntimeRequest(kind: .openRun, runID: runID)
+    )
+    return .result()
+  }
+}
+
+public struct CoreAgentPauseRunIntent: AppIntent, CancellableIntent {
+  public static let title = LocalizedStringResource("Pause CoreAgent Run")
+  public static let supportedModes: IntentModes = .foreground(.dynamic)
+  public static let allowedExecutionTargets: IntentExecutionTargets = .main
+  public static let coreAgentDescriptor = CoreAgentAppIntentDescriptor(
+    identifier: CoreAgentRunAppIntentKind.pauseRun.rawValue,
+    title: "Pause CoreAgent Run",
+    mutability: .mutating,
+    allowsAgentExecution: true,
+    allowedExecutionTargets: [.foreground],
+    supportedModes: [.app, .siri, .shortcuts],
+    donationPolicy: .donateAfterUserInitiatedAction,
+    requiresAuthorization: true,
+    requiresHITLForSensitiveOperations: true
+  )
+  public static var coreAgentOSPolicy: CoreAgentAppIntentOSPolicy {
+    get throws {
+      try CoreAgentAppIntentOSPolicyMapper.policy(
+        for: coreAgentDescriptor,
+        supportedModes: supportedModes,
+        allowedExecutionTargets: allowedExecutionTargets
+      )
+    }
+  }
+
+  @Parameter(title: "Run ID")
+  public var runID: String
+
+  public init() {
+    self.runID = ""
+  }
+
+  public init(runID: String) {
+    self.runID = runID
+  }
+
+  public func perform() async throws -> some IntentResult {
+    try await CoreAgentRunAppIntentRuntime.shared.perform(
+      CoreAgentRunAppIntentRuntimeRequest(kind: .pauseRun, runID: runID)
+    )
+    return .result()
+  }
+}
+
+public struct CoreAgentContinueRunIntent: AppIntent, CancellableIntent {
+  public static let title = LocalizedStringResource("Continue CoreAgent Run")
+  public static let supportedModes: IntentModes = .foreground(.dynamic)
+  public static let allowedExecutionTargets: IntentExecutionTargets = .main
+  public static let coreAgentDescriptor = CoreAgentAppIntentDescriptor(
+    identifier: CoreAgentRunAppIntentKind.continueRun.rawValue,
+    title: "Continue CoreAgent Run",
+    mutability: .mutating,
+    allowsAgentExecution: true,
+    allowedExecutionTargets: [.foreground],
+    supportedModes: [.app, .siri, .shortcuts],
+    donationPolicy: .donateAfterUserInitiatedAction,
+    requiresAuthorization: true,
+    requiresHITLForSensitiveOperations: true
+  )
+  public static var coreAgentOSPolicy: CoreAgentAppIntentOSPolicy {
+    get throws {
+      try CoreAgentAppIntentOSPolicyMapper.policy(
+        for: coreAgentDescriptor,
+        supportedModes: supportedModes,
+        allowedExecutionTargets: allowedExecutionTargets
+      )
+    }
+  }
+
+  @Parameter(title: "Run ID")
+  public var runID: String
+
+  public init() {
+    self.runID = ""
+  }
+
+  public init(runID: String) {
+    self.runID = runID
+  }
+
+  public func perform() async throws -> some IntentResult {
+    try await CoreAgentRunAppIntentRuntime.shared.perform(
+      CoreAgentRunAppIntentRuntimeRequest(kind: .continueRun, runID: runID)
+    )
+    return .result()
+  }
+}
+
+
+Updated tests: Tests/CoreAgentAppIntentsTests/CoreAgentAppIntentsTests.swift
+
+import AppIntents
+import CoreAgentApplePlatform
+import Foundation
+import Testing
+@testable import CoreAgentAppIntents
+
+@Suite("CoreAgent App Intents bridge", .serialized)
+struct CoreAgentAppIntentsTests {
+  @Test("Concrete run intent catalog exposes stable validated descriptors and OS policy")
+  func concreteRunIntentCatalogExposesStableValidatedDescriptorsAndOSPolicy() throws {
+    let entries = try CoreAgentRunAppIntentCatalog.entries
+
+    #expect(entries.map(\.kind) == [.openRun, .pauseRun, .continueRun])
+    #expect(entries.map(\.descriptor.identifier) == [
+      "CoreAgentOpenRunIntent",
+      "CoreAgentPauseRunIntent",
+      "CoreAgentContinueRunIntent",
+    ])
+    #expect(entries.map(\.osPolicy.allowedExecutionTargets) == [.main, .main, .main])
+    #expect(entries[0].osPolicy.supportedModes == CoreAgentOpenRunIntent.supportedModes)
+    #expect(entries[1].osPolicy.supportedModes == .foreground(.dynamic))
+    #expect(entries[2].osPolicy.supportedModes == .foreground(.dynamic))
+    #expect(entries[1].osPolicy.supportedModes == CoreAgentPauseRunIntent.supportedModes)
+    #expect(entries[2].osPolicy.supportedModes == CoreAgentContinueRunIntent.supportedModes)
+
+    for entry in entries {
+      #expect(try entry.descriptor.validatedForAgentExposure() == entry.descriptor)
+    }
+  }
+
+  @Test("Concrete run intents validate run IDs before delegating to host runtime")
+  func concreteRunIntentsValidateRunIDsBeforeDelegatingToHostRuntime() async throws {
+    let recorder = RuntimeRecorder()
+    let gate = Self.appIntentGate()
+    await CoreAgentRunAppIntentRuntime.shared.resetEnvironment()
+    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(Self.runtimeEnvironment(
+      gate: gate,
+      recorder: recorder
+    ))
+
+    do {
+      _ = try await CoreAgentPauseRunIntent(runID: " ").perform()
+      Issue.record("Expected empty run IDs to be rejected before host runtime delegation")
+    } catch let error as CoreAgentRunAppIntentRuntimeError {
+      #expect(error == .invalidRunID(.pauseRun))
+    }
+    #expect(await recorder.requests == [])
+
+    do {
+      _ = try await CoreAgentContinueRunIntent(runID: " run-1 ").perform()
+      Issue.record("Expected whitespace-padded run IDs to be rejected")
+    } catch let error as CoreAgentRunAppIntentRuntimeError {
+      #expect(error == .invalidRunID(.continueRun))
+    }
+    #expect(await recorder.requests == [])
+
+    do {
+      _ = try await CoreAgentOpenRunIntent(runID: String(repeating: "r", count: 257)).perform()
+      Issue.record("Expected oversized run IDs to be rejected")
+    } catch let error as CoreAgentRunAppIntentRuntimeError {
+      #expect(error == .invalidRunID(.openRun))
+    }
+    #expect(await recorder.requests == [])
+
+    for invalidRunID in ["../run", ".hidden", "run/1", "run:1", "run\n1", "run🙂"] {
+      do {
+        _ = try await CoreAgentOpenRunIntent(runID: invalidRunID).perform()
+        Issue.record("Expected unsafe run ID to be rejected: \(invalidRunID)")
+      } catch let error as CoreAgentRunAppIntentRuntimeError {
+        #expect(error == .invalidRunID(.openRun))
+      }
+    }
+    #expect(await recorder.requests == [])
+
+    _ = try await CoreAgentPauseRunIntent(runID: "run-1").perform()
+    _ = try await CoreAgentContinueRunIntent(runID: "run-1").perform()
+    #expect(await recorder.requests == [
+      CoreAgentRunAppIntentRuntimeRequest(kind: .pauseRun, runID: "run-1"),
+      CoreAgentRunAppIntentRuntimeRequest(kind: .continueRun, runID: "run-1"),
+    ])
+
+    await CoreAgentRunAppIntentRuntime.shared.resetEnvironment()
+  }
+
+  @Test("Concrete run intents execute through the CoreAgent bridge before host work")
+  func concreteRunIntentsExecuteThroughCoreAgentBridgeBeforeHostWork() async throws {
+    let recorder = RuntimeRecorder()
+    let gate = Self.appIntentGate()
+    await CoreAgentRunAppIntentRuntime.shared.resetEnvironment()
+    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(Self.runtimeEnvironment(
+      gate: gate,
+      recorder: recorder,
+      consent: { _ in .notRequired }
+    ))
+
+    do {
+      _ = try await CoreAgentPauseRunIntent(runID: "run-bridge").perform()
+      Issue.record("Expected bridge denial before host work when consent is missing")
+    } catch let error as CoreAgentRunAppIntentRuntimeError {
+      #expect(error == .denied(.pauseRun, .missingConsent(.appIntentExecution)))
+    }
+    #expect(await recorder.requests == [])
+
+    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(Self.runtimeEnvironment(
+      gate: gate,
+      recorder: recorder,
+      checkpointKey: { _ in nil }
+    ))
+    do {
+      _ = try await CoreAgentPauseRunIntent(runID: "run-bridge").perform()
+      Issue.record("Expected bridge checkpoint enforcement before host work")
+    } catch let error as CoreAgentRunAppIntentRuntimeError {
+      #expect(error == .missingCheckpoint(.pauseRun))
+    }
+    #expect(await recorder.requests == [])
+
+    await CoreAgentRunAppIntentRuntime.shared.setEnvironment(Self.runtimeEnvironment(
+      gate: gate,
+      recorder: recorder
+    ))
+    _ = try await CoreAgentPauseRunIntent(runID: "run-bridge").perform()
+    #expect(await recorder.requests == [
+      CoreAgentRunAppIntentRuntimeRequest(kind: .pauseRun, runID: "run-bridge"),
+    ])
+
+    await CoreAgentRunAppIntentRuntime.shared.resetEnvironment()
+  }
+
+  @Test("Bridge requires checkpoints for mutating intents before host work")
+  func bridgeRequiresCheckpointsForMutatingIntentsBeforeHostWork() async throws {
+    let recorder = BridgeRecorder()
+    let gate = Self.appIntentGate()
+    let bridge = CoreAgentAppIntentBridge(actionGate: gate)
+    let descriptor = Self.pauseRunDescriptor(supportedModes: [.app])
+    let request = CoreAgentAppIntentBridgeRequest(
+      actionID: "pause-run",
+      descriptor: descriptor,
+      mode: .app,
+      target: .foreground,
+      consent: .granted(Self.receipt(
+        id: "pause-run-missing-checkpoint",
+        requirement: gate.consentRequirement(for: .appIntent(
+          descriptor: descriptor,
+          mode: .app,
+          target: .foreground
+        ))
+      )),
+      checkpointKey: nil
+    )
+
+    let result = await bridge.perform(request) { request in
+      await recorder.record("operation:\(request.actionID)")
+      return CoreAgentAppIntentBridgeOperationResult()
+    }
+
+    #expect(result.status == .missingCheckpoint)
+    #expect(await recorder.events == [])
+  }
+
+  @Test("Bridge checks cancellation immediately before host work")
+  func bridgeChecksCancellationImmediatelyBeforeHostWork() async throws {
+    let recorder = BridgeRecorder()
+    let cancellation = CancellationProbe()
+    let gate = Self.appIntentGate()
+    let bridge = CoreAgentAppIntentBridge(actionGate: gate)
+    let descriptor = CoreAgentAppIntentDescriptor(
+      identifier: "CoreAgentReadRunIntent",
+      title: "Read Run",
+      mutability: .readOnly,
+      allowsAgentExecution: true,
+      allowedExecutionTargets: [.foreground],
+      supportedModes: [.app],
+      donationPolicy: .doNotDonate,
+      requiresAuthorization: false,
+      requiresHITLForSensitiveOperations: false
+    )
+    let request = CoreAgentAppIntentBridgeRequest(
+      actionID: "read-run",
+      descriptor: descriptor,
+      mode: .app,
+      target: .foreground,
+      consent: .granted(Self.receipt(
+        id: "read-run-cancel-before-operation",
+        requirement: gate.consentRequirement(for: .appIntent(
+          descriptor: descriptor,
+          mode: .app,
+          target: .foreground
+        ))
+      )),
+      checkpointKey: nil,
+      isCancelled: { cancellation.cancelAfterFirstCheck() }
+    )
+
+    let result = await bridge.perform(request) { request in
+      await recorder.record("operation:\(request.actionID)")
+      return CoreAgentAppIntentBridgeOperationResult()
+    }
+
+    #expect(result.status == .cancelled)
+    #expect(await recorder.events == [])
+  }
+
+  @Test("Bridge maps thrown cancellation to cancelled status")
+  func bridgeMapsThrownCancellationToCancelledStatus() async throws {
+    let gate = Self.appIntentGate()
+    let bridge = CoreAgentAppIntentBridge(actionGate: gate)
+    let descriptor = CoreAgentAppIntentDescriptor(
+      identifier: "CoreAgentReadRunIntent",
+      title: "Read Run",
+      mutability: .readOnly,
+      allowsAgentExecution: true,
+      allowedExecutionTargets: [.foreground],
+      supportedModes: [.app],
+      donationPolicy: .doNotDonate,
+      requiresAuthorization: false,
+      requiresHITLForSensitiveOperations: false
+    )
+    let request = CoreAgentAppIntentBridgeRequest(
+      actionID: "read-run",
+      descriptor: descriptor,
+      mode: .app,
+      target: .foreground,
+      consent: .granted(Self.receipt(
+        id: "read-run-operation-cancelled",
+        requirement: gate.consentRequirement(for: .appIntent(
+          descriptor: descriptor,
+          mode: .app,
+          target: .foreground
+        ))
+      )),
+      checkpointKey: nil
+    )
+
+    let result = await bridge.perform(request) { _ in
+      throw CancellationError()
+    }
+
+    #expect(result.status == .cancelled)
+  }
+
+  @Test("OS policy mapper does not conflate CoreAgent caller modes and process targets")
+  func osPolicyMapperDoesNotConflateCoreAgentCallerModesAndProcessTargets() throws {
+    let appAndSiriRead = CoreAgentAppIntentDescriptor(
+      identifier: "CoreAgentReadRunIntent",
+      title: "Read Run",
+      mutability: .readOnly,
+      allowsAgentExecution: true,
+      allowedExecutionTargets: [.foreground, .background],
+      supportedModes: [.app, .siri],
+      donationPolicy: .doNotDonate,
+      requiresAuthorization: false,
+      requiresHITLForSensitiveOperations: false
+    )
+    let spotlightRead = CoreAgentAppIntentDescriptor(
+      identifier: "CoreAgentReadRunIntent",
+      title: "Read Run",
+      mutability: .readOnly,
+      allowsAgentExecution: true,
+      allowedExecutionTargets: [.background],
+      supportedModes: [.spotlight],
+      donationPolicy: .doNotDonate,
+      requiresAuthorization: false,
+      requiresHITLForSensitiveOperations: false
+    )
+    let mutate = CoreAgentAppIntentDescriptor(
+      identifier: "CoreAgentPauseRunIntent",
+      title: "Pause Run",
+      mutability: .mutating,
+      allowsAgentExecution: true,
+      allowedExecutionTargets: [.foreground],
+      supportedModes: [.app, .siri, .shortcuts],
+      donationPolicy: .donateAfterUserInitiatedAction,
+      requiresAuthorization: true,
+      requiresHITLForSensitiveOperations: true
+    )
+
+    let readPolicy = try CoreAgentAppIntentOSPolicyMapper.policy(for: appAndSiriRead)
+    let spotlightPolicy = try CoreAgentAppIntentOSPolicyMapper.policy(for: spotlightRead)
+    let mutatePolicy = try CoreAgentAppIntentOSPolicyMapper.policy(for: mutate)
+
+    #expect(readPolicy.supportedModes == spotlightPolicy.supportedModes)
+    #expect(readPolicy.allowedExecutionTargets == .main)
+    #expect(spotlightPolicy.allowedExecutionTargets == .main)
+    #expect(mutatePolicy.supportedModes == .foreground(.dynamic))
+    #expect(mutatePolicy.allowedExecutionTargets == .main)
+  }
+
+  @Test("Bridge denies unsupported CoreAgent modes before executing host work")
+  func bridgeDeniesUnsupportedCoreAgentModesBeforeExecutingHostWork() async throws {
+    let recorder = BridgeRecorder()
+    let gate = Self.appIntentGate()
+    let bridge = CoreAgentAppIntentBridge(
+      actionGate: gate,
+      checkpoint: { request in
+        await recorder.record("checkpoint:\(request.checkpointKey ?? "none")")
+      }
+    )
+    let descriptor = Self.pauseRunDescriptor(supportedModes: [.app])
+    let request = CoreAgentAppIntentBridgeRequest(
+      actionID: "pause-run",
+      descriptor: descriptor,
+      mode: .siri,
+      target: .foreground,
+      consent: .granted(Self.receipt(
+        id: "unsupported-mode-receipt",
+        requirement: gate.consentRequirement(for: .appIntent(
+          descriptor: descriptor,
+          mode: .siri,
+          target: .foreground
+        ))
+      )),
+      checkpointKey: "run:abc"
+    )
+
+    let result = await bridge.perform(request) { request in
+      await recorder.record("operation:\(request.actionID)")
+      return CoreAgentAppIntentBridgeOperationResult()
+    }
+
+    #expect(result.status == .denied(.unsupportedAppIntentMode(
+      identifier: "CoreAgentPauseRunIntent",
+      mode: .siri
+    )))
+    #expect(await recorder.events == [])
+  }
+
+  @Test("Bridge requires CoreAgent consent and checkpoints before host work")
+  func bridgeRequiresCoreAgentConsentAndCheckpointsBeforeHostWork() async throws {
+    let recorder = BridgeRecorder()
+    let gate = Self.appIntentGate()
+    let bridge = CoreAgentAppIntentBridge(
+      actionGate: gate,
+      checkpoint: { request in
+        await recorder.record("checkpoint:\(request.checkpointKey ?? "none")")
+      }
+    )
+    let descriptor = Self.pauseRunDescriptor(supportedModes: [.app])
+    let deniedRequest = CoreAgentAppIntentBridgeRequest(
+      actionID: "pause-run",
+      descriptor: descriptor,
+      mode: .app,
+      target: .foreground,
+      consent: .notRequired,
+      checkpointKey: "run:abc"
+    )
+
+    let denied = await bridge.perform(deniedRequest) { request in
+      await recorder.record("operation:\(request.actionID)")
+      return CoreAgentAppIntentBridgeOperationResult()
+    }
+
+    #expect(denied.status == .denied(.missingConsent(.appIntentExecution)))
+    #expect(await recorder.events == [])
+
+    let allowedRequest = CoreAgentAppIntentBridgeRequest(
+      actionID: "pause-run",
+      descriptor: descriptor,
+      mode: .app,
+      target: .foreground,
+      consent: .granted(Self.receipt(
+        id: "pause-run-receipt",
+        requirement: gate.consentRequirement(for: .appIntent(
+          descriptor: descriptor,
+          mode: .app,
+          target: .foreground
+        ))
+      )),
+      checkpointKey: "run:abc"
+    )
+
+    let allowed = await bridge.perform(allowedRequest) { request in
+      await recorder.record("operation:\(request.actionID)")
+      return CoreAgentAppIntentBridgeOperationResult()
+    }
+
+    #expect(allowed.status == .completed)
+    #expect(await recorder.events == [
+      "checkpoint:run:abc",
+      "operation:pause-run",
+    ])
+  }
+
+  @Test("Bridge observes cancellation before checkpoint or host work")
+  func bridgeObservesCancellationBeforeCheckpointOrHostWork() async throws {
+    let recorder = BridgeRecorder()
+    let gate = Self.appIntentGate()
+    let bridge = CoreAgentAppIntentBridge(
+      actionGate: gate,
+      checkpoint: { request in
+        await recorder.record("checkpoint:\(request.checkpointKey ?? "none")")
+      }
+    )
+    let descriptor = Self.pauseRunDescriptor(supportedModes: [.app])
+    let request = CoreAgentAppIntentBridgeRequest(
+      actionID: "pause-run",
+      descriptor: descriptor,
+      mode: .app,
+      target: .foreground,
+      consent: .granted(Self.receipt(
+        id: "cancelled-receipt",
+        requirement: gate.consentRequirement(for: .appIntent(
+          descriptor: descriptor,
+          mode: .app,
+          target: .foreground
+        ))
+      )),
+      checkpointKey: "run:abc",
+      isCancelled: { true }
+    )
+
+    let result = await bridge.perform(request) { request in
+      await recorder.record("operation:\(request.actionID)")
+      return CoreAgentAppIntentBridgeOperationResult()
+    }
+
+    #expect(result.status == .cancelled)
+    #expect(await recorder.events == [])
+  }
+
+  private static func pauseRunDescriptor(
+    supportedModes: Set<CoreAgentAppleAppIntentMode>
+  ) -> CoreAgentAppIntentDescriptor {
+    CoreAgentAppIntentDescriptor(
+      identifier: "CoreAgentPauseRunIntent",
+      title: "Pause Run",
+      mutability: .mutating,
+      allowsAgentExecution: true,
+      allowedExecutionTargets: [.foreground],
+      supportedModes: supportedModes,
+      donationPolicy: .donateAfterUserInitiatedAction,
+      requiresAuthorization: true,
+      requiresHITLForSensitiveOperations: true
+    )
+  }
+
+  private static func appIntentGate() -> CoreAgentAppleActionGate {
+    CoreAgentAppleActionGate(
+      sandbox: CoreAgentAppleSandboxProfile(
+        capabilities: [.appIntentExecution],
+        workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent"),
+        networkPolicy: .denied,
+        authorityBoundaryID: "workspace:coreagent",
+        policyVersion: 27
+      ),
+      trustedConsentIssuerID: issuerID,
+      consentSigningKey: signingKey,
+      now: { Date(timeIntervalSince1970: 1_800_000_000) }
+    )
+  }
+
+  private static func runtimeEnvironment(
+    gate: CoreAgentAppleActionGate,
+    recorder: RuntimeRecorder,
+    mode: @escaping @Sendable (CoreAgentRunAppIntentRuntimeRequest) -> CoreAgentAppleAppIntentMode = {
+      _ in .app
+    },
+    target: @escaping @Sendable (CoreAgentRunAppIntentRuntimeRequest)
+      -> CoreAgentAppleAppIntentExecutionTarget = { _ in .foreground },
+    consent: (@Sendable (CoreAgentRunAppIntentRuntimeRequest) -> CoreAgentAppleConsent)? = nil,
+    checkpointKey: @escaping @Sendable (CoreAgentRunAppIntentRuntimeRequest) -> String? = {
+      "run:\($0.runID)"
+    }
+  ) -> CoreAgentRunAppIntentRuntimeEnvironment {
+    CoreAgentRunAppIntentRuntimeEnvironment(
+      bridge: CoreAgentAppIntentBridge(actionGate: gate),
+      mode: mode,
+      target: target,
+      consent: consent ?? { request in
+        .granted(Self.receipt(
+          id: "runtime-\(request.kind.rawValue)-\(request.runID)-\(UUID().uuidString)",
+          requirement: gate.consentRequirement(for: .appIntent(
+            descriptor: Self.descriptor(for: request.kind),
+            mode: mode(request),
+            target: target(request)
+          ))
+        ))
+      },
+      checkpointKey: checkpointKey,
+      operation: { request in
+        await recorder.record(request)
+      }
+    )
+  }
+
+  private static func descriptor(
+    for kind: CoreAgentRunAppIntentKind
+  ) -> CoreAgentAppIntentDescriptor {
+    switch kind {
+    case .openRun:
+      CoreAgentOpenRunIntent.coreAgentDescriptor
+    case .pauseRun:
+      CoreAgentPauseRunIntent.coreAgentDescriptor
+    case .continueRun:
+      CoreAgentContinueRunIntent.coreAgentDescriptor
+    }
+  }
+
+  private static func receipt(
+    id: String,
+    requirement: CoreAgentAppleConsentRequirement
+  ) -> CoreAgentAppleConsentReceipt {
+    CoreAgentAppleConsentReceipt.issue(
+      id: id,
+      issuerID: issuerID,
+      requirement: requirement,
+      signingKey: signingKey,
+      grantedAt: Date(timeIntervalSince1970: 1_799_999_900),
+      expiresAt: Date(timeIntervalSince1970: 1_800_000_100)
+    )
+  }
+
+  private static let issuerID = "coreagent.test.appintents"
+  private static let signingKey = CoreAgentAppleConsentSigningKey(
+    Data(repeating: 0x41, count: 32)
+  )!
+}
+
+private actor BridgeRecorder {
+  private var recordedEvents: [String] = []
+
+  var events: [String] {
+    recordedEvents
+  }
+
+  func record(_ event: String) {
+    recordedEvents.append(event)
+  }
+}
+
+private actor RuntimeRecorder {
+  private var recordedRequests: [CoreAgentRunAppIntentRuntimeRequest] = []
+
+  var requests: [CoreAgentRunAppIntentRuntimeRequest] {
+    recordedRequests
+  }
+
+  func record(_ request: CoreAgentRunAppIntentRuntimeRequest) {
+    recordedRequests.append(request)
+  }
+}
+
+private final class CancellationProbe: @unchecked Sendable {
+  private let lock = NSLock()
+  private var checks = 0
+
+  func cancelAfterFirstCheck() -> Bool {
+    lock.withLock {
+      checks += 1
+      return checks > 1
+    }
+  }
+}
+
+
+Relevant ApplePlatform App Intent action-gate snippets:
+
+1724: public enum CoreAgentAppleExecutionRequest: Equatable, Sendable {
+1725:   case codeInterpreter(tier: CoreAgentAppleInterpreterTier)
+1726:   case computerUsePlan(actionID: String)
+1727:   case computerUse(actionID: String)
+1728:   case computerUseExecution(actionID: String, approvedPlanDigest: String)
+1729:   case swiftDataCheckpointPersistence(checkpointKey: String)
+1730:   case appIntentDonation(descriptor: CoreAgentAppIntentDescriptor)
+1731:   case appIntentDonationRecord(record: CoreAgentAppIntentDonationRecord)
+1732:   case appIntent(
+1733:     descriptor: CoreAgentAppIntentDescriptor,
+1734:     mode: CoreAgentAppleAppIntentMode,
+1735:     target: CoreAgentAppleAppIntentExecutionTarget
+1736:   )
+1737: }
+1738: 
+1739: public struct CoreAgentAppleConsentRequirement:
+1740:   Codable, Equatable, Sendable
+1741: {
+1742:   public let authorityBoundaryID: String
+1743:   public let policyVersion: Int
+1744:   public let capability: CoreAgentAppleExecutionCapability
+1745:   public let requestFingerprint: String
+1746: 
+1747:   public init(
+1748:     authorityBoundaryID: String,
+1749:     policyVersion: Int,
+1750:     capability: CoreAgentAppleExecutionCapability,
+1751:     requestFingerprint: String
+1752:   ) {
+1753:     self.authorityBoundaryID = authorityBoundaryID
+1754:     self.policyVersion = policyVersion
+1755:     self.capability = capability
+1756:     self.requestFingerprint = requestFingerprint
+1757:   }
+1758: }
+1759: 
+1760: public struct CoreAgentAppleConsentReceipt:
+1761:   Codable, Equatable, Sendable
+1762: {
+1763:   public let id: String
+1764:   public let issuerID: String
+1765:   public let authorityBoundaryID: String
+1766:   public let policyVersion: Int
+1767:   public let capability: CoreAgentAppleExecutionCapability
+1768:   public let requestFingerprint: String
+1769:   public let grantedAt: Date
+1770:   public let expiresAt: Date?
+1771:   public let signature: String
+1772: 
+1773:   public init(
+1774:     id: String,
+1775:     issuerID: String,
+1776:     authorityBoundaryID: String,
+1777:     policyVersion: Int,
+1778:     capability: CoreAgentAppleExecutionCapability,
+1779:     requestFingerprint: String,
+1780:     grantedAt: Date,
+1781:     expiresAt: Date?,
+1782:     signature: String
+1783:   ) {
+1784:     self.id = id
+1785:     self.issuerID = issuerID
+1786:     self.authorityBoundaryID = authorityBoundaryID
+1787:     self.policyVersion = policyVersion
+1788:     self.capability = capability
+1789:     self.requestFingerprint = requestFingerprint
+1790:     self.grantedAt = grantedAt
+1791:     self.expiresAt = expiresAt
+1792:     self.signature = signature
+1793:   }
+1794: 
+1795:   private init(
+1796:     id: String,
+1797:     issuerID: String,
+1798:     requirement: CoreAgentAppleConsentRequirement,
+1799:     grantedAt: Date,
+1800:     expiresAt: Date,
+1801:     signature: String
+1802:   ) {
+1803:     self.init(
+1804:       id: id,
+1805:       issuerID: issuerID,
+1806:       authorityBoundaryID: requirement.authorityBoundaryID,
+1807:       policyVersion: requirement.policyVersion,
+1808:       capability: requirement.capability,
+1809:       requestFingerprint: requirement.requestFingerprint,
+1810:       grantedAt: grantedAt,
+1811:       expiresAt: expiresAt,
+1812:       signature: signature
+1813:     )
+1814:   }
+1815: 
+1816:   public static func issue(
+1817:     id: String,
+1818:     issuerID: String,
+1819:     requirement: CoreAgentAppleConsentRequirement,
+1820:     signingKey: CoreAgentAppleConsentSigningKey,
+1821:     grantedAt: Date,
+1822:     expiresAt: Date
+1823:   ) -> CoreAgentAppleConsentReceipt {
+1824:     let unsigned = CoreAgentAppleConsentReceipt(
+1825:       id: id,
+1826:       issuerID: issuerID,
+1827:       requirement: requirement,
+1828:       grantedAt: grantedAt,
+1829:       expiresAt: expiresAt,
+1830:       signature: ""
+1831:     )
+1832:     return CoreAgentAppleConsentReceipt(
+1833:       id: id,
+1834:       issuerID: issuerID,
+1835:       requirement: requirement,
+1836:       grantedAt: grantedAt,
+1837:       expiresAt: expiresAt,
+1838:       signature: unsigned.signature(signingKey: signingKey)
+1839:     )
+1840:   }
+1841: 
+1842:   fileprivate func verifies(with signingKey: CoreAgentAppleConsentSigningKey) -> Bool {
+1843:     guard let authenticationCode = Self.authenticationCode(from: signature) else {
+1844:       return false
+1845:     }
+1846:     return HMAC<SHA256>.isValidAuthenticationCode(
+1847:       authenticationCode,
+1848:       authenticating: signaturePayload,
+1849:       using: SymmetricKey(data: signingKey.material)
+1850:     )
+1851:   }
+1852: 
+1853:   private func signature(signingKey: CoreAgentAppleConsentSigningKey) -> String {
+1854:     let mac = HMAC<SHA256>.authenticationCode(
+1855:       for: signaturePayload,
+1856:       using: SymmetricKey(data: signingKey.material)
+1857:     )
+1858:     return "hmac-sha256:" + mac.map { String(format: "%02x", $0) }.joined()
+1859:   }
+1860: 
+1861:   private var signaturePayload: Data {
+1862:     let fields = [
+1863:       id,
+1864:       issuerID,
+1865:       authorityBoundaryID,
+1866:       String(policyVersion),
+1867:       capability.rawValue,
+1868:       requestFingerprint,
+1869:       Self.timeToken(grantedAt),
+1870:       expiresAt.map(Self.timeToken) ?? "nil",
+1871:     ]
+1872:     return Data(fields.map { "\($0.utf8.count):\($0)" }.joined(separator: "|").utf8)
+1873:   }
+1874: 
+1875:   private static func authenticationCode(from signature: String) -> [UInt8]? {
+1876:     let prefix = "hmac-sha256:"
+1877:     guard signature.hasPrefix(prefix) else {
+1878:       return nil
+1879:     }
+1880:     let hex = signature.dropFirst(prefix.count)
+1881:     guard hex.count == 64 else {
+1882:       return nil
+1883:     }
+1884:     var bytes: [UInt8] = []
+1885:     bytes.reserveCapacity(32)
+1886:     var index = hex.startIndex
+1887:     while index < hex.endIndex {
+1888:       let nextIndex = hex.index(index, offsetBy: 2)
+1889:       guard let byte = UInt8(hex[index..<nextIndex], radix: 16) else {
+1890:         return nil
+1891:       }
+1892:       bytes.append(byte)
+1893:       index = nextIndex
+1894:     }
+1895:     return bytes.count == 32 ? bytes : nil
+1896:   }
+1897: 
+1898:   private static func timeToken(_ date: Date) -> String {
+1899:     stableTimeToken(date)
+1900:   }
+1901: }
+1902: 
+1903: public struct CoreAgentAppleConsentSigningKey: Equatable, Sendable {
+1904:   fileprivate let material: Data
+1905: 
+1906:   public init?(_ material: Data) {
+1907:     guard material.count >= 32 else {
+1908:       return nil
+1909:     }
+1910:     self.material = material
+1911:   }
+1912: }
+1913: 
+1914: private final class CoreAgentAppleConsumedConsentReceipts: @unchecked Sendable {
+1915:   private let lock = NSLock()
+1916:   private var consumedReceiptKeys: Set<String> = []
+1917: 
+1918:   func consume(_ key: String) -> Bool {
+1919:     lock.withLock {
+1920:       if consumedReceiptKeys.contains(key) {
+1921:         return false
+1922:       }
+1923:       consumedReceiptKeys.insert(key)
+1924:       return true
+1925:     }
+1926:   }
+1927: }
+1928: 
+1929: public enum CoreAgentAppleConsent: Equatable, Sendable {
+1930:   case notRequired
+1931:   case required(reason: String)
+1932:   case granted(CoreAgentAppleConsentReceipt)
+1933: }
+1934: 
+1935: public enum CoreAgentAppleActionGateDenial: Equatable, Sendable {
+1936:   case missingCapability(CoreAgentAppleExecutionCapability)
+1937:   case missingConsent(CoreAgentAppleExecutionCapability)
+1938:   case remoteExecutionRequiresNetworkPolicy
+1939:   case invalidConsentReceipt(String)
+1940:   case consentAuthorityBoundaryMismatch(expected: String, actual: String)
+1941:   case consentPolicyVersionMismatch(expected: Int, actual: Int)
+1942:   case consentCapabilityMismatch(
+1943:     expected: CoreAgentAppleExecutionCapability,
+1944:     actual: CoreAgentAppleExecutionCapability
+1945:   )
+1946:   case consentRequestMismatch(expected: String, actual: String)
+1947:   case expiredConsentReceipt(String)
+1948:   case missingConsentExpiry(String)
+1949:   case untrustedConsentIssuer(expected: String, actual: String)
+1950:   case invalidConsentSignature(String)
+1951:   case reusedConsentReceipt(String)
+1952:   case notYetValidConsentReceipt(String)
+1953:   case consentVerifierUnavailable(CoreAgentAppleExecutionCapability)
+1954:   case invalidAppIntentDescriptor(CoreAgentAppIntentDescriptorError)
+1955:   case unexpectedAppIntentDescriptorError(String)
+1956:   case unsupportedAppIntentMode(identifier: String, mode: CoreAgentAppleAppIntentMode)
+1957:   case unsupportedAppIntentExecutionTarget(
+1958:     identifier: String,
+1959:     target: CoreAgentAppleAppIntentExecutionTarget
+1960:   )
+1961:   case appIntentDonationDisabled(identifier: String)
+1962:   case appIntentDonationAuthorityBoundaryMismatch(expected: String, actual: String)
+1963:   case appIntentDonationPolicyVersionMismatch(expected: Int, actual: Int)
+1964:   case appIntentExecutionTargetRequiresForeground(
+1965:     identifier: String,
+1966:     target: CoreAgentAppleAppIntentExecutionTarget
+1967:   )
+1968: }
+1969: 
+1970: public enum CoreAgentAppleActionGateDecision: Equatable, Sendable {
+1971:   case allowed
+1972:   case denied(CoreAgentAppleActionGateDenial)
+1973: 
+1974:   public var isAllowed: Bool {
+1975:     if case .allowed = self { return true }
+1976:     return false
+1977:   }
+1978: }
+1979: 
+1980: public struct CoreAgentAppleActionGate: Sendable {
+1981:   public let sandbox: CoreAgentAppleSandboxProfile
+1982:   public let trustedConsentIssuerID: String
+1983:   private let consentSigningKey: CoreAgentAppleConsentSigningKey?
+1984:   private let consumedConsentReceipts: CoreAgentAppleConsumedConsentReceipts
+1985:   private let now: @Sendable () -> Date
+1986: 
+1987:   public init(
+1988:     sandbox: CoreAgentAppleSandboxProfile,
+1989:     trustedConsentIssuerID: String = "default",
+1990:     consentSigningKey: CoreAgentAppleConsentSigningKey? = nil,
+1991:     now: @escaping @Sendable () -> Date = { Date() }
+1992:   ) {
+1993:     self.sandbox = sandbox
+1994:     self.trustedConsentIssuerID = trustedConsentIssuerID
+1995:     self.consentSigningKey = consentSigningKey
+1996:     self.consumedConsentReceipts = CoreAgentAppleConsumedConsentReceipts()
+1997:     self.now = now
+1998:   }
+1999: 
+2000:   public func consentRequirement(
+2001:     for request: CoreAgentAppleExecutionRequest
+2002:   ) -> CoreAgentAppleConsentRequirement {
+2003:     let policy = policy(for: request)
+2004:     return CoreAgentAppleConsentRequirement(
+2005:       authorityBoundaryID: sandbox.authorityBoundaryID,
+2006:       policyVersion: sandbox.policyVersion,
+2007:       capability: policy.requiredCapability,
+2008:       requestFingerprint: policy.requestFingerprint
+2009:     )
+2010:   }
+2011: 
+2012:   public func evaluate(
+2013:     _ request: CoreAgentAppleExecutionRequest,
+2014:     consent: CoreAgentAppleConsent
+2015:   ) -> CoreAgentAppleActionGateDecision {
+2016:     let policy = policy(for: request)
+2017: 
+2018:     if let denial = policy.preflightDenial {
+2019:       return .denied(denial)
+2020:     }
+2021:     guard sandbox.allows(policy.requiredCapability) else {
+2022:       return .denied(.missingCapability(policy.requiredCapability))
+2023:     }
+2024:     guard !policy.consentRequired else {
+2025:       let requirement = CoreAgentAppleConsentRequirement(
+2026:         authorityBoundaryID: sandbox.authorityBoundaryID,
+2027:         policyVersion: sandbox.policyVersion,
+2028:         capability: policy.requiredCapability,
+2029:         requestFingerprint: policy.requestFingerprint
+2030:       )
+2031:       if let denial = validate(consent: consent, requirement: requirement) {
+2032:         return .denied(denial)
+2033:       }
+2034:       return .allowed
+2035:     }
+2036:     return .allowed
+2037:   }
+2038: 
+2039:   private struct RequestPolicy {
+2040:     let requiredCapability: CoreAgentAppleExecutionCapability
+2041:     let consentRequired: Bool
+2042:     let requestFingerprint: String
+2043:     let preflightDenial: CoreAgentAppleActionGateDenial?
+2044:   }
+2045: 
+2046:   private func policy(for request: CoreAgentAppleExecutionRequest) -> RequestPolicy {
+2047:     switch request {
+2048:     case .codeInterpreter(let tier):
+2049:       if tier == .remote && sandbox.networkPolicy != .allowed {
+2050:         return RequestPolicy(
+2051:           requiredCapability: tier.requiredCapability,
+2052:           consentRequired: true,
+2053:           requestFingerprint: fingerprint(["code", tier.rawValue]),
+2054:           preflightDenial: .remoteExecutionRequiresNetworkPolicy
+2055:         )
+2056:       }
+2057:       return RequestPolicy(
+2058:         requiredCapability: tier.requiredCapability,
+2059:         consentRequired: tier == .helperProcess || tier == .remote,
+2060:         requestFingerprint: fingerprint(["code", tier.rawValue]),
+2061:         preflightDenial: nil
+2062:       )
+2063:     case .computerUsePlan(let actionID):
+2064:       return RequestPolicy(
+2065:         requiredCapability: .computerUse,
+2066:         consentRequired: false,
+2067:         requestFingerprint: fingerprint(["computer-use-plan", actionID]),
+2068:         preflightDenial: nil
+2069:       )
+2070:     case .computerUse(let actionID):
+2071:       return RequestPolicy(
+2072:         requiredCapability: .computerUse,
+2073:         consentRequired: true,
+2074:         requestFingerprint: fingerprint(["computer-use", actionID]),
+2075:         preflightDenial: nil
+2076:       )
+2077:     case .computerUseExecution(let actionID, let approvedPlanDigest):
+2078:       return RequestPolicy(
+2079:         requiredCapability: .computerUse,
+2080:         consentRequired: true,
+2081:         requestFingerprint: fingerprint(["computer-use-execution", actionID, approvedPlanDigest]),
+2082:         preflightDenial: nil
+2083:       )
+2084:     case .swiftDataCheckpointPersistence(let checkpointKey):
+2085:       return RequestPolicy(
+2086:         requiredCapability: .swiftDataCheckpointPersistence,
+2087:         consentRequired: false,
+2088:         requestFingerprint: fingerprint(["swiftdata-checkpoint", checkpointKey]),
+2089:         preflightDenial: nil
+2090:       )
+2091:     case .appIntentDonation(let descriptor):
+2092:       if let denial = appIntentDonationDenial(descriptor: descriptor) {
+2093:         return RequestPolicy(
+2094:           requiredCapability: .appIntentDonation,
+2095:           consentRequired: true,
+2096:           requestFingerprint: fingerprint(["app-intent-donation", descriptor.exposureFingerprint]),
+2097:           preflightDenial: denial
+2098:         )
+2099:       }
+2100:       return RequestPolicy(
+2101:         requiredCapability: .appIntentDonation,
+2102:         consentRequired: true,
+2103:         requestFingerprint: fingerprint(["app-intent-donation", descriptor.exposureFingerprint]),
+2104:         preflightDenial: nil
+2105:       )
+2106:     case .appIntentDonationRecord(let record):
+2107:       if let denial = appIntentDonationRecordDenial(record: record) {
+2108:         return RequestPolicy(
+2109:           requiredCapability: .appIntentDonation,
+2110:           consentRequired: true,
+2111:           requestFingerprint: fingerprint(["app-intent-donation-record", record.gateFingerprint]),
+2112:           preflightDenial: denial
+2113:         )
+2114:       }
+2115:       return RequestPolicy(
+2116:         requiredCapability: .appIntentDonation,
+2117:         consentRequired: true,
+2118:         requestFingerprint: fingerprint(["app-intent-donation-record", record.gateFingerprint]),
+2119:         preflightDenial: nil
+2120:       )
+2121:     case .appIntent(let descriptor, let mode, let target):
+2122:       if let denial = appIntentDenial(descriptor: descriptor, mode: mode, target: target) {
+2123:         return RequestPolicy(
+2124:           requiredCapability: .appIntentExecution,
+2125:           consentRequired: true,
+2126:           requestFingerprint: fingerprint([
+2127:             "app-intent-execution",
+2128:             descriptor.exposureFingerprint,
+2129:             mode.rawValue,
+2130:             target.rawValue,
+2131:           ]),
+2132:           preflightDenial: denial
+2133:         )
+2134:       }
+2135:       return RequestPolicy(
+2136:         requiredCapability: .appIntentExecution,
+2137:         consentRequired: true,
+2138:         requestFingerprint: fingerprint([
+2139:           "app-intent-execution",
+2140:           descriptor.exposureFingerprint,
+2141:           mode.rawValue,
+2142:           target.rawValue,
+2143:         ]),
+2144:         preflightDenial: nil
+2145:       )
+2146:     }
+2147:   }
+2148: 
+2149:   private func appIntentDonationDenial(
+2150:     descriptor: CoreAgentAppIntentDescriptor
+2151:   ) -> CoreAgentAppleActionGateDenial? {
+2152:     do {
+2153:       _ = try descriptor.validatedForAgentExposure()
+2154:     } catch let error as CoreAgentAppIntentDescriptorError {
+2155:       return .invalidAppIntentDescriptor(error)
+2156:     } catch {
+2157:       return .unexpectedAppIntentDescriptorError(String(describing: error))
+2158:     }
+2159:     guard descriptor.donationPolicy != .doNotDonate else {
+2160:       return .appIntentDonationDisabled(identifier: descriptor.identifier)
+2161:     }
+2162:     return nil
+2163:   }
+2164: 
+2165:   private func appIntentDonationRecordDenial(
+2166:     record: CoreAgentAppIntentDonationRecord
+2167:   ) -> CoreAgentAppleActionGateDenial? {
+2168:     guard record.authorityBoundaryID == sandbox.authorityBoundaryID else {
+2169:       return .appIntentDonationAuthorityBoundaryMismatch(
+2170:         expected: sandbox.authorityBoundaryID,
+2171:         actual: record.authorityBoundaryID
+2172:       )
+2173:     }
+2174:     guard record.policyVersion == sandbox.policyVersion else {
+2175:       return .appIntentDonationPolicyVersionMismatch(
+2176:         expected: sandbox.policyVersion,
+2177:         actual: record.policyVersion
+2178:       )
+2179:     }
+2180:     return nil
+2181:   }
+2182: 
+2183:   private func appIntentDenial(
+2184:     descriptor: CoreAgentAppIntentDescriptor,
+2185:     mode: CoreAgentAppleAppIntentMode,
+2186:     target: CoreAgentAppleAppIntentExecutionTarget
+2187:   ) -> CoreAgentAppleActionGateDenial? {
+2188:     do {
+2189:       _ = try descriptor.validatedForAgentExposure()
+2190:     } catch let error as CoreAgentAppIntentDescriptorError {
+2191:       return .invalidAppIntentDescriptor(error)
+2192:     } catch {
+2193:       return .unexpectedAppIntentDescriptorError(String(describing: error))
+2194:     }
+2195:     guard descriptor.supportedModes.contains(mode) else {
+2196:       return .unsupportedAppIntentMode(identifier: descriptor.identifier, mode: mode)
+2197:     }
+2198:     guard descriptor.allowedExecutionTargets.contains(target) else {
+2199:       return .unsupportedAppIntentExecutionTarget(
+2200:         identifier: descriptor.identifier,
+2201:         target: target
+2202:       )
+2203:     }
+2204:     guard descriptor.mutability == .readOnly || target == .foreground else {
+2205:       return .appIntentExecutionTargetRequiresForeground(
+2206:         identifier: descriptor.identifier,
+2207:         target: target
+2208:       )
+2209:     }
+2210:     return nil
+2211:   }
+2212: 
+2213:   private func validate(
+2214:     consent: CoreAgentAppleConsent,
+2215:     requirement: CoreAgentAppleConsentRequirement
+2216:   ) -> CoreAgentAppleActionGateDenial? {
+2217:     guard case .granted(let receipt) = consent else {
+2218:       return .missingConsent(requirement.capability)
+2219:     }
+2220:     guard !receipt.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+2221:       return .invalidConsentReceipt("empty receipt id")
+2222:     }
+2223:     guard receipt.authorityBoundaryID == requirement.authorityBoundaryID else {
+2224:       return .consentAuthorityBoundaryMismatch(
+2225:         expected: requirement.authorityBoundaryID,
+
+3622: public enum CoreAgentAppleAppIntentExecutionTarget: String, Codable, Hashable, Sendable {
+3623:   case foreground
+3624:   case background
+3625: }
+3626: 
+3627: public enum CoreAgentAppleAppIntentMode: String, Codable, Hashable, Sendable {
+3628:   case app
+3629:   case siri
+3630:   case shortcuts
+3631:   case spotlight
+3632: }
+3633: 
+3634: public enum CoreAgentAppIntentDonationPolicy: String, Codable, Equatable, Sendable {
+3635:   case doNotDonate
+3636:   case donateAfterUserInitiatedAction
+3637: }
+3638: 
+3639: public enum CoreAgentAppIntentDescriptorError: Error, Equatable, Sendable {
+3640:   case missingExecutionTarget(identifier: String)
+3641:   case missingSupportedMode(identifier: String)
+3642:   case agentExposureRequired(identifier: String)
+3643:   case authorizationRequired(identifier: String)
+3644:   case hitlRequired(identifier: String)
+3645:   case foregroundExecutionRequired(identifier: String)
+3646: }
+3647: 
+3648: public struct CoreAgentAppIntentDescriptor: Equatable, Sendable {
+3649:   public let identifier: String
+3650:   public let title: String
+3651:   public let mutability: CoreAgentAppIntentMutability
+3652:   public let exposureRevision: String
+3653:   public let allowsAgentExecution: Bool
+3654:   public let allowedExecutionTargets: Set<CoreAgentAppleAppIntentExecutionTarget>
+3655:   public let supportedModes: Set<CoreAgentAppleAppIntentMode>
+3656:   public let donationPolicy: CoreAgentAppIntentDonationPolicy
+3657:   public let requiresAuthorization: Bool
+3658:   public let requiresHITLForSensitiveOperations: Bool
+3659: 
+3660:   public init(
+3661:     identifier: String,
+3662:     title: String,
+3663:     mutability: CoreAgentAppIntentMutability,
+3664:     exposureRevision: String = "1",
+3665:     allowsAgentExecution: Bool,
+3666:     allowedExecutionTargets: Set<CoreAgentAppleAppIntentExecutionTarget>,
+3667:     supportedModes: Set<CoreAgentAppleAppIntentMode>,
+3668:     donationPolicy: CoreAgentAppIntentDonationPolicy,
+3669:     requiresAuthorization: Bool,
+3670:     requiresHITLForSensitiveOperations: Bool
+3671:   ) {
+3672:     self.identifier = identifier
+3673:     self.title = title
+3674:     self.mutability = mutability
+3675:     self.exposureRevision = exposureRevision
+3676:     self.allowsAgentExecution = allowsAgentExecution
+3677:     self.allowedExecutionTargets = allowedExecutionTargets
+3678:     self.supportedModes = supportedModes
+3679:     self.donationPolicy = donationPolicy
+3680:     self.requiresAuthorization = requiresAuthorization
+3681:     self.requiresHITLForSensitiveOperations = requiresHITLForSensitiveOperations
+3682:   }
+3683: 
+3684:   public func validatedForAgentExposure() throws -> Self {
+3685:     guard !allowedExecutionTargets.isEmpty else {
+3686:       throw CoreAgentAppIntentDescriptorError.missingExecutionTarget(identifier: identifier)
+3687:     }
+3688:     guard !supportedModes.isEmpty else {
+3689:       throw CoreAgentAppIntentDescriptorError.missingSupportedMode(identifier: identifier)
+3690:     }
+3691:     guard allowsAgentExecution else {
+3692:       throw CoreAgentAppIntentDescriptorError.agentExposureRequired(identifier: identifier)
+3693:     }
+3694:     guard mutability == .readOnly || requiresAuthorization else {
+3695:       throw CoreAgentAppIntentDescriptorError.authorizationRequired(identifier: identifier)
+3696:     }
+3697:     guard mutability == .readOnly || requiresHITLForSensitiveOperations else {
+3698:       throw CoreAgentAppIntentDescriptorError.hitlRequired(identifier: identifier)
+3699:     }
+3700:     guard mutability == .readOnly || allowedExecutionTargets.contains(.foreground) else {
+3701:       throw CoreAgentAppIntentDescriptorError.foregroundExecutionRequired(identifier: identifier)
+3702:     }
+3703:     return self
+3704:   }
+3705: 
+3706:   public var exposureFingerprint: String {
+3707:     Self.fingerprint([
+3708:       identifier,
+3709:       title,
+3710:       mutability.rawValue,
+3711:       exposureRevision,
+3712:       allowsAgentExecution ? "agent-exposed" : "not-agent-exposed",
+3713:       allowedExecutionTargets.map(\.rawValue).sorted().joined(separator: ","),
+3714:       supportedModes.map(\.rawValue).sorted().joined(separator: ","),
+3715:       donationPolicy.rawValue,
+3716:       requiresAuthorization ? "requires-authorization" : "no-authorization",
+3717:       requiresHITLForSensitiveOperations ? "requires-hitl" : "no-hitl",
+
+Local verification after fixes:
+- swift test --skip-update --filter CoreAgentAppIntentsTests: PASS, 10 tests
+- swift test --skip-update --filter CoreAgentApplePlatformTests: PASS, 78 tests
+- swift test --skip-update: PASS
+- swift build --skip-update: PASS

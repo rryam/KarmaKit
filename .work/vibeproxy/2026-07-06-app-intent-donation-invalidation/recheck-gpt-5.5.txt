@@ -1,0 +1,7 @@
+Verdict: BLOCK
+
+Findings:
+- [high] `Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:3857` `CoreAgentAppIntentDonationRecord.init(from:)` recomputes `donationIdentifier` without binding `descriptorIdentifier`. A tampered encoded record can change `descriptorIdentifier` while keeping the same valid `donationIdentifier`, because `makeDonationIdentifier(...)` only uses `descriptorExposureFingerprint`, subject, authority boundary, and policy version. `descriptorIdentifier` is an App Intent targeting/identity field and is later copied into invalidation records, so decoded records can become internally inconsistent. Fix by including `descriptorIdentifier` in `makeDonationIdentifier` inputs, or by decoding a descriptor snapshot and verifying `descriptorIdentifier` matches the validated descriptor/exposure fingerprint before accepting the record.
+
+Residual risks:
+- `descriptorExposureFingerprint` is a raw framed descriptor string rather than a cryptographic digest, but current donation IDs and record-bound consent fingerprints hash it before use. This is non-blocking if it remains internal and is not surfaced as a Siri/Spotlight donation identifier or consent fingerprint directly.

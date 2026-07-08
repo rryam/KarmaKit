@@ -1,0 +1,9 @@
+# Git LFS and large binary policy
+# CoreAgent is source-only; large binaries should not be committed.
+*.ipa filter=lfs diff=lfs merge=lfs -text
+*.dSYM.zip filter=lfs diff=lfs merge=lfs -text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary

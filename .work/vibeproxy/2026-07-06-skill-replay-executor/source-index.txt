@@ -1,0 +1,5 @@
+Sources/CoreAgentSkills/CoreAgentSkills.swift
+  - CoreAgentSkillReplayRequest/Generator
+  - CoreAgentSkillReplayOutcome, Backend, ExecutionPolicy, Executor
+Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift
+  - Replay generator and executor tests

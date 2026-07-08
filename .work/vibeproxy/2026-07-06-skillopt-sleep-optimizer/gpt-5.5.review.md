@@ -1,0 +1,1 @@
+BLOCK: No diff was provided under “Diff under review,” so the SkillOpt slice cannot be reviewed for the requested correctness/security/API risks. Treating it as done without reviewing the actual changes would bypass the validation requested here.

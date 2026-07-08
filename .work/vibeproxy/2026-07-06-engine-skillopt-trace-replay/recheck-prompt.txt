@@ -1,0 +1,615 @@
+Recheck this Swift CoreAgent Skills/SkillOpt trace-harvest/replay slice after fixes for the previous VibeProxy blockers.
+
+Return STRICT JSON only:
+{
+  "verdict": "PASS" | "BLOCK",
+  "findings": [
+    {"severity":"P0|P1|P2|P3", "file":"path", "line":123, "title":"short", "description":"specific", "concrete_fix":"specific"}
+  ],
+  "testing_gaps": ["..."],
+  "residual_risks": ["..."]
+}
+
+Previous blockers to verify are fixed:
+1. Harvester must not copy raw failure attributes such as error_type/tool/tool_name, raw issue fingerprints, raw issue IDs, issue titles, verifier feedback, prompt text, tool arguments, or secrets into SkillOpt evidence/replay metadata.
+2. Harvester must locally filter out non-finalized traces and traces where the receipt does not verify the exact stored run.events, even if a custom CoreAgentEngineStore conformer returns bad traces.
+3. Replay generation must be deterministic, validate heldoutSuiteID/maxRequests, cap output, avoid copying verifierFeedback, and treat missing source suite as unknown/skip when excludedSourceSuiteIDs is configured.
+
+Scope boundaries:
+- In scope: CoreAgentSkillEngineTraceHarvester, CoreAgentSkillReplayGenerator/Policy/Request, Package target dependencies, and the new tests below.
+- Future scope, do not block solely on this: model-powered edit proposals, real replay executor, file-backed store, external LangSmith export.
+
+Post-fix verification:
+- swift test --skip-update --filter CoreAgentSkillsTests: PASS, 21 tests
+- swift test --skip-update --filter 'CoreAgentEngineTests|CoreAgentSkillsTests': PASS, 32 tests
+- swift build --skip-update: PASS
+- swift test --skip-update: PASS full package
+
+
+=== Sources/CoreAgentSkills/CoreAgentSkills.swift lines 105-390 ===
+   105	    self.transcriptDigest = transcriptDigest
+   106	    self.toolEventDigest = toolEventDigest
+   107	    self.verifierFeedback = verifierFeedback
+   108	    self.score = score
+   109	    self.metadata = metadata
+   110	  }
+   111	}
+   112	
+   113	public struct CoreAgentSkillEngineTraceHarvester: Sendable {
+   114	  private let engineStore: any CoreAgentEngineStore
+   115	
+   116	  public init(engineStore: any CoreAgentEngineStore) {
+   117	    self.engineStore = engineStore
+   118	  }
+   119	
+   120	  public func harvest(
+   121	    projectID: String,
+   122	    threadID: String? = nil
+   123	  ) async -> [CoreAgentSkillRolloutEvidence] {
+   124	    let traces = await engineStore.traces(projectID: projectID, threadID: threadID)
+   125	      .filter(Self.isHarvestable)
+   126	    let issueByRunID = Self.issueByRunID(await engineStore.issues(projectID: projectID))
+   127	    return traces.map { trace in
+   128	      Self.evidence(for: trace, issue: issueByRunID[trace.run.id])
+   129	    }
+   130	  }
+   131	
+   132	  private static func issueByRunID(
+   133	    _ issues: [CoreAgentEngineIssue]
+   134	  ) -> [UUID: CoreAgentEngineIssue] {
+   135	    var result: [UUID: CoreAgentEngineIssue] = [:]
+   136	    for issue in issues.sorted(by: issueSort) {
+   137	      for runID in issue.contributingRunIDs where result[runID] == nil {
+   138	        result[runID] = issue
+   139	      }
+   140	    }
+   141	    return result
+   142	  }
+   143	
+   144	  private static func issueSort(
+   145	    lhs: CoreAgentEngineIssue,
+   146	    rhs: CoreAgentEngineIssue
+   147	  ) -> Bool {
+   148	    if lhs.firstSeenAt != rhs.firstSeenAt {
+   149	      return lhs.firstSeenAt < rhs.firstSeenAt
+   150	    }
+   151	    return lhs.id < rhs.id
+   152	  }
+   153	
+   154	  private static func evidence(
+   155	    for trace: CoreAgentEngineTrace,
+   156	    issue: CoreAgentEngineIssue?
+   157	  ) -> CoreAgentSkillRolloutEvidence {
+   158	    let status = runStatus(trace.run)
+   159	    let toolEvents = trace.run.events.filter(isToolEvent)
+   160	    var metadata: [String: String] = [
+   161	      "source": "coreagent-engine",
+   162	      "project_id": trace.projectID,
+   163	      "run_id": trace.run.id.uuidString.lowercased(),
+   164	      "run_status": status,
+   165	      "event_count": "\(trace.run.events.count)",
+   166	      "tool_event_count": "\(toolEvents.count)",
+   167	    ]
+   168	    if let threadID = trace.threadID {
+   169	      metadata["thread_id"] = threadID
+   170	    }
+   171	    if let rootHash = trace.receipt.rootHash {
+   172	      metadata["receipt_root_hash"] = rootHash
+   173	    }
+   174	    if let usage = trace.run.usage {
+   175	      metadata["input_tokens"] = "\(usage.inputTokens)"
+   176	      metadata["cached_input_tokens"] = "\(usage.cachedInputTokens)"
+   177	      metadata["output_tokens"] = "\(usage.outputTokens)"
+   178	      metadata["reasoning_tokens"] = "\(usage.reasoningTokens)"
+   179	    }
+   180	    if let issue {
+   181	      metadata["issue_id_digest"] = digest(value: issue.id)
+   182	      metadata["issue_status"] = issue.status.rawValue
+   183	    }
+   184	
+   185	    return CoreAgentSkillRolloutEvidence(
+   186	      id: evidenceID(for: trace),
+   187	      taskID: issue.map { safeReference(prefix: "engine-issue", value: $0.id) }
+   188	        ?? "run-\(trace.run.id.uuidString.lowercased())",
+   189	      transcriptDigest: digest(events: trace.run.events.filter { !isToolEvent($0) }),
+   190	      toolEventDigest: digest(events: toolEvents),
+   191	      verifierFeedback: issue.map { _ in "engine issue linked" } ?? "engine run \(status)",
+   192	      score: score(for: status),
+   193	      metadata: metadata
+   194	    )
+   195	  }
+   196	
+   197	  private static func isHarvestable(_ trace: CoreAgentEngineTrace) -> Bool {
+   198	    let status = runStatus(trace.run)
+   199	    guard status == "completed" || status == "failed" else {
+   200	      return false
+   201	    }
+   202	    guard trace.receipt.runID == trace.run.id,
+   203	      trace.receipt.verify(),
+   204	      trace.receipt.receipts.map(\.event) == trace.run.events
+   205	    else {
+   206	      return false
+   207	    }
+   208	    return true
+   209	  }
+   210	
+   211	  private static func evidenceID(for trace: CoreAgentEngineTrace) -> String {
+   212	    let payload = [
+   213	      "coreagent-skill-engine-trace-evidence-v1",
+   214	      trace.projectID,
+   215	      trace.threadID ?? "",
+   216	      trace.run.id.uuidString.lowercased(),
+   217	      trace.receipt.rootHash ?? "",
+   218	    ].joined(separator: "\u{0}")
+   219	    return "engine-trace-\(sha256Hex(Data(payload.utf8)).prefix(24))"
+   220	  }
+   221	
+   222	  private static func runStatus(_ run: CoreAgentRun) -> String {
+   223	    if run.events.contains(where: { $0.kind == .runFailed }) {
+   224	      return "failed"
+   225	    }
+   226	    if run.events.contains(where: { $0.kind == .runCompleted }) {
+   227	      return "completed"
+   228	    }
+   229	    return "unknown"
+   230	  }
+   231	
+   232	  private static func score(for status: String) -> Double {
+   233	    switch status {
+   234	    case "completed":
+   235	      1
+   236	    case "failed":
+   237	      0
+   238	    default:
+   239	      0.5
+   240	    }
+   241	  }
+   242	
+   243	  private static func isToolEvent(_ event: CoreAgentEvent) -> Bool {
+   244	    switch event.kind {
+   245	    case .toolAuthorizationStarted,
+   246	      .toolAuthorizationSucceeded,
+   247	      .toolAuthorizationDenied,
+   248	      .toolAuthorizationCancelled,
+   249	      .toolAuthorizationFailed,
+   250	      .toolInterventionStarted,
+   251	      .toolInterventionApproved,
+   252	      .toolInterventionEdited,
+   253	      .toolInterventionRejected,
+   254	      .toolInterventionResponded,
+   255	      .toolInterventionCancelled,
+   256	      .toolInterventionFailed,
+   257	      .toolExecutionStarted,
+   258	      .toolExecutionCompleted,
+   259	      .toolExecutionFailed,
+   260	      .nativeToolCallRecorded,
+   261	      .nativeToolOutputRecorded:
+   262	      true
+   263	    default:
+   264	      false
+   265	    }
+   266	  }
+   267	
+   268	  private static func digest(events: [CoreAgentEvent]) -> String {
+   269	    let encoder = JSONEncoder()
+   270	    encoder.dateEncodingStrategy = .millisecondsSince1970
+   271	    encoder.outputFormatting = [.sortedKeys]
+   272	    let payload = (try? encoder.encode(events)) ?? Data()
+   273	    return "sha256:\(sha256Hex(payload))"
+   274	  }
+   275	
+   276	  private static func digest(value: String) -> String {
+   277	    "sha256:\(sha256Hex(Data(value.utf8)))"
+   278	  }
+   279	
+   280	  private static func safeReference(prefix: String, value: String) -> String {
+   281	    "\(prefix)-\(sha256Hex(Data(value.utf8)).prefix(24))"
+   282	  }
+   283	}
+   284	
+   285	public enum CoreAgentSkillReplayMode: String, Codable, Equatable, Sendable {
+   286	  case replay
+   287	  case dream
+   288	}
+   289	
+   290	public struct CoreAgentSkillReplayRequest: Codable, Equatable, Sendable, Identifiable {
+   291	  public let id: String
+   292	  public let mode: CoreAgentSkillReplayMode
+   293	  public let sourceEvidenceID: String
+   294	  public let taskID: String
+   295	  public let transcriptDigest: String
+   296	  public let toolEventDigest: String
+   297	  public let heldoutSuiteID: String
+   298	  public let metadata: [String: String]
+   299	
+   300	  public init(
+   301	    id: String,
+   302	    mode: CoreAgentSkillReplayMode,
+   303	    sourceEvidenceID: String,
+   304	    taskID: String,
+   305	    transcriptDigest: String,
+   306	    toolEventDigest: String,
+   307	    heldoutSuiteID: String,
+   308	    metadata: [String: String] = [:]
+   309	  ) {
+   310	    self.id = id
+   311	    self.mode = mode
+   312	    self.sourceEvidenceID = sourceEvidenceID
+   313	    self.taskID = taskID
+   314	    self.transcriptDigest = transcriptDigest
+   315	    self.toolEventDigest = toolEventDigest
+   316	    self.heldoutSuiteID = heldoutSuiteID
+   317	    self.metadata = metadata
+   318	  }
+   319	}
+   320	
+   321	public struct CoreAgentSkillReplayGenerationPolicy: Codable, Equatable, Sendable {
+   322	  public let heldoutSuiteID: String
+   323	  public let excludedSourceSuiteIDs: Set<String>
+   324	  public let includeDreamRolloutsForFailures: Bool
+   325	  public let maxRequests: Int?
+   326	
+   327	  public init(
+   328	    heldoutSuiteID: String,
+   329	    excludedSourceSuiteIDs: Set<String> = [],
+   330	    includeDreamRolloutsForFailures: Bool = false,
+   331	    maxRequests: Int? = nil
+   332	  ) {
+   333	    self.heldoutSuiteID = heldoutSuiteID
+   334	    self.excludedSourceSuiteIDs = excludedSourceSuiteIDs
+   335	    self.includeDreamRolloutsForFailures = includeDreamRolloutsForFailures
+   336	    self.maxRequests = maxRequests
+   337	  }
+   338	
+   339	  fileprivate func validate() throws {
+   340	    guard !heldoutSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+   341	      throw CoreAgentSkillOptimizationError.emptyHeldoutSuiteID
+   342	    }
+   343	    if let maxRequests {
+   344	      guard maxRequests > 0 else {
+   345	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+   346	          "maxRequests must be positive"
+   347	        )
+   348	      }
+   349	    }
+   350	  }
+   351	}
+   352	
+   353	public struct CoreAgentSkillReplayGenerator: Sendable {
+   354	  public init() {}
+   355	
+   356	  public func generate(
+   357	    from evidence: [CoreAgentSkillRolloutEvidence],
+   358	    policy: CoreAgentSkillReplayGenerationPolicy
+   359	  ) throws -> [CoreAgentSkillReplayRequest] {
+   360	    try policy.validate()
+   361	    var requests: [CoreAgentSkillReplayRequest] = []
+   362	    for item in evidence {
+   363	      if let sourceSuiteID = item.metadata["suite_id"] {
+   364	        guard !policy.excludedSourceSuiteIDs.contains(sourceSuiteID) else { continue }
+   365	      } else if !policy.excludedSourceSuiteIDs.isEmpty {
+   366	        continue
+   367	      }
+   368	      append(
+   369	        request: Self.request(from: item, mode: .replay, policy: policy),
+   370	        to: &requests,
+   371	        maxRequests: policy.maxRequests
+   372	      )
+   373	      guard requests.count < (policy.maxRequests ?? Int.max) else { break }
+   374	      if policy.includeDreamRolloutsForFailures,
+   375	        item.metadata["run_status"] == "failed"
+   376	      {
+   377	        append(
+   378	          request: Self.request(from: item, mode: .dream, policy: policy),
+   379	          to: &requests,
+   380	          maxRequests: policy.maxRequests
+   381	        )
+   382	      }
+   383	      guard requests.count < (policy.maxRequests ?? Int.max) else { break }
+   384	    }
+   385	    return requests
+   386	  }
+   387	
+   388	  private func append(
+   389	    request: CoreAgentSkillReplayRequest,
+   390	    to requests: inout [CoreAgentSkillReplayRequest],
+=== Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift lines 570-770 ===
+   570	      events: [
+   571	        Self.event(
+   572	          runID: runID,
+   573	          kind: .toolExecutionStarted,
+   574	          message: "Started shell with token=harvest-secret",
+   575	          attributes: [
+   576	            "api_key": "harvest-secret",
+   577	            "tool": "shell",
+   578	            "arguments": "delete-everything",
+   579	          ]
+   580	        ),
+   581	        Self.event(
+   582	          runID: runID,
+   583	          kind: .runFailed,
+   584	          message: "Run failed for prompt delete-everything",
+   585	          attributes: [
+   586	            "error_type": "authorization harvest-secret",
+   587	            "tool": "shell delete-everything",
+   588	          ]
+   589	        ),
+   590	      ]
+   591	    )
+   592	    try await engineStore.ingest(run, projectID: "coreagent", threadID: "thread-a")
+   593	    let issues = try await CoreAgentEngineIssueScanner(store: engineStore).scan(projectID: "coreagent")
+   594	    let issue = try #require(issues.first)
+   595	
+   596	    let harvester = CoreAgentSkillEngineTraceHarvester(engineStore: engineStore)
+   597	    let firstHarvest = await harvester.harvest(projectID: "coreagent", threadID: "thread-a")
+   598	    let secondHarvest = await harvester.harvest(projectID: "coreagent", threadID: "thread-a")
+   599	    let evidence = try #require(firstHarvest.first)
+   600	    let encoded = String(
+   601	      data: try JSONEncoder().encode(evidence),
+   602	      encoding: .utf8
+   603	    ) ?? ""
+   604	
+   605	    #expect(firstHarvest.count == 1)
+   606	    #expect(firstHarvest.map(\.id) == secondHarvest.map(\.id))
+   607	    #expect(evidence.id.hasPrefix("engine-trace-"))
+   608	    #expect(evidence.taskID.hasPrefix("engine-issue-"))
+   609	    #expect(evidence.transcriptDigest.hasPrefix("sha256:"))
+   610	    #expect(evidence.toolEventDigest.hasPrefix("sha256:"))
+   611	    #expect(evidence.score == 0)
+   612	    #expect(evidence.metadata["source"] == "coreagent-engine")
+   613	    #expect(evidence.metadata["project_id"] == "coreagent")
+   614	    #expect(evidence.metadata["thread_id"] == "thread-a")
+   615	    #expect(evidence.metadata["run_id"] == runID.uuidString.lowercased())
+   616	    #expect(evidence.metadata["run_status"] == "failed")
+   617	    #expect(evidence.metadata["issue_id_digest"]?.hasPrefix("sha256:") == true)
+   618	    #expect(evidence.metadata["issue_status"] == CoreAgentEngineIssueStatus.open.rawValue)
+   619	    #expect(evidence.verifierFeedback == "engine issue linked")
+   620	    #expect(evidence.metadata["error_type"] == nil)
+   621	    #expect(evidence.metadata["tool"] == nil)
+   622	    #expect(evidence.metadata["issue_fingerprint"] == nil)
+   623	    #expect(!encoded.contains("harvest-secret"))
+   624	    #expect(!encoded.contains("delete-everything"))
+   625	    #expect(!encoded.contains(issue.fingerprint))
+   626	  }
+   627	
+   628	  @Test("Harvester filters unverified and non-finalized Engine traces")
+   629	  func harvesterFiltersUnverifiedAndNonFinalizedEngineTraces() async throws {
+   630	    let validID = Self.uuid(711)
+   631	    let tamperedID = Self.uuid(712)
+   632	    let partialID = Self.uuid(713)
+   633	    let validRun = Self.run(
+   634	      id: validID,
+   635	      events: [
+   636	        Self.event(runID: validID, kind: .runCompleted, message: "done")
+   637	      ]
+   638	    )
+   639	    let originalTamperedRun = Self.run(
+   640	      id: tamperedID,
+   641	      events: [
+   642	        Self.event(runID: tamperedID, kind: .runCompleted, message: "original")
+   643	      ]
+   644	    )
+   645	    let changedTamperedRun = Self.run(
+   646	      id: tamperedID,
+   647	      events: [
+   648	        Self.event(runID: tamperedID, kind: .runFailed, message: "changed")
+   649	      ]
+   650	    )
+   651	    let partialRun = Self.run(
+   652	      id: partialID,
+   653	      events: [
+   654	        Self.event(runID: partialID, kind: .toolExecutionStarted, message: "partial")
+   655	      ]
+   656	    )
+   657	    let store = StaticEngineStore(traces: [
+   658	      CoreAgentEngineTrace(
+   659	        projectID: "coreagent",
+   660	        threadID: nil,
+   661	        run: validRun,
+   662	        receipt: try CoreAgentRunReceipt(run: validRun)
+   663	      ),
+   664	      CoreAgentEngineTrace(
+   665	        projectID: "coreagent",
+   666	        threadID: nil,
+   667	        run: changedTamperedRun,
+   668	        receipt: try CoreAgentRunReceipt(run: originalTamperedRun)
+   669	      ),
+   670	      CoreAgentEngineTrace(
+   671	        projectID: "coreagent",
+   672	        threadID: nil,
+   673	        run: partialRun,
+   674	        receipt: try CoreAgentRunReceipt(run: partialRun)
+   675	      ),
+   676	    ])
+   677	    let harvester = CoreAgentSkillEngineTraceHarvester(engineStore: store)
+   678	
+   679	    let evidence = await harvester.harvest(projectID: "coreagent")
+   680	
+   681	    #expect(evidence.map { $0.metadata["run_id"] } == [validID.uuidString.lowercased()])
+   682	    #expect(evidence.map(\.score) == [1])
+   683	  }
+   684	
+   685	  @Test("Replay generator creates deterministic replay and dream rollout requests")
+   686	  func replayGeneratorCreatesDeterministicReplayAndDreamRolloutRequests() throws {
+   687	    let failed = CoreAgentSkillRolloutEvidence(
+   688	      id: "engine-trace-failed",
+   689	      taskID: "issue-authorization",
+   690	      transcriptDigest: "sha256:failed-transcript",
+   691	      toolEventDigest: "sha256:failed-tools",
+   692	      verifierFeedback: "typed failure secret-feedback",
+   693	      score: 0,
+   694	      metadata: [
+   695	        "project_id": "coreagent",
+   696	        "run_id": "failed-run",
+   697	        "run_status": "failed",
+   698	        "suite_id": "source-train",
+   699	      ]
+   700	    )
+   701	    let completed = CoreAgentSkillRolloutEvidence(
+   702	      id: "engine-trace-completed",
+   703	      taskID: "run-completed",
+   704	      transcriptDigest: "sha256:completed-transcript",
+   705	      toolEventDigest: "sha256:completed-tools",
+   706	      verifierFeedback: "typed success secret-feedback",
+   707	      score: 1,
+   708	      metadata: [
+   709	        "project_id": "coreagent",
+   710	        "run_id": "completed-run",
+   711	        "run_status": "completed",
+   712	        "suite_id": "source-heldout",
+   713	      ]
+   714	    )
+   715	    let generator = CoreAgentSkillReplayGenerator()
+   716	    let unknownSuite = CoreAgentSkillRolloutEvidence(
+   717	      id: "engine-trace-unknown-suite",
+   718	      taskID: "run-unknown-suite",
+   719	      transcriptDigest: "sha256:unknown-suite-transcript",
+   720	      toolEventDigest: "sha256:unknown-suite-tools",
+   721	      verifierFeedback: "unknown suite secret-feedback",
+   722	      score: 1,
+   723	      metadata: [
+   724	        "project_id": "coreagent",
+   725	        "run_id": "unknown-suite-run",
+   726	        "run_status": "completed",
+   727	      ]
+   728	    )
+   729	
+   730	    let splitSafe = try generator.generate(
+   731	      from: [failed, unknownSuite, completed],
+   732	      policy: CoreAgentSkillReplayGenerationPolicy(
+   733	        heldoutSuiteID: "heldout-replay",
+   734	        excludedSourceSuiteIDs: ["source-train"],
+   735	        includeDreamRolloutsForFailures: true
+   736	      )
+   737	    )
+   738	    let withDreams = try generator.generate(
+   739	      from: [failed, completed],
+   740	      policy: CoreAgentSkillReplayGenerationPolicy(
+   741	        heldoutSuiteID: "heldout-replay",
+   742	        includeDreamRolloutsForFailures: true
+   743	      )
+   744	    )
+   745	    let withDreamsAgain = try generator.generate(
+   746	      from: [failed, completed],
+   747	      policy: CoreAgentSkillReplayGenerationPolicy(
+   748	        heldoutSuiteID: "heldout-replay",
+   749	        includeDreamRolloutsForFailures: true
+   750	      )
+   751	    )
+   752	    let capped = try generator.generate(
+   753	      from: [failed, completed],
+   754	      policy: CoreAgentSkillReplayGenerationPolicy(
+   755	        heldoutSuiteID: "heldout-replay",
+   756	        includeDreamRolloutsForFailures: true,
+   757	        maxRequests: 2
+   758	      )
+   759	    )
+   760	    let encoded = String(
+   761	      data: try JSONEncoder().encode(withDreams),
+   762	      encoding: .utf8
+   763	    ) ?? ""
+   764	
+   765	    #expect(splitSafe.map(\.sourceEvidenceID) == ["engine-trace-completed"])
+   766	    #expect(splitSafe.map(\.mode) == [.replay])
+   767	    #expect(splitSafe.first?.heldoutSuiteID == "heldout-replay")
+   768	    #expect(splitSafe.first?.metadata["source_suite_id"] == "source-heldout")
+   769	    #expect(withDreams.map { "\($0.mode.rawValue):\($0.sourceEvidenceID)" } == [
+   770	      "replay:engine-trace-failed",
+=== Package.swift CoreAgentSkills target/test target ===
+    75	    ),
+    76	    .target(
+    77	      name: "CoreAgentGraph",
+    78	      dependencies: ["CoreAgent"]
+    79	    ),
+    80	    .target(
+    81	      name: "CoreAgentMemory",
+    82	      dependencies: ["CoreAgent"],
+    83	      linkerSettings: [.linkedLibrary("sqlite3")]
+    84	    ),
+    85	    .target(
+    86	      name: "CoreAgentSkills",
+    87	      dependencies: ["CoreAgent", "CoreAgentEngine"]
+    88	    ),
+    89	    .target(
+    90	      name: "CoreAgentTestSupport",
+    91	      dependencies: ["CoreAgent"]
+    92	    ),
+    93	    .target(
+    94	      name: "CoreAgentProviders",
+    95	      dependencies: [
+    96	        "CoreAgent",
+    97	        .product(
+    98	          name: "FoundationModelsUtilities",
+    99	          package: "foundation-models-utilities",
+   100	          condition: .when(traits: ["AppleUtilities"])
+   101	        ),
+   102	        .product(
+   103	          name: "ClaudeForFoundationModels",
+   104	          package: "ClaudeForFoundationModels",
+   105	          condition: .when(traits: ["Claude"])
+   106	        ),
+   107	        .product(
+   108	          name: "FirebaseAILogic",
+   109	          package: "firebase-ios-sdk",
+   110	          condition: .when(traits: ["Gemini"])
+   111	        ),
+   112	      ],
+   113	      swiftSettings: [
+   114	        .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"])),
+   115	        .define("COREAGENT_CLAUDE", .when(traits: ["Claude"])),
+   116	        .define("COREAGENT_GEMINI", .when(traits: ["Gemini"])),
+   117	      ]
+   118	    ),
+   119	    .testTarget(
+   120	      name: "CoreAgentTests",
+   121	      dependencies: ["CoreAgent", "CoreAgentTestSupport"]
+   122	    ),
+   123	    .testTarget(
+   124	      name: "CoreAgentApplePlatformTests",
+   125	      dependencies: [
+   126	        "CoreAgent",
+   127	        "CoreAgentApplePlatform",
+   128	        "CoreAgentEngine",
+   129	        "CoreAgentGraph",
+   130	        "CoreAgentTestSupport",
+   131	      ]
+   132	    ),
+   133	    .testTarget(
+   134	      name: "CoreAgentAppIntentsTests",
+   135	      dependencies: [
+   136	        "CoreAgentApplePlatform",
+   137	        "CoreAgentAppIntents",
+   138	      ]
+   139	    ),
+   140	    .testTarget(
+   141	      name: "CoreAgentProviderTests",
+   142	      dependencies: ["CoreAgent", "CoreAgentProviders"],
+   143	      swiftSettings: [
+   144	        .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"])),
+   145	        .define("COREAGENT_CLAUDE", .when(traits: ["Claude"])),
+   146	        .define("COREAGENT_GEMINI", .when(traits: ["Gemini"])),
+   147	      ]
+   148	    ),
+   149	    .testTarget(
+   150	      name: "CoreAgentMemoryTests",
+   151	      dependencies: ["CoreAgent", "CoreAgentMemory"]
+   152	    ),
+   153	    .testTarget(
+   154	      name: "CoreAgentMemoryIntegrationTests",
+   155	      dependencies: ["CoreAgent", "CoreAgentMemory", "CoreAgentTestSupport"]
+   156	    ),
+   157	    .testTarget(
+   158	      name: "CoreAgentGraphTests",
+   159	      dependencies: ["CoreAgentGraph"]
+   160	    ),
+   161	    .testTarget(
+   162	      name: "CoreAgentDeepTests",
+   163	      dependencies: ["CoreAgentDeep", "CoreAgentTestSupport"]
+   164	    ),
+   165	    .testTarget(
+   166	      name: "CoreAgentEngineTests",
+   167	      dependencies: ["CoreAgentEngine", "CoreAgentTestSupport"]
+   168	    ),
+   169	    .testTarget(
+   170	      name: "CoreAgentSkillsTests",
+

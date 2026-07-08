@@ -1,0 +1,10 @@
+{
+  "model": "gpt-5.5",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Return PASS as plain text."
+    }
+  ],
+  "temperature": 0
+}

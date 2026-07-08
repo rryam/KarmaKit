@@ -1,5 +1,17 @@
 # CoreAgent
 
+> **Hard fork.** This repository (`24601/coreagent`) is an independent hard fork
+> of the upstream [`rudrankriyam/CoreAgent`](https://github.com/rudrankriyam/CoreAgent)
+> (MIT). It adds Swift, Foundation Models-native ports of runtime concepts from
+> LangChain's [LangGraph](https://github.com/langchain-ai/langgraph) and
+> [Deep Agents](https://github.com/langchain-ai/deepagents) (both MIT), plus
+> closed-loop behaviors popularized by LangSmith, LangChain, Inc.'s proprietary
+> hosted product (the `CoreAgentGraph`, `CoreAgentDeep`, `CoreAgentEngine`,
+> `CoreAgentSkills`, and `CoreAgentTalon` modules). No source was copied from any
+> of them. It is developed and versioned separately and is not endorsed by or
+> affiliated with the upstream author, LangChain, Inc., or Apple Inc. See
+> [`NOTICE`](NOTICE) for full attribution.
+
 **Foundation Models makes any model callable. CoreAgent makes any model shippable.**
 
 CoreAgent is a production harness for Apple's Foundation Models API. Give it any
@@ -38,8 +50,8 @@ Add CoreAgent with Swift Package Manager:
 ```swift
 dependencies: [
   .package(
-    url: "https://github.com/rudrankriyam/CoreAgent.git",
-    from: "0.3.0"
+    url: "https://github.com/24601/coreagent.git",
+    branch: "main"
   )
 ]
 ```
@@ -515,6 +527,49 @@ Checkpoint write failures are recorded and return the completed model response
 by default; select `.failRun` only when callers will not blindly repeat side
 effects.
 
+## Development
+
+Fresh clone setup:
+
+```bash
+./scripts/setup.sh
+```
+
+Build:
+
+```bash
+swift build --build-tests
+```
+
+Test:
+
+```bash
+swift test
+./scripts/run-tests-with-coverage.sh
+```
+
+Agent readiness checks:
+
+```bash
+./scripts/agent-readiness.sh
+make readiness
+```
+
+Agent and contributor guidance lives in [`AGENTS.md`](AGENTS.md). Operational
+runbooks are under [`Documentation/runbooks/`](Documentation/runbooks/).
+
+Copy [`.env.example`](.env.example) to `.env` for optional live provider testing.
+Never commit secrets.
+
 ## License
 
 CoreAgent is available under the MIT license.
+
+This is a hard fork of the upstream CoreAgent project
+(Copyright (c) 2025 Rudrank Riyam), whose MIT license is retained in
+[`LICENSE`](LICENSE). The `CoreAgentGraph`, `CoreAgentDeep`, `CoreAgentEngine`,
+`CoreAgentSkills`, and `CoreAgentTalon` modules are an independent Swift
+re-implementation of runtime behaviors from LangChain, Inc.'s MIT-licensed
+LangGraph, Deep Agents, LangChain, and LangSmith projects; no source was copied
+from them. Optional provider integrations pull in third-party packages under
+their own licenses. See [`NOTICE`](NOTICE) for complete attribution.

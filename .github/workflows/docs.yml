@@ -1,0 +1,52 @@
+name: Documentation
+
+on:
+  pull_request:
+    paths:
+      - 'Sources/**'
+      - 'Package.swift'
+      - 'Documentation/**'
+  push:
+    branches: [main]
+
+jobs:
+  docc:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect Xcode 27
+        id: xcode
+        run: |
+          if find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | grep -q .; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select Xcode 27
+        if: steps.xcode.outputs.available == 'true'
+        run: |
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+
+      - name: Generate DocC documentation
+        if: steps.xcode.outputs.available == 'true'
+        run: |
+          swift package resolve
+          swift package generate-documentation \
+            --target CoreAgent \
+            --output-path .build/docs/coreagent \
+            --transform-for-static-hosting
+
+      - name: Upload documentation artifact
+        if: steps.xcode.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docc-coreagent
+          path: .build/docs/coreagent
+
+      - name: Skip notice
+        if: steps.xcode.outputs.available != 'true'
+        run: echo "DocC generation requires Xcode 27 on the runner image"

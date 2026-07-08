@@ -1,0 +1,7 @@
+Sources/CoreAgentSkills/CoreAgentSkills.swift
+  - CoreAgentSkillOptimizationError and existing SkillOpt types
+  - CoreAgentHarnessOptimizer scalar and multi-objective selection
+  - CoreAgentSkillMultiObjectiveValidationAdapter
+Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift
+  - Scalar harness tests
+  - Multi-objective ranking, adapter, and fail-closed tests

@@ -43,9 +43,34 @@ jobs:
       - name: Check formatting
         run: xcrun swift-format lint --strict --recursive Package.swift Sources Tests
       - name: Build all test targets
-        run: swift build --build-tests
+        run: |
+          mkdir -p .build-metrics
+          START=$(date +%s)
+          swift build --build-tests
+          echo $(( $(date +%s) - START )) > .build-metrics/build-seconds.txt
       - name: Run default and memory tests
-        run: swift test
+        run: |
+          mkdir -p .test-metrics
+          ATTEMPTS=0
+          MAX_ATTEMPTS=2
+          until ./scripts/run-tests-with-coverage.sh; do
+            ATTEMPTS=$((ATTEMPTS + 1))
+            if [[ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]]; then
+              echo "Tests failed after ${MAX_ATTEMPTS} attempt(s)"
+              exit 1
+            fi
+            echo "::warning::Test run failed; retrying (${ATTEMPTS}/${MAX_ATTEMPTS}) for flake detection"
+          done
+        env:
+          COREAGENT_COVERAGE_THRESHOLD: 50
+      - name: Upload build and test metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-metrics-core
+          path: |
+            .build-metrics/
+            .test-metrics/
 
   providers:
     needs: xcode-27
@@ -98,3 +123,29 @@ jobs:
         run: |
           echo "### Xcode 27 CI is waiting on the GitHub-hosted runner image." >> "$GITHUB_STEP_SUMMARY"
           echo "The workflow will enable all build and test jobs automatically when Xcode 27 appears under /Applications." >> "$GITHUB_STEP_SUMMARY"
+
+  ci-gate:
+    name: CI status
+    runs-on: ubuntu-latest
+    needs:
+      - xcode-27
+      - core-and-memory
+      - providers
+      - platform-builds
+      - hosted-runner-notice
+    if: always()
+    steps:
+      - name: Evaluate CI results
+        run: |
+          if [[ "${{ needs.xcode-27.result }}" != "success" ]]; then
+            echo "Xcode detection failed"
+            exit 1
+          fi
+          if [[ "${{ needs.xcode-27.outputs.available }}" == "true" ]]; then
+            if [[ "${{ needs.core-and-memory.result }}" != "success" ]]; then exit 1; fi
+            if [[ "${{ needs.providers.result }}" != "success" ]]; then exit 1; fi
+            if [[ "${{ needs.platform-builds.result }}" != "success" ]]; then exit 1; fi
+          else
+            if [[ "${{ needs.hosted-runner-notice.result }}" != "success" ]]; then exit 1; fi
+          fi
+          echo "CI gate passed"

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased (hard fork)
+
+- Declared this repository (`24601/coreagent`) an independent **hard fork** of the
+  upstream `rudrankriyam/CoreAgent` project. Added a `NOTICE` file and README
+  attribution covering the upstream MIT license and the behavioral port of
+  runtime concepts from LangChain, Inc.'s MIT-licensed LangGraph, Deep Agents,
+  and LangChain, plus closed-loop behaviors popularized by LangSmith (LangChain,
+  Inc.'s proprietary hosted product). No source was copied from those projects.
+- Versioning now diverges from upstream; releases are cut independently from this
+  fork rather than tracking upstream `0.3.0` tags.
+- Ongoing: Swift, Foundation Models-native ports of graph runtime
+  (`CoreAgentGraph`), deep-agent harness (`CoreAgentDeep`), run/evidence engine
+  (`CoreAgentEngine`), skills/RSI optimization (`CoreAgentSkills`), and the
+  portable Talon core with optional channel adapters (`CoreAgentTalon`,
+  `CoreAgentTalonChannels`).
+
 ## 0.3.0 - 2026-06-24
 
 - Renamed the Apple utilities helper from `openAICompatible(...)` to

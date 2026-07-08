@@ -1,0 +1,58 @@
+# GitHub label taxonomy for CoreAgent
+- name: bug
+  color: d73a4a
+  description: Something is not working
+- name: enhancement
+  color: a2eeef
+  description: New feature or request
+- name: documentation
+  color: 0075ca
+  description: Documentation improvements
+- name: dependencies
+  color: 0366d6
+  description: Dependency updates
+- name: security
+  color: b60205
+  description: Security-related changes
+- name: triage
+  color: fbca04
+  description: Needs prioritization
+- name: P0
+  color: b60205
+  description: Critical priority
+- name: P1
+  color: d93f0b
+  description: High priority
+- name: P2
+  color: fbca04
+  description: Medium priority
+- name: P3
+  color: 0e8a16
+  description: Low priority
+- name: area/ci
+  color: 5319e7
+  description: CI and tooling
+- name: area/package
+  color: 1d76db
+  description: Swift package and dependencies
+- name: area/coreagent
+  color: 006b75
+  description: Core session harness
+- name: area/memory
+  color: 006b75
+  description: Long-term memory
+- name: area/graph
+  color: 006b75
+  description: Graph runtime
+- name: area/engine
+  color: 006b75
+  description: Engine runtime
+- name: area/skills
+  color: 006b75
+  description: Skills runtime
+- name: area/deep
+  color: 006b75
+  description: Deep agent runtime
+- name: area/providers
+  color: 006b75
+  description: Provider integrations

@@ -1,0 +1,99 @@
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:593:    let codeSandbox = CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:598:    let codeGate = CoreAgentAppleActionGate(sandbox: codeSandbox)
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:618:    let automationGate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:619:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:644:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:645:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:713:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:714:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:780:    let noVerifierGate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:781:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:867:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:868:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:936:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:937:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:950:  @Test("Deterministic code interpreter executes typed programs under action gate")
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:953:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:954:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:963:    let interpreter = CoreAgentAppleDeterministicCodeInterpreter(actionGate: gate, clock: { now })
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:964:    let request = CoreAgentAppleDeterministicCodeRequest(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:966:      program: CoreAgentAppleDeterministicProgram(instructions: [
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:994:  @Test("Deterministic code interpreter requires sandbox capability")
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:996:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:997:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1003:    let interpreter = CoreAgentAppleDeterministicCodeInterpreter(actionGate: gate)
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1004:    let result = await interpreter.run(CoreAgentAppleDeterministicCodeRequest(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1006:      program: CoreAgentAppleDeterministicProgram(instructions: [
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1018:  @Test("Deterministic code interpreter enforces instruction and output bounds")
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1020:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1021:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1027:    let interpreter = CoreAgentAppleDeterministicCodeInterpreter(actionGate: gate)
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1028:    let tooManyInstructions = await interpreter.run(CoreAgentAppleDeterministicCodeRequest(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1030:      program: CoreAgentAppleDeterministicProgram(instructions: [
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1036:    let tooMuchOutput = await interpreter.run(CoreAgentAppleDeterministicCodeRequest(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1038:      program: CoreAgentAppleDeterministicProgram(instructions: [
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1054:  @Test("Deterministic code interpreter rejects path-shaped output names")
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1056:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1057:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1063:    let interpreter = CoreAgentAppleDeterministicCodeInterpreter(actionGate: gate)
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1064:    let result = await interpreter.run(CoreAgentAppleDeterministicCodeRequest(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1066:      program: CoreAgentAppleDeterministicProgram(instructions: [
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1078:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1079:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1136:    let gate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1137:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1195:    let deniedGate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1196:      sandbox: CoreAgentAppleSandboxProfile(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1223:    let allowedGate = CoreAgentAppleActionGate(
+Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift:1224:      sandbox: CoreAgentAppleSandboxProfile(
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:1678:public struct CoreAgentAppleSandboxProfile: Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:1914:public enum CoreAgentAppleActionGateDenial: Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:1945:public enum CoreAgentAppleActionGateDecision: Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:1947:  case denied(CoreAgentAppleActionGateDenial)
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:1955:public struct CoreAgentAppleActionGate: Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:1956:  public let sandbox: CoreAgentAppleSandboxProfile
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:1962:    sandbox: CoreAgentAppleSandboxProfile,
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:1988:  ) -> CoreAgentAppleActionGateDecision {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2016:    let preflightDenial: CoreAgentAppleActionGateDenial?
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2095:  ) -> CoreAgentAppleActionGateDenial? {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2113:  ) -> CoreAgentAppleActionGateDenial? {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2142:  ) -> CoreAgentAppleActionGateDenial? {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2230:public enum CoreAgentAppleDeterministicInstruction: Codable, Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2238:public struct CoreAgentAppleDeterministicProgram: Codable, Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2239:  public let instructions: [CoreAgentAppleDeterministicInstruction]
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2241:  public init(instructions: [CoreAgentAppleDeterministicInstruction]) {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2246:public struct CoreAgentAppleDeterministicCodeLimits: Codable, Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2256:public struct CoreAgentAppleDeterministicCodeRequest: Codable, Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2258:  public let program: CoreAgentAppleDeterministicProgram
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2260:  public let limits: CoreAgentAppleDeterministicCodeLimits
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2264:    program: CoreAgentAppleDeterministicProgram,
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2266:    limits: CoreAgentAppleDeterministicCodeLimits = .init()
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2275:public enum CoreAgentAppleCodeInterpreterFailure: Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2284:public enum CoreAgentAppleCodeInterpreterStatus: Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2286:  case denied(CoreAgentAppleActionGateDenial)
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2287:  case failed(CoreAgentAppleCodeInterpreterFailure)
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2290:public struct CoreAgentAppleCodeInterpreterAudit: Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2301:  public let status: CoreAgentAppleCodeInterpreterStatus
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2304:public struct CoreAgentAppleCodeInterpreterResult: Equatable, Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2305:  public let status: CoreAgentAppleCodeInterpreterStatus
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2309:  public let audit: CoreAgentAppleCodeInterpreterAudit
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2312:public struct CoreAgentAppleDeterministicCodeInterpreter: Sendable {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2313:  public let actionGate: CoreAgentAppleActionGate
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2317:    actionGate: CoreAgentAppleActionGate,
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2325:    _ request: CoreAgentAppleDeterministicCodeRequest
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2326:  ) async -> CoreAgentAppleCodeInterpreterResult {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2504:    request: CoreAgentAppleDeterministicCodeRequest
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2517:    _ failure: CoreAgentAppleCodeInterpreterFailure,
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2518:    request: CoreAgentAppleDeterministicCodeRequest,
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2524:  ) -> CoreAgentAppleCodeInterpreterResult {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2538:    request: CoreAgentAppleDeterministicCodeRequest,
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2542:    status: CoreAgentAppleCodeInterpreterStatus,
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2546:  ) -> CoreAgentAppleCodeInterpreterResult {
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2548:    return CoreAgentAppleCodeInterpreterResult(
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2553:      audit: CoreAgentAppleCodeInterpreterAudit(
+Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift:2611:private extension CoreAgentAppleCodeInterpreterFailure {
+Documentation/CoreAgentApplePlatform-Runtime.md:57:  - Does not own `CoreAgentAppleActionGate` evaluation. Hosts should gate
+Documentation/CoreAgentApplePlatform-Runtime.md:151:- `CoreAgentAppleSandboxProfile` and `CoreAgentAppleActionGate`
+Documentation/CoreAgentApplePlatform-Runtime.md:178:    execution target through `CoreAgentAppleActionGate`; descriptor validation
+Documentation/DeepAgents-Port-Research-and-Design.md:324:- `CoreAgentAppleSandbox`
+Documentation/DeepAgents-Port-Research-and-Design.md:438:2. `CoreAgentAppleSandbox`

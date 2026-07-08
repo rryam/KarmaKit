@@ -1,0 +1,100 @@
+name: Agent Readiness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: readiness-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    name: Structure and policy checks
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate AGENTS.md
+        run: ./scripts/validate-agents-md.sh
+
+      - name: Agent readiness suite
+        run: ./scripts/agent-readiness.sh
+
+      - name: Tech debt scan
+        run: ./scripts/scan-tech-debt.sh
+
+      - name: Large file detection
+        env:
+          COREAGENT_MAX_FILE_LINES: 6000
+        run: ./scripts/check-large-files.sh
+
+      - name: Duplicate code scan
+        env:
+          COREAGENT_DUPLICATE_LINE_THRESHOLD: 50
+        run: ./scripts/check-duplicate-code.sh
+
+      - name: Dependency inventory
+        run: ./scripts/check-dependencies.sh
+
+      - name: Minimum release age
+        run: ./scripts/check-release-age.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dead code scan
+        run: ./scripts/check-dead-code.sh
+
+      - name: Upload readiness artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-readiness-reports
+          path: |
+            tech-debt-report.txt
+            large-files-report.txt
+            .test-metrics/
+
+  swiftlint:
+    name: SwiftLint
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SwiftLint
+        run: brew install swiftlint
+      - name: Lint and record metrics
+        run: |
+          swiftlint lint --reporter json > swiftlint-report.json || true
+          ERRORS=$(python3 -c 'import json; print(sum(1 for i in json.load(open("swiftlint-report.json")) if i.get("severity")=="Error"))' 2>/dev/null || echo 0)
+          echo "SwiftLint errors: $ERRORS"
+          if [[ "$ERRORS" -gt 50 ]]; then
+            echo "SwiftLint error count exceeds advisory threshold"
+            exit 1
+          fi
+      - name: Upload SwiftLint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftlint-report
+          path: swiftlint-report.json
+
+  readiness-gate:
+    name: Agent readiness status
+    runs-on: ubuntu-latest
+    needs: [readiness, swiftlint]
+    if: always()
+    steps:
+      - name: Require readiness checks
+        run: |
+          if [[ "${{ needs.readiness.result }}" != "success" ]]; then
+            echo "Agent readiness checks failed"
+            exit 1
+          fi
+          if [[ "${{ needs.swiftlint.result }}" != "success" ]]; then
+            echo "SwiftLint failed"
+            exit 1
+          fi
+          echo "All agent readiness gates passed"

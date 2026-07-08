@@ -1,0 +1,692 @@
+Recheck this Swift CoreAgentSkills model-proposal slice after fixing reviewer-gap hardening. Return STRICT JSON only:
+{
+  "verdict": "PASS" | "BLOCK",
+  "findings": [
+    {"severity":"P0|P1|P2|P3", "file":"path", "line":123, "title":"short", "description":"specific", "concrete_fix":"specific"}
+  ],
+  "testing_gaps": ["..."],
+  "residual_risks": ["..."]
+}
+
+Scope: model-backed skill proposal generation only.
+
+Expected fixes now present:
+- policy.validate() and maxProposals validation happen before backend calls.
+- model request strips skill provenance and sanitizes evidence references before backend calls.
+- duplicate request evidence IDs fail before backend calls.
+- backend output exceeding maxProposals fails closed.
+- unsafe proposal IDs fail closed.
+- duplicate candidate IDs fail closed.
+- duplicate evidence IDs inside one backend candidate fail closed.
+- candidate validation notes are not copied verbatim; returned notes are deterministic sanitized text.
+- returned proposal evidence uses sanitized evidence references with verifierFeedback set to "proposal evidence reference".
+
+Latest verification:
+- swift test --skip-update --filter CoreAgentSkillsTests: PASS, 36 tests.
+- swift test --skip-update --filter 'CoreAgentEngineTests|CoreAgentSkillsTests': PASS before the last coverage-only patch; focused Skills rerun passed after the patch.
+
+=== Sources/CoreAgentSkills/CoreAgentSkills.swift lines 648-902 ===
+  648	public struct CoreAgentSkillModelProposalEvidenceReference:
+  649	  Codable, Equatable, Sendable, Identifiable
+  650	{
+  651	  public let id: String
+  652	  public let taskID: String
+  653	  public let transcriptDigest: String
+  654	  public let toolEventDigest: String
+  655	  public let score: Double
+  656	  public let metadata: [String: String]
+  657	
+  658	  public init(
+  659	    id: String,
+  660	    taskID: String,
+  661	    transcriptDigest: String,
+  662	    toolEventDigest: String,
+  663	    score: Double,
+  664	    metadata: [String: String] = [:]
+  665	  ) {
+  666	    self.id = id
+  667	    self.taskID = taskID
+  668	    self.transcriptDigest = transcriptDigest
+  669	    self.toolEventDigest = toolEventDigest
+  670	    self.score = score
+  671	    self.metadata = metadata
+  672	  }
+  673	}
+  674	
+  675	public struct CoreAgentSkillModelProposalRequest: Codable, Equatable, Sendable {
+  676	  public let runID: String
+  677	  public let skill: CoreAgentSkill
+  678	  public let baselineScore: Double
+  679	  public let evidence: [CoreAgentSkillModelProposalEvidenceReference]
+  680	  public let policy: CoreAgentSkillOptimizationPolicy
+  681	  public let maxProposals: Int
+  682	
+  683	  public init(
+  684	    runID: String,
+  685	    skill: CoreAgentSkill,
+  686	    baselineScore: Double,
+  687	    evidence: [CoreAgentSkillModelProposalEvidenceReference],
+  688	    policy: CoreAgentSkillOptimizationPolicy = CoreAgentSkillOptimizationPolicy(),
+  689	    maxProposals: Int = 3
+  690	  ) {
+  691	    self.runID = runID
+  692	    self.skill = skill
+  693	    self.baselineScore = baselineScore
+  694	    self.evidence = evidence
+  695	    self.policy = policy
+  696	    self.maxProposals = maxProposals
+  697	  }
+  698	}
+  699	
+  700	public struct CoreAgentSkillModelProposalCandidate: Equatable, Sendable {
+  701	  public let id: String
+  702	  public let skillID: CoreAgentSkillID
+  703	  public let baselineScore: Double
+  704	  public let candidateEdits: [CoreAgentSkillEdit]
+  705	  public let validation: CoreAgentSkillValidationResult
+  706	  public let evidenceIDs: [String]
+  707	
+  708	  public init(
+  709	    id: String,
+  710	    skillID: CoreAgentSkillID,
+  711	    baselineScore: Double,
+  712	    candidateEdits: [CoreAgentSkillEdit],
+  713	    validation: CoreAgentSkillValidationResult,
+  714	    evidenceIDs: [String]
+  715	  ) {
+  716	    self.id = id
+  717	    self.skillID = skillID
+  718	    self.baselineScore = baselineScore
+  719	    self.candidateEdits = candidateEdits
+  720	    self.validation = validation
+  721	    self.evidenceIDs = evidenceIDs
+  722	  }
+  723	}
+  724	
+  725	public protocol CoreAgentSkillModelProposalBackend: Sendable {
+  726	  func generate(
+  727	    _ request: CoreAgentSkillModelProposalRequest
+  728	  ) async throws -> [CoreAgentSkillModelProposalCandidate]
+  729	}
+  730	
+  731	public struct CoreAgentSkillModelProposalGenerator: Sendable {
+  732	  private let backend: any CoreAgentSkillModelProposalBackend
+  733	
+  734	  public init(backend: any CoreAgentSkillModelProposalBackend) {
+  735	    self.backend = backend
+  736	  }
+  737	
+  738	  public func generate(
+  739	    runID: String,
+  740	    skill: CoreAgentSkill,
+  741	    baselineScore: Double,
+  742	    evidence: [CoreAgentSkillRolloutEvidence],
+  743	    policy: CoreAgentSkillOptimizationPolicy = CoreAgentSkillOptimizationPolicy(),
+  744	    maxProposals: Int = 3
+  745	  ) async throws -> [CoreAgentSkillSleepOptimizationProposal] {
+  746	    let request = try Self.request(
+  747	      runID: runID,
+  748	      skill: skill,
+  749	      baselineScore: baselineScore,
+  750	      evidence: evidence,
+  751	      policy: policy,
+  752	      maxProposals: maxProposals
+  753	    )
+  754	    let candidates = try await backend.generate(request)
+  755	    return try Self.proposals(from: candidates, request: request)
+  756	  }
+  757	
+  758	  private static func request(
+  759	    runID: String,
+  760	    skill: CoreAgentSkill,
+  761	    baselineScore: Double,
+  762	    evidence: [CoreAgentSkillRolloutEvidence],
+  763	    policy: CoreAgentSkillOptimizationPolicy,
+  764	    maxProposals: Int
+  765	  ) throws -> CoreAgentSkillModelProposalRequest {
+  766	    try policy.validate()
+  767	    guard !runID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+  768	      throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  769	        "proposal run ID must be non-empty"
+  770	      )
+  771	    }
+  772	    guard maxProposals > 0 else {
+  773	      throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  774	        "proposal maxProposals must be positive"
+  775	      )
+  776	    }
+  777	    guard baselineScore.isFinite, baselineScore >= 0, baselineScore <= 1 else {
+  778	      throw CoreAgentSkillOptimizationError.invalidValidationScore(baselineScore)
+  779	    }
+  780	    guard !skill.id.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+  781	      throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  782	        "proposal skill ID must be non-empty"
+  783	      )
+  784	    }
+  785	    let references = try evidence.map(sanitizedEvidenceReference)
+  786	    try validateUniqueEvidenceIDs(references)
+  787	    return CoreAgentSkillModelProposalRequest(
+  788	      runID: runID,
+  789	      skill: CoreAgentSkill(
+  790	        id: skill.id,
+  791	        version: skill.version,
+  792	        title: skill.title,
+  793	        body: skill.body,
+  794	        tags: skill.tags,
+  795	        priority: skill.priority,
+  796	        provenance: []
+  797	      ),
+  798	      baselineScore: baselineScore,
+  799	      evidence: references,
+  800	      policy: policy,
+  801	      maxProposals: maxProposals
+  802	    )
+  803	  }
+  804	
+  805	  private static func proposals(
+  806	    from candidates: [CoreAgentSkillModelProposalCandidate],
+  807	    request: CoreAgentSkillModelProposalRequest
+  808	  ) throws -> [CoreAgentSkillSleepOptimizationProposal] {
+  809	    guard candidates.count <= request.maxProposals else {
+  810	      throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  811	        "proposal backend exceeded maxProposals"
+  812	      )
+  813	    }
+  814	    var seen: Set<String> = []
+  815	    let evidenceByID = Dictionary(uniqueKeysWithValues: request.evidence.map { ($0.id, $0) })
+  816	    return try candidates.map { candidate in
+  817	      guard isSafeProposalIdentifier(candidate.id) else {
+  818	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  819	          "proposal candidate ID is invalid"
+  820	        )
+  821	      }
+  822	      guard seen.insert(candidate.id).inserted else {
+  823	        throw CoreAgentSkillOptimizationError.duplicateOptimizationProposal(candidate.id)
+  824	      }
+  825	      guard candidate.skillID == request.skill.id else {
+  826	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  827	          "proposal candidate skill must match request skill"
+  828	        )
+  829	      }
+  830	      guard candidate.baselineScore == request.baselineScore else {
+  831	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  832	          "proposal candidate baseline must match request baseline"
+  833	        )
+  834	      }
+  835	      guard !candidate.candidateEdits.isEmpty else {
+  836	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  837	          "proposal candidate edits must be non-empty"
+  838	        )
+  839	      }
+  840	      guard candidate.candidateEdits.count <= request.policy.maxEditsPerProposal else {
+  841	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  842	          "proposal candidate exceeds maxEditsPerProposal"
+  843	        )
+  844	      }
+  845	      try validateSkillOptimizationScores(
+  846	        candidate.validation,
+  847	        baselineScore: candidate.baselineScore
+  848	      )
+  849	      if request.policy.trainingSuiteIDs.contains(candidate.validation.heldoutSuiteID) {
+  850	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  851	          "proposal validation suite cannot be a training suite"
+  852	        )
+  853	      }
+  854	      _ = try applyEdits(
+  855	        candidate.candidateEdits,
+  856	        to: request.skill.body,
+  857	        limits: request.policy.editLimits
+  858	      )
+  859	      guard !candidate.evidenceIDs.isEmpty
+  860	      else {
+  861	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  862	          "proposal evidence IDs must reference supplied evidence"
+  863	        )
+  864	      }
+  865	      guard Set(candidate.evidenceIDs).count == candidate.evidenceIDs.count
+  866	      else {
+  867	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  868	          "proposal candidate evidence IDs must be unique"
+  869	        )
+  870	      }
+  871	      guard candidate.evidenceIDs.allSatisfy({ evidenceByID[$0] != nil })
+  872	      else {
+  873	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  874	          "proposal evidence IDs must reference supplied evidence"
+  875	        )
+  876	      }
+  877	      return CoreAgentSkillSleepOptimizationProposal(
+  878	        id: candidate.id,
+  879	        evidence: candidate.evidenceIDs.compactMap { evidenceByID[$0]?.rolloutEvidence },
+  880	        proposal: CoreAgentSkillOptimizationProposal(
+  881	          skillID: candidate.skillID,
+  882	          baselineScore: candidate.baselineScore,
+  883	          candidateEdits: candidate.candidateEdits,
+  884	          validation: CoreAgentSkillValidationResult(
+  885	            score: candidate.validation.score,
+  886	            heldoutSuiteID: candidate.validation.heldoutSuiteID,
+  887	            passed: candidate.validation.passed,
+  888	            notes: "model proposal \(candidate.id) validation"
+  889	          )
+  890	        )
+  891	      )
+  892	    }
+  893	  }
+  894	
+  895	  private static func validateUniqueEvidenceIDs(
+  896	    _ references: [CoreAgentSkillModelProposalEvidenceReference]
+  897	  ) throws {
+  898	    var seen: Set<String> = []
+  899	    for reference in references {
+  900	      guard seen.insert(reference.id).inserted else {
+  901	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  902	          "proposal evidence IDs must be unique"
+
+=== Sources/CoreAgentSkills/CoreAgentSkills.swift lines 2500-2540 ===
+ 2500	    heldoutSuiteID: String,
+ 2501	    passingScore: Double = 0,
+ 2502	    notes: String = ""
+ 2503	  ) throws -> CoreAgentSkillValidationResult {
+ 2504	    guard !heldoutSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+ 2505	      throw CoreAgentSkillOptimizationError.emptyHeldoutSuiteID
+ 2506	    }
+ 2507	    guard passingScore.isFinite, passingScore >= 0, passingScore <= 1 else {
+ 2508	      throw CoreAgentSkillOptimizationError.invalidValidationScore(passingScore)
+ 2509	    }
+ 2510	    for evaluation in evaluations {
+ 2511	      guard !evaluation.heldoutSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+ 2512	      else {
+ 2513	        throw CoreAgentSkillOptimizationError.emptyHeldoutSuiteID
+ 2514	      }
+ 2515	    }
+ 2516	    let evaluationSuiteIDs = Set(evaluations.map(\.heldoutSuiteID))
+ 2517	    if !evaluationSuiteIDs.isEmpty, evaluationSuiteIDs != Set([heldoutSuiteID]) {
+ 2518	      throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 2519	        "adapter heldoutSuiteID must match objective evaluation suites"
+ 2520	      )
+ 2521	    }
+ 2522	    let result = try optimizer.selectBest(
+ 2523	      candidates: [CoreAgentHarnessCandidate(id: candidateID, parameters: [:])],
+ 2524	      objectiveEvaluations: evaluations,
+ 2525	      objectives: objectives
+ 2526	    )
+ 2527	    guard let entry = result.auditTrail.first else {
+ 2528	      throw CoreAgentSkillOptimizationError.missingHarnessEvaluation(candidateID)
+ 2529	    }
+ 2530	    return CoreAgentSkillValidationResult(
+ 2531	      score: entry.weightedScore,
+ 2532	      heldoutSuiteID: heldoutSuiteID,
+ 2533	      passed: entry.eligible && entry.weightedScore >= passingScore,
+ 2534	      notes: notes
+ 2535	    )
+ 2536	  }
+ 2537	}
+ 2538	
+ 2539	private func sha256Hex(_ data: Data) -> String {
+ 2540	  SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+
+=== Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift lines 1580-1805 ===
+ 1580	  @Test("Model proposal generator sanitizes evidence and feeds sleep optimizer proposals")
+ 1581	  func modelProposalGeneratorSanitizesEvidenceAndFeedsSleepOptimizerProposals() async throws {
+ 1582	    let skill = CoreAgentSkill(
+ 1583	      id: CoreAgentSkillID("swift"),
+ 1584	      version: 1,
+ 1585	      title: "swift",
+ 1586	      body: "Use XCTest for all new tests.",
+ 1587	      tags: ["swift"],
+ 1588	      provenance: [
+ 1589	        CoreAgentSkillProvenance(
+ 1590	          heldoutSuiteID: "old-heldout",
+ 1591	          validationScore: 0.4,
+ 1592	          notes: "old provenance with proposal-secret"
+ 1593	        )
+ 1594	      ]
+ 1595	    )
+ 1596	    let evidence = CoreAgentSkillRolloutEvidence(
+ 1597	      id: "replay-evidence-auth",
+ 1598	      taskID: "task-auth",
+ 1599	      transcriptDigest: Self.digest(1_000),
+ 1600	      toolEventDigest: Self.digest(1_001),
+ 1601	      verifierFeedback: "backend-visible prose must not include proposal-secret",
+ 1602	      score: 0.4,
+ 1603	      metadata: [
+ 1604	        "source": "coreagent-engine",
+ 1605	        "suite_id": "train",
+ 1606	        "run_status": "failed",
+ 1607	        "raw_prompt": "proposal-secret prompt text",
+ 1608	      ]
+ 1609	    )
+ 1610	    let backend = CapturingModelProposalBackend(candidates: [
+ 1611	      CoreAgentSkillModelProposalCandidate(
+ 1612	        id: "proposal-a",
+ 1613	        skillID: skill.id,
+ 1614	        baselineScore: 0.40,
+ 1615	        candidateEdits: [
+ 1616	          .replace(
+ 1617	            target: "Use XCTest for all new tests.",
+ 1618	            replacement: "Use Swift Testing with typed assertions for all new tests."
+ 1619	          )
+ 1620	        ],
+ 1621	        validation: CoreAgentSkillValidationResult(
+ 1622	          score: 0.72,
+ 1623	          heldoutSuiteID: "heldout-swift",
+ 1624	          passed: true,
+ 1625	          notes: "raw model notes with proposal-secret"
+ 1626	        ),
+ 1627	        evidenceIDs: ["replay-evidence-auth"]
+ 1628	      )
+ 1629	    ])
+ 1630	    let generator = CoreAgentSkillModelProposalGenerator(backend: backend)
+ 1631	
+ 1632	    let proposals = try await generator.generate(
+ 1633	      runID: "sleep-run-1",
+ 1634	      skill: skill,
+ 1635	      baselineScore: 0.40,
+ 1636	      evidence: [evidence],
+ 1637	      policy: CoreAgentSkillOptimizationPolicy(trainingSuiteIDs: ["train"]),
+ 1638	      maxProposals: 2
+ 1639	    )
+ 1640	    let request = try #require(await backend.lastRequest)
+ 1641	    let requestJSON = String(data: try JSONEncoder().encode(request), encoding: .utf8) ?? ""
+ 1642	
+ 1643	    #expect(proposals.count == 1)
+ 1644	    #expect(proposals.first?.id == "proposal-a")
+ 1645	    #expect(proposals.first?.evidence.map(\.id) == ["replay-evidence-auth"])
+ 1646	    #expect(proposals.first?.evidence.first?.verifierFeedback == "proposal evidence reference")
+ 1647	    #expect(proposals.first?.evidence.first?.metadata["source"] == "coreagent-engine")
+ 1648	    #expect(proposals.first?.evidence.first?.metadata["run_status"] == "failed")
+ 1649	    #expect(proposals.first?.evidence.first?.metadata["raw_prompt"] == nil)
+ 1650	    #expect(proposals.first?.proposal.validation.notes == "model proposal proposal-a validation")
+ 1651	    #expect(!requestJSON.contains("proposal-secret"))
+ 1652	    #expect(!requestJSON.contains("raw_prompt"))
+ 1653	    #expect(request.skill.provenance.isEmpty)
+ 1654	
+ 1655	    let store = InMemoryCoreAgentSkillStore()
+ 1656	    try await store.save(skill)
+ 1657	    let report = try await CoreAgentSkillSleepOptimizer(store: store).run(
+ 1658	      CoreAgentSkillSleepOptimizationRequest(
+ 1659	        runID: "sleep-run-1",
+ 1660	        proposals: proposals,
+ 1661	        policy: CoreAgentSkillOptimizationPolicy(trainingSuiteIDs: ["train"])
+ 1662	      )
+ 1663	    )
+ 1664	    let current = try #require(await store.currentSkill(id: skill.id))
+ 1665	
+ 1666	    #expect(report.acceptedCount == 1)
+ 1667	    #expect(current.version == 2)
+ 1668	    #expect(current.body == "Use Swift Testing with typed assertions for all new tests.")
+ 1669	  }
+ 1670	
+ 1671	  @Test("Model proposal generator validates backend candidates fail closed")
+ 1672	  func modelProposalGeneratorValidatesBackendCandidatesFailClosed() async throws {
+ 1673	    let skill = Self.skill(id: "swift", body: "Use XCTest.")
+ 1674	    let evidence = CoreAgentSkillRolloutEvidence(
+ 1675	      id: "replay-evidence-swift",
+ 1676	      taskID: "task-swift",
+ 1677	      transcriptDigest: Self.digest(1_010),
+ 1678	      toolEventDigest: Self.digest(1_011),
+ 1679	      verifierFeedback: "safe",
+ 1680	      score: 0.5,
+ 1681	      metadata: ["suite_id": "train"]
+ 1682	    )
+ 1683	    let countingBackend = CountingModelProposalBackend()
+ 1684	    let generator = CoreAgentSkillModelProposalGenerator(backend: countingBackend)
+ 1685	
+ 1686	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1687	      "proposal maxProposals must be positive"
+ 1688	    )) {
+ 1689	      _ = try await generator.generate(
+ 1690	        runID: "sleep-run-1",
+ 1691	        skill: skill,
+ 1692	        baselineScore: 0.5,
+ 1693	        evidence: [evidence],
+ 1694	        maxProposals: 0
+ 1695	      )
+ 1696	    }
+ 1697	    #expect(await countingBackend.callCount == 0)
+ 1698	
+ 1699	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1700	      "proposal evidence digests must be sha256"
+ 1701	    )) {
+ 1702	      _ = try await generator.generate(
+ 1703	        runID: "sleep-run-1",
+ 1704	        skill: skill,
+ 1705	        baselineScore: 0.5,
+ 1706	        evidence: [
+ 1707	          CoreAgentSkillRolloutEvidence(
+ 1708	            id: "bad-evidence",
+ 1709	            taskID: "task-swift",
+ 1710	            transcriptDigest: "sha256:\(String(repeating: "Z", count: 64))",
+ 1711	            toolEventDigest: Self.digest(1_012),
+ 1712	            verifierFeedback: "safe",
+ 1713	            score: 0.5
+ 1714	          )
+ 1715	        ]
+ 1716	      )
+ 1717	    }
+ 1718	    #expect(await countingBackend.callCount == 0)
+ 1719	
+ 1720	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1721	      "maxEditsPerProposal must be positive"
+ 1722	    )) {
+ 1723	      _ = try await generator.generate(
+ 1724	        runID: "sleep-run-1",
+ 1725	        skill: skill,
+ 1726	        baselineScore: 0.5,
+ 1727	        evidence: [evidence],
+ 1728	        policy: CoreAgentSkillOptimizationPolicy(maxEditsPerProposal: 0)
+ 1729	      )
+ 1730	    }
+ 1731	    #expect(await countingBackend.callCount == 0)
+ 1732	
+ 1733	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1734	      "proposal evidence IDs must be unique"
+ 1735	    )) {
+ 1736	      _ = try await generator.generate(
+ 1737	        runID: "sleep-run-1",
+ 1738	        skill: skill,
+ 1739	        baselineScore: 0.5,
+ 1740	        evidence: [evidence, evidence]
+ 1741	      )
+ 1742	    }
+ 1743	    #expect(await countingBackend.callCount == 0)
+ 1744	
+ 1745	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1746	      "proposal backend exceeded maxProposals"
+ 1747	    )) {
+ 1748	      _ = try await CoreAgentSkillModelProposalGenerator(
+ 1749	        backend: CapturingModelProposalBackend(candidates: [
+ 1750	          Self.modelProposalCandidate(id: "proposal-a", skillID: skill.id),
+ 1751	          Self.modelProposalCandidate(id: "proposal-b", skillID: skill.id),
+ 1752	        ])
+ 1753	      ).generate(
+ 1754	        runID: "sleep-run-1",
+ 1755	        skill: skill,
+ 1756	        baselineScore: 0.5,
+ 1757	        evidence: [evidence],
+ 1758	        maxProposals: 1
+ 1759	      )
+ 1760	    }
+ 1761	
+ 1762	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1763	      "proposal candidate ID is invalid"
+ 1764	    )) {
+ 1765	      _ = try await CoreAgentSkillModelProposalGenerator(
+ 1766	        backend: CapturingModelProposalBackend(candidates: [
+ 1767	          Self.modelProposalCandidate(id: "proposal a", skillID: skill.id)
+ 1768	        ])
+ 1769	      ).generate(runID: "sleep-run-1", skill: skill, baselineScore: 0.5, evidence: [evidence])
+ 1770	    }
+ 1771	
+ 1772	    await #expect(throws: CoreAgentSkillOptimizationError.duplicateOptimizationProposal(
+ 1773	      "proposal-a"
+ 1774	    )) {
+ 1775	      _ = try await CoreAgentSkillModelProposalGenerator(
+ 1776	        backend: CapturingModelProposalBackend(candidates: [
+ 1777	          Self.modelProposalCandidate(id: "proposal-a", skillID: skill.id),
+ 1778	          Self.modelProposalCandidate(id: "proposal-a", skillID: skill.id),
+ 1779	        ])
+ 1780	      ).generate(runID: "sleep-run-1", skill: skill, baselineScore: 0.5, evidence: [evidence])
+ 1781	    }
+ 1782	
+ 1783	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1784	      "proposal candidate skill must match request skill"
+ 1785	    )) {
+ 1786	      _ = try await CoreAgentSkillModelProposalGenerator(
+ 1787	        backend: CapturingModelProposalBackend(candidates: [
+ 1788	          Self.modelProposalCandidate(id: "proposal-a", skillID: CoreAgentSkillID("other"))
+ 1789	        ])
+ 1790	      ).generate(runID: "sleep-run-1", skill: skill, baselineScore: 0.5, evidence: [evidence])
+ 1791	    }
+ 1792	
+ 1793	    await #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1794	      "proposal evidence IDs must reference supplied evidence"
+ 1795	    )) {
+ 1796	      _ = try await CoreAgentSkillModelProposalGenerator(
+ 1797	        backend: CapturingModelProposalBackend(candidates: [
+ 1798	          Self.modelProposalCandidate(
+ 1799	            id: "proposal-a",
+ 1800	            skillID: skill.id,
+ 1801	            evidenceIDs: ["unknown-evidence"]
+ 1802	          )
+ 1803	        ])
+ 1804	      ).generate(runID: "sleep-run-1", skill: skill, baselineScore: 0.5, evidence: [evidence])
+ 1805	    }
+
+=== Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift lines 1920-2055 ===
+ 1920	  private static func firstFile(suffix: String, under root: URL) -> URL? {
+ 1921	    allFiles(under: root).first { $0.lastPathComponent.hasSuffix(suffix) }
+ 1922	  }
+ 1923	
+ 1924	  private static func skillFile(
+ 1925	    id: CoreAgentSkillID,
+ 1926	    version: Int,
+ 1927	    under root: URL
+ 1928	  ) -> URL? {
+ 1929	    let decoder = JSONDecoder()
+ 1930	    decoder.dateDecodingStrategy = .millisecondsSince1970
+ 1931	    return allFiles(under: root).first { url in
+ 1932	      guard url.lastPathComponent == "version-\(version).json",
+ 1933	        let data = try? Data(contentsOf: url),
+ 1934	        let skill = try? decoder.decode(CoreAgentSkill.self, from: data)
+ 1935	      else {
+ 1936	        return false
+ 1937	      }
+ 1938	      return skill.id == id && skill.version == version
+ 1939	    }
+ 1940	  }
+ 1941	
+ 1942	  private static func allFiles(under root: URL) -> [URL] {
+ 1943	    guard let enumerator = FileManager.default.enumerator(
+ 1944	      at: root,
+ 1945	      includingPropertiesForKeys: [.isRegularFileKey]
+ 1946	    ) else {
+ 1947	      return []
+ 1948	    }
+ 1949	    return enumerator.compactMap { item -> URL? in
+ 1950	      guard let url = item as? URL,
+ 1951	        (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+ 1952	      else {
+ 1953	        return nil
+ 1954	      }
+ 1955	      return url
+ 1956	    }
+ 1957	  }
+ 1958	
+ 1959	  private static func replayRequest(
+ 1960	    id: String,
+ 1961	    mode: CoreAgentSkillReplayMode,
+ 1962	    heldoutSuiteID: String = "heldout-replay",
+ 1963	    transcriptDigest: String = Self.digest(900),
+ 1964	    toolEventDigest: String = Self.digest(901),
+ 1965	    metadata: [String: String] = [:]
+ 1966	  ) -> CoreAgentSkillReplayRequest {
+ 1967	    CoreAgentSkillReplayRequest(
+ 1968	      id: id,
+ 1969	      mode: mode,
+ 1970	      sourceEvidenceID: "engine-trace-auth",
+ 1971	      taskID: "task-auth",
+ 1972	      transcriptDigest: transcriptDigest,
+ 1973	      toolEventDigest: toolEventDigest,
+ 1974	      heldoutSuiteID: heldoutSuiteID,
+ 1975	      metadata: metadata
+ 1976	    )
+ 1977	  }
+ 1978	
+ 1979	  private static func digest(_ suffix: Int) -> String {
+ 1980	    "sha256:\(String(format: "%064x", suffix))"
+ 1981	  }
+ 1982	
+ 1983	  private static func modelProposalCandidate(
+ 1984	    id: String,
+ 1985	    skillID: CoreAgentSkillID,
+ 1986	    edits: [CoreAgentSkillEdit] = [
+ 1987	      .replace(target: "Use XCTest.", replacement: "Use Swift Testing.")
+ 1988	    ],
+ 1989	    evidenceIDs: [String] = ["replay-evidence-swift"]
+ 1990	  ) -> CoreAgentSkillModelProposalCandidate {
+ 1991	    CoreAgentSkillModelProposalCandidate(
+ 1992	      id: id,
+ 1993	      skillID: skillID,
+ 1994	      baselineScore: 0.5,
+ 1995	      candidateEdits: edits,
+ 1996	      validation: CoreAgentSkillValidationResult(
+ 1997	        score: 0.7,
+ 1998	        heldoutSuiteID: "heldout-swift",
+ 1999	        passed: true,
+ 2000	        notes: "candidate"
+ 2001	      ),
+ 2002	      evidenceIDs: evidenceIDs
+ 2003	    )
+ 2004	  }
+ 2005	}
+ 2006	
+ 2007	private struct StaticEngineStore: CoreAgentEngineStore {
+ 2008	  let traces: [CoreAgentEngineTrace]
+ 2009	
+ 2010	  func ingest(
+ 2011	    _ run: CoreAgentRun,
+ 2012	    projectID: String,
+ 2013	    threadID: String?
+ 2014	  ) async throws -> CoreAgentEngineTrace {
+ 2015	    throw CoreAgentEngineStoreError.nonFinalizedRun(run.id)
+ 2016	  }
+ 2017	
+ 2018	  func trace(projectID: String, runID: UUID) async -> CoreAgentEngineTrace? {
+ 2019	    traces.first { $0.projectID == projectID && $0.run.id == runID }
+ 2020	  }
+ 2021	
+ 2022	  func traces(projectID: String, threadID: String?) async -> [CoreAgentEngineTrace] {
+ 2023	    traces.filter { $0.projectID == projectID && (threadID == nil || $0.threadID == threadID) }
+ 2024	  }
+ 2025	
+ 2026	  func upsertIssue(_ issue: CoreAgentEngineIssue) async throws -> CoreAgentEngineIssue {
+ 2027	    issue
+ 2028	  }
+ 2029	
+ 2030	  func updateIssueStatus(_ issueID: String, status: CoreAgentEngineIssueStatus) async throws {}
+ 2031	
+ 2032	  func issues(projectID: String, status: CoreAgentEngineIssueStatus?) async
+ 2033	    -> [CoreAgentEngineIssue]
+ 2034	  {
+ 2035	    []
+ 2036	  }
+ 2037	}
+ 2038	
+ 2039	private struct StaticReplayBackend: CoreAgentSkillReplayBackend {
+ 2040	  let outcomes: [String: CoreAgentSkillReplayOutcome]
+ 2041	
+ 2042	  func execute(_ request: CoreAgentSkillReplayRequest) async throws -> CoreAgentSkillReplayOutcome {
+ 2043	    guard let outcome = outcomes[request.id] else {
+ 2044	      throw CoreAgentSkillOptimizationError.missingHarnessEvaluation(request.id)
+ 2045	    }
+ 2046	    return outcome
+ 2047	  }
+ 2048	}
+ 2049	
+ 2050	private actor CountingReplayBackend: CoreAgentSkillReplayBackend {
+ 2051	  private var count = 0
+ 2052	
+ 2053	  var callCount: Int {
+ 2054	    count
+ 2055	  }

@@ -1,0 +1,75 @@
+name: Bug report
+description: Report a defect in CoreAgent
+title: "[Bug]: "
+labels:
+  - bug
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Include enough detail for maintainers to reproduce
+        the issue without network access or production API keys when possible.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CoreAgent session / harness
+        - Memory
+        - Graph
+        - Engine
+        - Skills
+        - Deep runtime
+        - Apple platform
+        - Providers
+        - Documentation
+        - CI / tooling
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 - production blocker
+        - P1 - major regression
+        - P2 - normal defect
+        - P3 - minor / cosmetic
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clear description of the bug and expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Minimal Swift snippet or test case if available.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: CoreAgent version or commit
+      placeholder: e.g. 0.3.0 or abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: toolchain
+    attributes:
+      label: Swift / Xcode version
+      placeholder: Swift 6.4 / Xcode 27
+    validations:
+      required: true

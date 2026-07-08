@@ -1,0 +1,64 @@
+name: Feature request
+description: Suggest an enhancement to CoreAgent
+title: "[Feature]: "
+labels:
+  - enhancement
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem you are solving and how it fits CoreAgent's scope as a
+        Foundation Models harness (not a new provider protocol or agent loop).
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CoreAgent session / harness
+        - Memory
+        - Graph
+        - Engine
+        - Skills
+        - Deep runtime
+        - Apple platform
+        - Providers
+        - Documentation
+        - CI / tooling
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 - blocking adoption
+        - P1 - high value
+        - P2 - nice to have
+        - P3 - future consideration
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

@@ -1,0 +1,16 @@
+# Default owners for all paths
+* @24601
+
+# Package and runtime modules
+/Package.swift @24601
+/Sources/ @24601
+/Tests/ @24601
+
+# Agent and contributor guidance
+/AGENTS.md @24601
+/.factory/ @24601
+/Documentation/ @24601
+
+# CI and security
+/.github/ @24601
+/scripts/ @24601

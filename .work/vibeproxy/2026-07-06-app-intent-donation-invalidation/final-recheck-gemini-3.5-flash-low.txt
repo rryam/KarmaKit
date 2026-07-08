@@ -1,0 +1,7 @@
+Verdict: PASS
+
+Findings:
+None.
+
+Residual risks:
+- **`donatedAt` Excluded from Hash Identity**: The `donatedAt` timestamp is excluded from both `donationIdentifier` and `gateFingerprint`. If future store implementations rely on `donatedAt` for time-to-live (TTL) expiration or pruning policies, an attacker could manipulate this timestamp in a serialized record without failing the integrity checks. Consider adding `donatedAt.timeIntervalSince1970` to the identifier derivation if time-based validation is introduced.

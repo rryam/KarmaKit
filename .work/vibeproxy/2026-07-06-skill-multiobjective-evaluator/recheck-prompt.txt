@@ -1,0 +1,652 @@
+Recheck this Swift CoreAgentSkills L24 multi-objective evaluator slice after fixes. Return STRICT JSON only:
+{
+  "verdict": "PASS" | "BLOCK",
+  "findings": [
+    {"severity":"P0|P1|P2|P3", "file":"path", "line":123, "title":"short", "description":"specific", "concrete_fix":"specific"}
+  ],
+  "testing_gaps": ["..."],
+  "residual_risks": ["..."]
+}
+
+Scope: verify only the L24 multi-objective evaluator adapter and the two prior VibeProxy blockers.
+Do not block on unrelated scalar harness legacy behavior, file-backed stores, model-powered proposals, real replay execution, or Foundation Models/Evaluations adapters.
+
+Previous blockers to verify:
+1. Minimize objectives with requiredMeanScore must use direction-normalized score for gating. Example: raw latency 0.10 with minimize gives normalized 0.90 and passes requiredMeanScore 0.80.
+2. Duplicate objective-evaluation detection must not use a delimiter-joined string key for equality. Distinct candidate/suite/objective triples containing ':' must not collide. True duplicate triples should still throw duplicateHarnessObjectiveEvaluation.
+
+Other contract to spot-check:
+- Existing scalar selectBest(candidates:evaluations:) remains present.
+- Objective IDs are typed as CoreAgentHarnessObjectiveID.
+- Multi-objective validation still rejects duplicate objective IDs, duplicate candidate IDs, unknown candidate/objective, missing objective evaluation, invalid objective weights, invalid requiredMeanScore, invalid scores, empty suite/objective IDs, and no eligible candidate.
+- Ranking remains deterministic.
+
+Latest verification:
+- swift test --skip-update --filter CoreAgentSkillsTests: PASS, 32 tests.
+
+=== Sources/CoreAgentSkills/CoreAgentSkills.swift lines 500-528 ===
+  500	      return result
+  501	    }
+  502	  }
+  503	}
+  504	
+  505	public enum CoreAgentSkillOptimizationError: Error, Equatable, Sendable {
+  506	  case missingSkill(CoreAgentSkillID)
+  507	  case emptyReplacementTarget
+  508	  case replacementTargetNotUnique(String)
+  509	  case missingHarnessEvaluation(String)
+  510	  case versionCollision(CoreAgentSkillID, Int)
+  511	  case duplicateHarnessCandidate(String)
+  512	  case duplicateHarnessObjective(CoreAgentHarnessObjectiveID)
+  513	  case duplicateHarnessObjectiveEvaluation(String)
+  514	  case duplicateOptimizationProposal(String)
+  515	  case noEligibleHarnessCandidate
+  516	  case invalidOptimizationPolicy(String)
+  517	  case corruptSkillStore(String)
+  518	  case editTooLarge
+  519	  case resultingSkillTooLarge
+  520	  case invalidValidationScore(Double)
+  521	  case emptyHeldoutSuiteID
+  522	}
+  523	
+  524	public struct CoreAgentSkillOptimizationProposal: Sendable {
+  525	  public let skillID: CoreAgentSkillID
+  526	  public let baselineScore: Double
+  527	  public let candidateEdits: [CoreAgentSkillEdit]
+  528	  public let validation: CoreAgentSkillValidationResult
+
+=== Sources/CoreAgentSkills/CoreAgentSkills.swift lines 1615-1975 ===
+ 1615	    self.score = score
+ 1616	  }
+ 1617	}
+ 1618	
+ 1619	public enum CoreAgentHarnessObjectiveDirection: String, Codable, Equatable, Sendable {
+ 1620	  case maximize
+ 1621	  case minimize
+ 1622	}
+ 1623	
+ 1624	public struct CoreAgentHarnessObjectiveID:
+ 1625	  RawRepresentable, Codable, Hashable, Sendable, ExpressibleByStringLiteral
+ 1626	{
+ 1627	  public let rawValue: String
+ 1628	
+ 1629	  public init(_ rawValue: String) {
+ 1630	    self.rawValue = rawValue
+ 1631	  }
+ 1632	
+ 1633	  public init(rawValue: String) {
+ 1634	    self.rawValue = rawValue
+ 1635	  }
+ 1636	
+ 1637	  public init(stringLiteral value: String) {
+ 1638	    self.rawValue = value
+ 1639	  }
+ 1640	}
+ 1641	
+ 1642	public struct CoreAgentHarnessObjective: Codable, Equatable, Sendable, Identifiable {
+ 1643	  public let id: CoreAgentHarnessObjectiveID
+ 1644	  public let weight: Double
+ 1645	  public let direction: CoreAgentHarnessObjectiveDirection
+ 1646	  public let requiredMeanScore: Double?
+ 1647	
+ 1648	  public init(
+ 1649	    id: CoreAgentHarnessObjectiveID,
+ 1650	    weight: Double = 1,
+ 1651	    direction: CoreAgentHarnessObjectiveDirection = .maximize,
+ 1652	    requiredMeanScore: Double? = nil
+ 1653	  ) {
+ 1654	    self.id = id
+ 1655	    self.weight = weight
+ 1656	    self.direction = direction
+ 1657	    self.requiredMeanScore = requiredMeanScore
+ 1658	  }
+ 1659	}
+ 1660	
+ 1661	public struct CoreAgentHarnessObjectiveEvaluation: Codable, Equatable, Sendable {
+ 1662	  public let candidateID: String
+ 1663	  public let heldoutSuiteID: String
+ 1664	  public let objectiveID: CoreAgentHarnessObjectiveID
+ 1665	  public let score: Double
+ 1666	
+ 1667	  public init(
+ 1668	    candidateID: String,
+ 1669	    heldoutSuiteID: String,
+ 1670	    objectiveID: CoreAgentHarnessObjectiveID,
+ 1671	    score: Double
+ 1672	  ) {
+ 1673	    self.candidateID = candidateID
+ 1674	    self.heldoutSuiteID = heldoutSuiteID
+ 1675	    self.objectiveID = objectiveID
+ 1676	    self.score = score
+ 1677	  }
+ 1678	}
+ 1679	
+ 1680	public struct CoreAgentHarnessAuditEntry: Equatable, Sendable {
+ 1681	  public let candidateID: String
+ 1682	  public let meanScore: Double
+ 1683	  public let heldoutSuiteIDs: [String]
+ 1684	}
+ 1685	
+ 1686	public struct CoreAgentHarnessObjectiveScore: Equatable, Sendable {
+ 1687	  public let objectiveID: CoreAgentHarnessObjectiveID
+ 1688	  public let meanScore: Double
+ 1689	  public let normalizedMeanScore: Double
+ 1690	  public let weight: Double
+ 1691	  public let weightedScore: Double
+ 1692	  public let heldoutSuiteIDs: [String]
+ 1693	  public let passedRequiredMean: Bool
+ 1694	}
+ 1695	
+ 1696	public struct CoreAgentHarnessMultiObjectiveAuditEntry: Equatable, Sendable {
+ 1697	  public let candidateID: String
+ 1698	  public let weightedScore: Double
+ 1699	  public let eligible: Bool
+ 1700	  public let heldoutSuiteIDs: [String]
+ 1701	  public let objectiveScores: [CoreAgentHarnessObjectiveScore]
+ 1702	}
+ 1703	
+ 1704	public struct CoreAgentHarnessOptimizationResult: Equatable, Sendable {
+ 1705	  public let best: CoreAgentHarnessCandidate
+ 1706	  public let heldoutSuiteIDs: [String]
+ 1707	  public let auditTrail: [CoreAgentHarnessAuditEntry]
+ 1708	}
+ 1709	
+ 1710	public struct CoreAgentHarnessMultiObjectiveOptimizationResult: Equatable, Sendable {
+ 1711	  public let best: CoreAgentHarnessCandidate
+ 1712	  public let objectives: [CoreAgentHarnessObjective]
+ 1713	  public let heldoutSuiteIDs: [String]
+ 1714	  public let auditTrail: [CoreAgentHarnessMultiObjectiveAuditEntry]
+ 1715	}
+ 1716	
+ 1717	public struct CoreAgentHarnessOptimizer: Sendable {
+ 1718	  public init() {}
+ 1719	
+ 1720	  public func selectBest(
+ 1721	    candidates: [CoreAgentHarnessCandidate],
+ 1722	    evaluations: [CoreAgentHarnessEvaluation]
+ 1723	  ) throws -> CoreAgentHarnessOptimizationResult {
+ 1724	    var seenCandidates: Set<String> = []
+ 1725	    for candidate in candidates {
+ 1726	      guard seenCandidates.insert(candidate.id).inserted else {
+ 1727	        throw CoreAgentSkillOptimizationError.duplicateHarnessCandidate(candidate.id)
+ 1728	      }
+ 1729	    }
+ 1730	    let candidateByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
+ 1731	    var audit: [CoreAgentHarnessAuditEntry] = []
+ 1732	    for candidate in candidates {
+ 1733	      let scores = evaluations.filter { $0.candidateID == candidate.id }
+ 1734	      guard !scores.isEmpty else {
+ 1735	        throw CoreAgentSkillOptimizationError.missingHarnessEvaluation(candidate.id)
+ 1736	      }
+ 1737	      let meanScore = scores.map(\.score).reduce(0, +) / Double(scores.count)
+ 1738	      audit.append(
+ 1739	        CoreAgentHarnessAuditEntry(
+ 1740	          candidateID: candidate.id,
+ 1741	          meanScore: meanScore,
+ 1742	          heldoutSuiteIDs: Array(Set(scores.map(\.heldoutSuiteID))).sorted()
+ 1743	        )
+ 1744	      )
+ 1745	    }
+ 1746	    audit.sort { lhs, rhs in
+ 1747	      if lhs.meanScore != rhs.meanScore {
+ 1748	        return lhs.meanScore > rhs.meanScore
+ 1749	      }
+ 1750	      return lhs.candidateID < rhs.candidateID
+ 1751	    }
+ 1752	    guard let bestEntry = audit.first,
+ 1753	      let best = candidateByID[bestEntry.candidateID]
+ 1754	    else {
+ 1755	      throw CoreAgentSkillOptimizationError.missingHarnessEvaluation("all")
+ 1756	    }
+ 1757	    return CoreAgentHarnessOptimizationResult(
+ 1758	      best: best,
+ 1759	      heldoutSuiteIDs: Array(Set(evaluations.map(\.heldoutSuiteID))).sorted(),
+ 1760	      auditTrail: audit
+ 1761	    )
+ 1762	  }
+ 1763	
+ 1764	  public func selectBest(
+ 1765	    candidates: [CoreAgentHarnessCandidate],
+ 1766	    objectiveEvaluations: [CoreAgentHarnessObjectiveEvaluation],
+ 1767	    objectives: [CoreAgentHarnessObjective]
+ 1768	  ) throws -> CoreAgentHarnessMultiObjectiveOptimizationResult {
+ 1769	    try validateUniqueCandidates(candidates)
+ 1770	    try validateObjectives(objectives)
+ 1771	    let candidateByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
+ 1772	    let objectiveIDs = Set(objectives.map(\.id))
+ 1773	    try validateObjectiveEvaluations(
+ 1774	      objectiveEvaluations,
+ 1775	      candidateIDs: Set(candidateByID.keys),
+ 1776	      objectiveIDs: objectiveIDs
+ 1777	    )
+ 1778	
+ 1779	    let totalWeight = objectives.map(\.weight).reduce(0, +)
+ 1780	    var audit: [CoreAgentHarnessMultiObjectiveAuditEntry] = []
+ 1781	    for candidate in candidates {
+ 1782	      var objectiveScores: [CoreAgentHarnessObjectiveScore] = []
+ 1783	      var heldoutSuiteIDs: Set<String> = []
+ 1784	      for objective in objectives {
+ 1785	        let evaluations = objectiveEvaluations.filter {
+ 1786	          $0.candidateID == candidate.id && $0.objectiveID == objective.id
+ 1787	        }
+ 1788	        guard !evaluations.isEmpty else {
+ 1789	          throw CoreAgentSkillOptimizationError.missingHarnessEvaluation(
+ 1790	            "\(candidate.id):\(objective.id.rawValue)"
+ 1791	          )
+ 1792	        }
+ 1793	        let meanScore = evaluations.map(\.score).reduce(0, +) / Double(evaluations.count)
+ 1794	        let normalizedMeanScore: Double
+ 1795	        switch objective.direction {
+ 1796	        case .maximize:
+ 1797	          normalizedMeanScore = meanScore
+ 1798	        case .minimize:
+ 1799	          normalizedMeanScore = 1 - meanScore
+ 1800	        }
+ 1801	        let suites = Array(Set(evaluations.map(\.heldoutSuiteID))).sorted()
+ 1802	        heldoutSuiteIDs.formUnion(suites)
+ 1803	        let passedRequiredMean = objective.requiredMeanScore.map {
+ 1804	          normalizedMeanScore >= $0
+ 1805	        } ?? true
+ 1806	        objectiveScores.append(
+ 1807	          CoreAgentHarnessObjectiveScore(
+ 1808	            objectiveID: objective.id,
+ 1809	            meanScore: meanScore,
+ 1810	            normalizedMeanScore: normalizedMeanScore,
+ 1811	            weight: objective.weight,
+ 1812	            weightedScore: normalizedMeanScore * objective.weight,
+ 1813	            heldoutSuiteIDs: suites,
+ 1814	            passedRequiredMean: passedRequiredMean
+ 1815	          )
+ 1816	        )
+ 1817	      }
+ 1818	      let weightedScore = objectiveScores.map(\.weightedScore).reduce(0, +) / totalWeight
+ 1819	      audit.append(
+ 1820	        CoreAgentHarnessMultiObjectiveAuditEntry(
+ 1821	          candidateID: candidate.id,
+ 1822	          weightedScore: weightedScore,
+ 1823	          eligible: objectiveScores.allSatisfy(\.passedRequiredMean),
+ 1824	          heldoutSuiteIDs: Array(heldoutSuiteIDs).sorted(),
+ 1825	          objectiveScores: objectiveScores
+ 1826	        )
+ 1827	      )
+ 1828	    }
+ 1829	    audit.sort { lhs, rhs in
+ 1830	      if lhs.eligible != rhs.eligible {
+ 1831	        return lhs.eligible && !rhs.eligible
+ 1832	      }
+ 1833	      if lhs.weightedScore != rhs.weightedScore {
+ 1834	        return lhs.weightedScore > rhs.weightedScore
+ 1835	      }
+ 1836	      return lhs.candidateID < rhs.candidateID
+ 1837	    }
+ 1838	    guard let bestEntry = audit.first(where: \.eligible),
+ 1839	      let best = candidateByID[bestEntry.candidateID]
+ 1840	    else {
+ 1841	      throw CoreAgentSkillOptimizationError.noEligibleHarnessCandidate
+ 1842	    }
+ 1843	    return CoreAgentHarnessMultiObjectiveOptimizationResult(
+ 1844	      best: best,
+ 1845	      objectives: objectives,
+ 1846	      heldoutSuiteIDs: Array(Set(objectiveEvaluations.map(\.heldoutSuiteID))).sorted(),
+ 1847	      auditTrail: audit
+ 1848	    )
+ 1849	  }
+ 1850	
+ 1851	  private func validateUniqueCandidates(_ candidates: [CoreAgentHarnessCandidate]) throws {
+ 1852	    var seenCandidates: Set<String> = []
+ 1853	    for candidate in candidates {
+ 1854	      guard seenCandidates.insert(candidate.id).inserted else {
+ 1855	        throw CoreAgentSkillOptimizationError.duplicateHarnessCandidate(candidate.id)
+ 1856	      }
+ 1857	    }
+ 1858	  }
+ 1859	
+ 1860	  private func validateObjectives(_ objectives: [CoreAgentHarnessObjective]) throws {
+ 1861	    guard !objectives.isEmpty else {
+ 1862	      throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1863	        "at least one objective is required"
+ 1864	      )
+ 1865	    }
+ 1866	    var seenObjectives: Set<CoreAgentHarnessObjectiveID> = []
+ 1867	    for objective in objectives {
+ 1868	      guard !objective.id.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+ 1869	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1870	          "objective id must be non-empty"
+ 1871	        )
+ 1872	      }
+ 1873	      guard seenObjectives.insert(objective.id).inserted else {
+ 1874	        throw CoreAgentSkillOptimizationError.duplicateHarnessObjective(objective.id)
+ 1875	      }
+ 1876	      guard objective.weight.isFinite, objective.weight > 0 else {
+ 1877	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1878	          "objective weight must be finite and positive"
+ 1879	        )
+ 1880	      }
+ 1881	      if let requiredMeanScore = objective.requiredMeanScore {
+ 1882	        guard requiredMeanScore.isFinite,
+ 1883	          requiredMeanScore >= 0,
+ 1884	          requiredMeanScore <= 1
+ 1885	        else {
+ 1886	          throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1887	            "required objective mean score must be between 0 and 1"
+ 1888	          )
+ 1889	        }
+ 1890	      }
+ 1891	    }
+ 1892	  }
+ 1893	
+ 1894	  private func validateObjectiveEvaluations(
+ 1895	    _ evaluations: [CoreAgentHarnessObjectiveEvaluation],
+ 1896	    candidateIDs: Set<String>,
+ 1897	    objectiveIDs: Set<CoreAgentHarnessObjectiveID>
+ 1898	  ) throws {
+ 1899	    var seenEvaluations: Set<CoreAgentHarnessObjectiveEvaluationKey> = []
+ 1900	    for evaluation in evaluations {
+ 1901	      guard candidateIDs.contains(evaluation.candidateID) else {
+ 1902	        throw CoreAgentSkillOptimizationError.missingHarnessEvaluation(evaluation.candidateID)
+ 1903	      }
+ 1904	      guard objectiveIDs.contains(evaluation.objectiveID) else {
+ 1905	        throw CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+ 1906	          "unknown objective \(evaluation.objectiveID.rawValue)"
+ 1907	        )
+ 1908	      }
+ 1909	      guard !evaluation.heldoutSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+ 1910	      else {
+ 1911	        throw CoreAgentSkillOptimizationError.emptyHeldoutSuiteID
+ 1912	      }
+ 1913	      guard evaluation.score.isFinite, evaluation.score >= 0, evaluation.score <= 1 else {
+ 1914	        throw CoreAgentSkillOptimizationError.invalidValidationScore(evaluation.score)
+ 1915	      }
+ 1916	      let evaluationKey = CoreAgentHarnessObjectiveEvaluationKey(evaluation: evaluation)
+ 1917	      guard seenEvaluations.insert(evaluationKey).inserted else {
+ 1918	        throw CoreAgentSkillOptimizationError.duplicateHarnessObjectiveEvaluation(
+ 1919	          evaluationKey.stableDescription
+ 1920	        )
+ 1921	      }
+ 1922	    }
+ 1923	  }
+ 1924	}
+ 1925	
+ 1926	private struct CoreAgentHarnessObjectiveEvaluationKey: Hashable {
+ 1927	  let candidateID: String
+ 1928	  let heldoutSuiteID: String
+ 1929	  let objectiveID: CoreAgentHarnessObjectiveID
+ 1930	
+ 1931	  init(evaluation: CoreAgentHarnessObjectiveEvaluation) {
+ 1932	    self.candidateID = evaluation.candidateID
+ 1933	    self.heldoutSuiteID = evaluation.heldoutSuiteID
+ 1934	    self.objectiveID = evaluation.objectiveID
+ 1935	  }
+ 1936	
+ 1937	  var stableDescription: String {
+ 1938	    [
+ 1939	      candidateID,
+ 1940	      heldoutSuiteID,
+ 1941	      objectiveID.rawValue,
+ 1942	    ].joined(separator: ":")
+ 1943	  }
+ 1944	}
+ 1945	
+ 1946	public struct CoreAgentSkillMultiObjectiveValidationAdapter: Sendable {
+ 1947	  private let optimizer: CoreAgentHarnessOptimizer
+ 1948	
+ 1949	  public init(optimizer: CoreAgentHarnessOptimizer = CoreAgentHarnessOptimizer()) {
+ 1950	    self.optimizer = optimizer
+ 1951	  }
+ 1952	
+ 1953	  public func validationResult(
+ 1954	    candidateID: String,
+ 1955	    evaluations: [CoreAgentHarnessObjectiveEvaluation],
+ 1956	    objectives: [CoreAgentHarnessObjective],
+ 1957	    heldoutSuiteID: String,
+ 1958	    passingScore: Double = 0,
+ 1959	    notes: String = ""
+ 1960	  ) throws -> CoreAgentSkillValidationResult {
+ 1961	    guard !heldoutSuiteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+ 1962	      throw CoreAgentSkillOptimizationError.emptyHeldoutSuiteID
+ 1963	    }
+ 1964	    guard passingScore.isFinite, passingScore >= 0, passingScore <= 1 else {
+ 1965	      throw CoreAgentSkillOptimizationError.invalidValidationScore(passingScore)
+ 1966	    }
+ 1967	    let result = try optimizer.selectBest(
+ 1968	      candidates: [CoreAgentHarnessCandidate(id: candidateID, parameters: [:])],
+ 1969	      objectiveEvaluations: evaluations,
+ 1970	      objectives: objectives
+ 1971	    )
+ 1972	    guard let entry = result.auditTrail.first else {
+ 1973	      throw CoreAgentSkillOptimizationError.missingHarnessEvaluation(candidateID)
+ 1974	    }
+ 1975	    return CoreAgentSkillValidationResult(
+
+=== Tests/CoreAgentSkillsTests/CoreAgentSkillsTests.swift lines 520-750 ===
+  520	
+  521	  @Test("Multi-objective harness optimizer ranks eligible candidates deterministically")
+  522	  func multiObjectiveHarnessOptimizerRanksEligibleCandidatesDeterministically() throws {
+  523	    let optimizer = CoreAgentHarnessOptimizer()
+  524	    let result = try optimizer.selectBest(
+  525	      candidates: [
+  526	        CoreAgentHarnessCandidate(id: "large", parameters: ["model": "frontier"]),
+  527	        CoreAgentHarnessCandidate(id: "small", parameters: ["model": "local"]),
+  528	        CoreAgentHarnessCandidate(id: "fast", parameters: ["model": "tiny"]),
+  529	      ],
+  530	      objectiveEvaluations: [
+  531	        CoreAgentHarnessObjectiveEvaluation(
+  532	          candidateID: "large",
+  533	          heldoutSuiteID: "heldout-a",
+  534	          objectiveID: "quality",
+  535	          score: 0.95
+  536	        ),
+  537	        CoreAgentHarnessObjectiveEvaluation(
+  538	          candidateID: "large",
+  539	          heldoutSuiteID: "heldout-a",
+  540	          objectiveID: "latency",
+  541	          score: 0.60
+  542	        ),
+  543	        CoreAgentHarnessObjectiveEvaluation(
+  544	          candidateID: "small",
+  545	          heldoutSuiteID: "heldout-a",
+  546	          objectiveID: "quality",
+  547	          score: 0.85
+  548	        ),
+  549	        CoreAgentHarnessObjectiveEvaluation(
+  550	          candidateID: "small",
+  551	          heldoutSuiteID: "heldout-a",
+  552	          objectiveID: "latency",
+  553	          score: 0.20
+  554	        ),
+  555	        CoreAgentHarnessObjectiveEvaluation(
+  556	          candidateID: "fast",
+  557	          heldoutSuiteID: "heldout-a",
+  558	          objectiveID: "quality",
+  559	          score: 0.78
+  560	        ),
+  561	        CoreAgentHarnessObjectiveEvaluation(
+  562	          candidateID: "fast",
+  563	          heldoutSuiteID: "heldout-a",
+  564	          objectiveID: "latency",
+  565	          score: 0.05
+  566	        ),
+  567	      ],
+  568	      objectives: [
+  569	        CoreAgentHarnessObjective(
+  570	          id: "quality",
+  571	          weight: 0.70,
+  572	          direction: .maximize,
+  573	          requiredMeanScore: 0.80
+  574	        ),
+  575	        CoreAgentHarnessObjective(
+  576	          id: "latency",
+  577	          weight: 0.30,
+  578	          direction: .minimize
+  579	        ),
+  580	      ]
+  581	    )
+  582	
+  583	    #expect(result.best.id == "small")
+  584	    #expect(result.heldoutSuiteIDs == ["heldout-a"])
+  585	    #expect(result.objectives.map(\.id.rawValue) == ["quality", "latency"])
+  586	    #expect(result.auditTrail.map(\.candidateID) == ["small", "large", "fast"])
+  587	    #expect(result.auditTrail.map(\.eligible) == [true, true, false])
+  588	    #expect(abs(result.auditTrail[0].weightedScore - 0.835) < 0.000001)
+  589	    #expect(result.auditTrail[0].objectiveScores.map(\.objectiveID) == ["quality", "latency"])
+  590	    #expect(result.auditTrail[0].objectiveScores.map(\.heldoutSuiteIDs) == [
+  591	      ["heldout-a"],
+  592	      ["heldout-a"],
+  593	    ])
+  594	    #expect(result.auditTrail[2].objectiveScores[0].passedRequiredMean == false)
+  595	  }
+  596	
+  597	  @Test("Multi-objective harness optimizer rejects ambiguous or ineligible inputs")
+  598	  func multiObjectiveHarnessOptimizerRejectsAmbiguousOrIneligibleInputs() throws {
+  599	    let optimizer = CoreAgentHarnessOptimizer()
+  600	    let candidate = CoreAgentHarnessCandidate(id: "proposal-a", parameters: [:])
+  601	    let objective = CoreAgentHarnessObjective(
+  602	      id: "quality",
+  603	      weight: 1,
+  604	      direction: .maximize,
+  605	      requiredMeanScore: 0.95
+  606	    )
+  607	    let evaluation = CoreAgentHarnessObjectiveEvaluation(
+  608	      candidateID: candidate.id,
+  609	      heldoutSuiteID: "heldout-a",
+  610	      objectiveID: objective.id,
+  611	      score: 0.90
+  612	    )
+  613	
+  614	    #expect(CoreAgentHarnessObjectiveID("quality").rawValue == "quality")
+  615	    #expect(throws: CoreAgentSkillOptimizationError.duplicateHarnessObjectiveEvaluation(
+  616	      "proposal-a:heldout-a:quality"
+  617	    )) {
+  618	      _ = try optimizer.selectBest(
+  619	        candidates: [candidate],
+  620	        objectiveEvaluations: [evaluation, evaluation],
+  621	        objectives: [objective]
+  622	      )
+  623	    }
+  624	    #expect(throws: CoreAgentSkillOptimizationError.noEligibleHarnessCandidate) {
+  625	      _ = try optimizer.selectBest(
+  626	        candidates: [candidate],
+  627	        objectiveEvaluations: [evaluation],
+  628	        objectives: [objective]
+  629	      )
+  630	    }
+  631	    #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  632	      "objective id must be non-empty"
+  633	    )) {
+  634	      _ = try optimizer.selectBest(
+  635	        candidates: [candidate],
+  636	        objectiveEvaluations: [
+  637	          CoreAgentHarnessObjectiveEvaluation(
+  638	            candidateID: candidate.id,
+  639	            heldoutSuiteID: "heldout-a",
+  640	            objectiveID: "",
+  641	            score: 0.90
+  642	          )
+  643	        ],
+  644	        objectives: [CoreAgentHarnessObjective(id: "")]
+  645	      )
+  646	    }
+  647	    #expect(throws: CoreAgentSkillOptimizationError.emptyHeldoutSuiteID) {
+  648	      _ = try optimizer.selectBest(
+  649	        candidates: [candidate],
+  650	        objectiveEvaluations: [
+  651	          CoreAgentHarnessObjectiveEvaluation(
+  652	            candidateID: candidate.id,
+  653	            heldoutSuiteID: " ",
+  654	            objectiveID: objective.id,
+  655	            score: 0.90
+  656	          )
+  657	        ],
+  658	        objectives: [CoreAgentHarnessObjective(id: objective.id)]
+  659	      )
+  660	    }
+  661	    #expect(throws: CoreAgentSkillOptimizationError.invalidOptimizationPolicy(
+  662	      "required objective mean score must be between 0 and 1"
+  663	    )) {
+  664	      _ = try optimizer.selectBest(
+  665	        candidates: [candidate],
+  666	        objectiveEvaluations: [evaluation],
+  667	        objectives: [CoreAgentHarnessObjective(id: objective.id, requiredMeanScore: 1.5)]
+  668	      )
+  669	    }
+  670	  }
+  671	
+  672	  @Test("Multi-objective minimize required scores use normalized values")
+  673	  func multiObjectiveMinimizeRequiredScoresUseNormalizedValues() throws {
+  674	    let optimizer = CoreAgentHarnessOptimizer()
+  675	    let result = try optimizer.selectBest(
+  676	      candidates: [
+  677	        CoreAgentHarnessCandidate(id: "fast", parameters: [:]),
+  678	        CoreAgentHarnessCandidate(id: "slow", parameters: [:]),
+  679	      ],
+  680	      objectiveEvaluations: [
+  681	        CoreAgentHarnessObjectiveEvaluation(
+  682	          candidateID: "fast",
+  683	          heldoutSuiteID: "heldout-a",
+  684	          objectiveID: "latency",
+  685	          score: 0.10
+  686	        ),
+  687	        CoreAgentHarnessObjectiveEvaluation(
+  688	          candidateID: "slow",
+  689	          heldoutSuiteID: "heldout-a",
+  690	          objectiveID: "latency",
+  691	          score: 0.30
+  692	        ),
+  693	      ],
+  694	      objectives: [
+  695	        CoreAgentHarnessObjective(
+  696	          id: "latency",
+  697	          direction: .minimize,
+  698	          requiredMeanScore: 0.80
+  699	        )
+  700	      ]
+  701	    )
+  702	
+  703	    #expect(result.best.id == "fast")
+  704	    #expect(abs(result.auditTrail[0].objectiveScores[0].normalizedMeanScore - 0.90) < 0.000001)
+  705	    #expect(result.auditTrail.map(\.eligible) == [true, false])
+  706	  }
+  707	
+  708	  @Test("Multi-objective duplicate detection does not collide on delimiter characters")
+  709	  func multiObjectiveDuplicateDetectionDoesNotCollideOnDelimiterCharacters() throws {
+  710	    let optimizer = CoreAgentHarnessOptimizer()
+  711	    let result = try optimizer.selectBest(
+  712	      candidates: [
+  713	        CoreAgentHarnessCandidate(id: "a:b", parameters: [:]),
+  714	        CoreAgentHarnessCandidate(id: "a", parameters: [:]),
+  715	      ],
+  716	      objectiveEvaluations: [
+  717	        CoreAgentHarnessObjectiveEvaluation(
+  718	          candidateID: "a:b",
+  719	          heldoutSuiteID: "c",
+  720	          objectiveID: "d",
+  721	          score: 0.90
+  722	        ),
+  723	        CoreAgentHarnessObjectiveEvaluation(
+  724	          candidateID: "a",
+  725	          heldoutSuiteID: "b:c",
+  726	          objectiveID: "d",
+  727	          score: 0.80
+  728	        ),
+  729	      ],
+  730	      objectives: [CoreAgentHarnessObjective(id: "d")]
+  731	    )
+  732	
+  733	    #expect(result.best.id == "a:b")
+  734	    #expect(result.auditTrail.map(\.candidateID) == ["a:b", "a"])
+  735	  }
+  736	
+  737	  @Test("Multi-objective evaluator adapter fails closed and returns scalar validation")
+  738	  func multiObjectiveEvaluatorAdapterFailsClosedAndReturnsScalarValidation() throws {
+  739	    let adapter = CoreAgentSkillMultiObjectiveValidationAdapter()
+  740	    let objectives = [
+  741	      CoreAgentHarnessObjective(id: "quality", weight: 2, direction: .maximize),
+  742	      CoreAgentHarnessObjective(id: "cost", weight: 1, direction: .minimize),
+  743	    ]
+  744	    let evaluations = [
+  745	      CoreAgentHarnessObjectiveEvaluation(
+  746	        candidateID: "proposal-a",
+  747	        heldoutSuiteID: "heldout-eval",
+  748	        objectiveID: "quality",
+  749	        score: 0.90
+  750	      ),

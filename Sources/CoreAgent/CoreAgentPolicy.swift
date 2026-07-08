@@ -93,6 +93,28 @@ public protocol CoreAgentToolPolicy: Sendable {
   func authorize(_ request: CoreAgentToolRequest) async throws
 }
 
+public enum CoreAgentToolInterventionDecision: Sendable {
+  case approve
+  case edit(arguments: GeneratedContent)
+  case reject(Prompt)
+  case respond(Prompt)
+}
+
+public protocol CoreAgentToolInterventionPolicy: Sendable {
+  func shouldIntervene(_ request: CoreAgentToolRequest) async throws -> Bool
+  func decide(_ request: CoreAgentToolRequest) async throws -> CoreAgentToolInterventionDecision
+}
+
+public protocol CoreAgentRunLifecycleTool: Sendable {
+  func coreAgentRunDidFinish(_ runID: UUID) async
+}
+
+public extension CoreAgentToolInterventionPolicy {
+  func shouldIntervene(_ request: CoreAgentToolRequest) async throws -> Bool {
+    true
+  }
+}
+
 public struct AllowAllCoreAgentToolPolicy: CoreAgentToolPolicy {
   public init() {}
   public func authorize(_ request: CoreAgentToolRequest) async throws {}
@@ -199,28 +221,53 @@ public struct ApprovalRequiredToolPolicy: CoreAgentToolPolicy {
   }
 }
 
+public struct DenyAllCoreAgentToolPolicy: CoreAgentToolPolicy {
+  private let reason: String
+
+  public init(reason: String = "No tool authority has been delegated.") {
+    self.reason = reason
+  }
+
+  public func authorize(_ request: CoreAgentToolRequest) async throws {
+    throw CoreAgentPolicyError.denied(toolName: request.manifest.name, reason: reason)
+  }
+}
+
 public struct CoreAgentToolConfiguration: Sendable {
   public var policy: any CoreAgentToolPolicy
+  public var interventionPolicy: (any CoreAgentToolInterventionPolicy)?
   public var executionTimeout: Duration?
   public var maximumCallsPerRun: Int?
 
   public init(
     policy: any CoreAgentToolPolicy = AllowAllCoreAgentToolPolicy(),
+    interventionPolicy: (any CoreAgentToolInterventionPolicy)? = nil,
     executionTimeout: Duration? = nil,
     maximumCallsPerRun: Int? = nil
   ) {
     self.policy = policy
+    self.interventionPolicy = interventionPolicy
     self.executionTimeout = executionTimeout
     self.maximumCallsPerRun = maximumCallsPerRun
   }
 
   public static let `default` = CoreAgentToolConfiguration()
+  public static let denyAll = CoreAgentToolConfiguration(policy: DenyAllCoreAgentToolPolicy())
 }
 
 actor CoreAgentToolRuntime {
+  struct ToolOutputProvenance: Sendable {
+    let toolInvocationID: UUID
+    let outputSource: String
+    let argumentsSource: String
+    let requestedArgumentsDigest: String
+    let executedArgumentsDigest: String?
+  }
+
   private var currentRunID: UUID?
   private var callCount = 0
   private var beganToolInvocation = false
+  private var outputProvenanceByRun: [UUID: [String: [ToolOutputProvenance]]] = [:]
   private let maximumCallsPerRun: Int?
 
   init(maximumCallsPerRun: Int?) {
@@ -231,6 +278,7 @@ actor CoreAgentToolRuntime {
     currentRunID = runID
     callCount = 0
     beganToolInvocation = false
+    outputProvenanceByRun[runID] = [:]
   }
 
   func finish(runID: UUID) {
@@ -238,6 +286,7 @@ actor CoreAgentToolRuntime {
     currentRunID = nil
     callCount = 0
     beganToolInvocation = false
+    outputProvenanceByRun.removeValue(forKey: runID)
   }
 
   func reserveCall() throws -> UUID {
@@ -258,6 +307,30 @@ actor CoreAgentToolRuntime {
 
   func activeRunID() -> UUID? {
     currentRunID
+  }
+
+  func recordOutputProvenance(
+    runID: UUID,
+    toolName: String,
+    provenance: ToolOutputProvenance
+  ) {
+    outputProvenanceByRun[runID, default: [:]][toolName, default: []].append(provenance)
+  }
+
+  func consumeOutputProvenance(
+    runID: UUID,
+    toolName: String
+  ) -> ToolOutputProvenance? {
+    guard var runValues = outputProvenanceByRun[runID],
+      var toolValues = runValues[toolName],
+      !toolValues.isEmpty
+    else {
+      return nil
+    }
+    let provenance = toolValues.removeFirst()
+    runValues[toolName] = toolValues
+    outputProvenanceByRun[runID] = runValues
+    return provenance
   }
 }
 
@@ -286,33 +359,155 @@ struct CoreAgentGovernedTool: Tool {
       manifest: manifest,
       arguments: arguments
     )
+    let requestedArgumentsDigest = CoreAgentArgumentAudit.digest(arguments)
+    let requestedArgumentsJSON = CoreAgentArgumentAudit.redactedJSONString(arguments)
     let attributes = [
       "tool": name,
       "invocation_id": invocationID.uuidString.lowercased(),
       "manifest_digest": manifest.digest,
+      "requested_arguments_digest": requestedArgumentsDigest,
     ]
+
+    var executableArguments = arguments
+    var executableRequest = request
+    var argumentsSource = "model_request"
+    var executedArgumentsDigest = requestedArgumentsDigest
+    var executionAttributes = attributes.merging([
+      "arguments_source": argumentsSource,
+      "executed_arguments_digest": executedArgumentsDigest,
+    ]) { _, new in new }
+
+    if let interventionPolicy = configuration.interventionPolicy {
+      var interventionStarted = false
+      do {
+        let shouldIntervene = try await interventionPolicy.shouldIntervene(request)
+        try Task.checkCancellation()
+        if shouldIntervene {
+          interventionStarted = true
+          await recorder.record(
+            runID: runID,
+            kind: .toolInterventionStarted,
+            message: "Reviewing native tool call before execution.",
+            attributes: attributes
+          )
+          let decision = try await interventionPolicy.decide(request)
+          try Task.checkCancellation()
+          switch decision {
+          case .approve:
+            await recorder.record(
+              runID: runID,
+              kind: .toolInterventionApproved,
+              message: "Native tool call was approved.",
+              attributes: attributes
+            )
+          case .edit(let editedArguments):
+            executableArguments = editedArguments
+            argumentsSource = "intervention_edit"
+            executedArgumentsDigest = CoreAgentArgumentAudit.digest(editedArguments)
+            executableRequest = CoreAgentToolRequest(
+              runID: runID,
+              invocationID: invocationID,
+              manifest: manifest,
+              arguments: editedArguments
+            )
+            executionAttributes = attributes.merging([
+              "arguments_source": argumentsSource,
+              "original_arguments_digest": requestedArgumentsDigest,
+              "edited_arguments_digest": executedArgumentsDigest,
+              "executed_arguments_digest": executedArgumentsDigest,
+              "requested_arguments_json": requestedArgumentsJSON,
+              "executed_arguments_json": CoreAgentArgumentAudit.redactedJSONString(editedArguments),
+            ]) { _, new in new }
+            await recorder.record(
+              runID: runID,
+              kind: .toolInterventionEdited,
+              message: "Native tool call arguments were edited before execution.",
+              attributes: executionAttributes
+            )
+          case .reject(let output):
+            await recorder.record(
+              runID: runID,
+              kind: .toolInterventionRejected,
+              message: "Native tool call was rejected before execution.",
+              attributes: attributes
+            )
+            await runtime.recordOutputProvenance(
+              runID: runID,
+              toolName: name,
+              provenance: CoreAgentToolRuntime.ToolOutputProvenance(
+                toolInvocationID: invocationID,
+                outputSource: "intervention_reject",
+                argumentsSource: "intervention_reject",
+                requestedArgumentsDigest: requestedArgumentsDigest,
+                executedArgumentsDigest: nil
+              )
+            )
+            return output
+          case .respond(let output):
+            await recorder.record(
+              runID: runID,
+              kind: .toolInterventionResponded,
+              message: "Native tool call was answered by human input before execution.",
+              attributes: attributes
+            )
+            await runtime.recordOutputProvenance(
+              runID: runID,
+              toolName: name,
+              provenance: CoreAgentToolRuntime.ToolOutputProvenance(
+                toolInvocationID: invocationID,
+                outputSource: "intervention_respond",
+                argumentsSource: "intervention_respond",
+                requestedArgumentsDigest: requestedArgumentsDigest,
+                executedArgumentsDigest: nil
+              )
+            )
+            return output
+          }
+        }
+      } catch is CancellationError {
+        if interventionStarted {
+          await recorder.record(
+            runID: runID,
+            kind: .toolInterventionCancelled,
+            message: "Native tool intervention was cancelled.",
+            attributes: attributes
+          )
+        }
+        throw CancellationError()
+      } catch {
+        if interventionStarted {
+          await recorder.record(
+            runID: runID,
+            kind: .toolInterventionFailed,
+            message: String(describing: error),
+            attributes: attributes
+          )
+        }
+        throw error
+      }
+    }
 
     await recorder.record(
       runID: runID,
       kind: .toolAuthorizationStarted,
       message: "Authorizing native tool call.",
-      attributes: attributes
+      attributes: executionAttributes
     )
     do {
-      try await configuration.policy.authorize(request)
+      try await configuration.policy.authorize(executableRequest)
       try Task.checkCancellation()
       await recorder.record(
         runID: runID,
         kind: .toolAuthorizationSucceeded,
         message: "Native tool call authorized.",
-        attributes: attributes
+        attributes: executionAttributes
       )
     } catch is CancellationError {
       await recorder.record(
         runID: runID,
         kind: .toolAuthorizationCancelled,
         message: "Native tool authorization was cancelled.",
-        attributes: attributes
+        attributes: executionAttributes
       )
       throw CancellationError()
     } catch let error as CoreAgentPolicyError {
@@ -320,7 +515,7 @@ struct CoreAgentGovernedTool: Tool {
         runID: runID,
         kind: .toolAuthorizationDenied,
         message: String(describing: error),
-        attributes: attributes
+        attributes: executionAttributes
       )
       throw error
     } catch {
@@ -328,7 +523,7 @@ struct CoreAgentGovernedTool: Tool {
         runID: runID,
         kind: .toolAuthorizationFailed,
         message: String(describing: error),
-        attributes: attributes
+        attributes: executionAttributes
       )
       throw error
     }
@@ -339,30 +534,54 @@ struct CoreAgentGovernedTool: Tool {
       runID: runID,
       kind: .toolExecutionStarted,
       message: "Native tool execution started.",
-      attributes: attributes
+      attributes: executionAttributes
     )
 
     do {
       let output: Prompt
+      let invocationContext = CoreAgentToolInvocationContext(
+        runID: runID,
+        invocationID: invocationID,
+        toolName: name,
+        manifestDigest: manifest.digest
+      )
+      let callArguments = executableArguments
       if let timeout = configuration.executionTimeout {
         do {
           output = try await withCoreAgentTimeout(timeout) {
             try Task.checkCancellation()
-            return try await base.call(arguments: arguments)
+            return try await CoreAgentToolInvocation.withCurrent(invocationContext) {
+              try await base.call(arguments: callArguments)
+            }
           }
         } catch is CoreAgentTimeoutMarker {
           throw CoreAgentError.toolExecutionTimedOut(toolName: name)
         }
       } else {
         try Task.checkCancellation()
-        output = try await base.call(arguments: arguments)
+        output = try await CoreAgentToolInvocation.withCurrent(invocationContext) {
+          try await base.call(arguments: callArguments)
+        }
       }
       let duration = started.duration(to: clock.now)
       await recorder.record(
         runID: runID,
         kind: .toolExecutionCompleted,
         message: "Native tool execution completed.",
-        attributes: attributes.merging(["duration": String(describing: duration)]) { _, new in new }
+        attributes: executionAttributes.merging(["duration": String(describing: duration)]) {
+          _, new in new
+        }
+      )
+      await runtime.recordOutputProvenance(
+        runID: runID,
+        toolName: name,
+        provenance: CoreAgentToolRuntime.ToolOutputProvenance(
+          toolInvocationID: invocationID,
+          outputSource: "tool_execution",
+          argumentsSource: argumentsSource,
+          requestedArgumentsDigest: requestedArgumentsDigest,
+          executedArgumentsDigest: executedArgumentsDigest
+        )
       )
       return output
     } catch {
@@ -371,11 +590,14 @@ struct CoreAgentGovernedTool: Tool {
         runID: runID,
         kind: .toolExecutionFailed,
         message: String(describing: error),
-        attributes: attributes.merging(["duration": String(describing: duration)]) { _, new in new }
+        attributes: executionAttributes.merging(["duration": String(describing: duration)]) {
+          _, new in new
+        }
       )
       throw error
     }
   }
+
 }
 
 struct CoreAgentAnyTool: Sendable {

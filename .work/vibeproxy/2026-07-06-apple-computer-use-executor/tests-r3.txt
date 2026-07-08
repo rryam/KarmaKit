@@ -1,0 +1,488 @@
+@Test("Computer use dry run produces a plan without consent or side effects")
+  func computerUseDryRunProducesPlanWithoutConsentOrSideEffects() async {
+    let now = Date(timeIntervalSince1970: 1_800_000_200)
+    let recorder = ComputerUseRecorder()
+    let gate = CoreAgentAppleActionGate(
+      sandbox: CoreAgentAppleSandboxProfile(
+        capabilities: [.computerUse],
+        workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+        networkPolicy: .denied,
+        authorityBoundaryID: "workspace:coreagent",
+        policyVersion: 12
+      ),
+      now: { now }
+    )
+    let executor = CoreAgentAppleComputerUseExecutor(
+      actionGate: gate,
+      backend: Self.computerUseBackend(recorder: recorder),
+      clock: { now }
+    )
+    let request = CoreAgentAppleComputerUseRequest(
+      id: "dry-run-1",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    )
+
+    let result = await executor.run(request, consent: .notRequired)
+
+    #expect(result.status == .planned)
+    #expect(result.plan?.steps.map(\.id) == ["inspect", "click"])
+    #expect(result.plan?.requiredEvidence == [.screenshotDigest])
+    #expect(result.evidence.isEmpty)
+    #expect(await recorder.planCount == 1)
+    #expect(await recorder.executeCount == 0)
+    #expect(result.audit.requestID == "dry-run-1")
+    #expect(result.audit.actionID == "click-toolbar-save")
+    #expect(result.audit.mode == .dryRun)
+    #expect(result.audit.authorityBoundaryID == "workspace:coreagent")
+    #expect(result.audit.policyVersion == 12)
+    #expect(result.audit.status == .planned)
+    #expect(result.audit.planDigest?.hasPrefix("sha256:") == true)
+    #expect(result.audit.evidenceDigest == nil)
+  }
+
+  @Test("Computer use execution requires consent and records evidence")
+  func computerUseExecutionRequiresConsentAndRecordsEvidence() async throws {
+    let now = Date(timeIntervalSince1970: 1_800_000_200)
+    let recorder = ComputerUseRecorder()
+    let gate = CoreAgentAppleActionGate(
+      sandbox: CoreAgentAppleSandboxProfile(
+        capabilities: [.computerUse],
+        workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+        networkPolicy: .denied,
+        authorityBoundaryID: "workspace:coreagent",
+        policyVersion: 12
+      ),
+      trustedConsentIssuerID: Self.issuerID,
+      consentSigningKey: Self.signingKey,
+      now: { now }
+    )
+    let executor = CoreAgentAppleComputerUseExecutor(
+      actionGate: gate,
+      backend: Self.computerUseBackend(recorder: recorder),
+      clock: { now }
+    )
+    let request = CoreAgentAppleComputerUseRequest(
+      id: "execute-1",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    )
+    let dryRun = await executor.run(request, consent: .notRequired)
+    let approvedPlan = try #require(dryRun.plan)
+    let approvedPlanDigest = try #require(dryRun.audit.planDigest)
+    let executeRequest = CoreAgentAppleComputerUseRequest(
+      id: "execute-1",
+      actionID: "click-toolbar-save",
+      mode: .execute,
+      approvedPlan: approvedPlan,
+      approvedPlanDigest: approvedPlanDigest
+    )
+
+    let denied = await executor.run(executeRequest, consent: .notRequired)
+    #expect(denied.status == .denied(.missingConsent(.computerUse)))
+    #expect(await recorder.planCount == 1)
+    #expect(await recorder.executeCount == 0)
+
+    let requirement = gate.consentRequirement(for: .computerUseExecution(
+      actionID: executeRequest.actionID,
+      approvedPlanDigest: approvedPlanDigest
+    ))
+    let receipt = CoreAgentAppleConsentReceipt.issue(
+      id: "computer-use-receipt",
+      issuerID: Self.issuerID,
+      requirement: requirement,
+      signingKey: Self.signingKey,
+      grantedAt: now.addingTimeInterval(-10),
+      expiresAt: now.addingTimeInterval(60)
+    )
+    let executed = await executor.run(executeRequest, consent: .granted(receipt))
+
+    #expect(executed.status == .executed)
+    #expect(executed.plan?.steps.count == 2)
+    #expect(executed.evidence == [
+      CoreAgentAppleComputerUseEvidence(
+        kind: .screenshotDigest,
+        digest: Self.screenshotDigest,
+        capturedAt: now
+      )
+    ])
+    #expect(await recorder.planCount == 1)
+    #expect(await recorder.executeCount == 1)
+    #expect(executed.audit.status == .executed)
+    #expect(executed.audit.planDigest == approvedPlanDigest)
+    #expect(executed.audit.evidenceDigest?.hasPrefix("sha256:") == true)
+  }
+
+  @Test("Computer use execution binds consent to the approved plan digest")
+  func computerUseExecutionBindsConsentToTheApprovedPlanDigest() async throws {
+    let now = Date(timeIntervalSince1970: 1_800_000_200)
+    let recorder = ComputerUseRecorder()
+    let gate = CoreAgentAppleActionGate(
+      sandbox: CoreAgentAppleSandboxProfile(
+        capabilities: [.computerUse],
+        workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+        networkPolicy: .denied,
+        authorityBoundaryID: "workspace:coreagent",
+        policyVersion: 12
+      ),
+      trustedConsentIssuerID: Self.issuerID,
+      consentSigningKey: Self.signingKey,
+      now: { now }
+    )
+    let executor = CoreAgentAppleComputerUseExecutor(
+      actionGate: gate,
+      backend: Self.computerUseBackend(recorder: recorder),
+      clock: { now }
+    )
+    let dryRun = await executor.run(CoreAgentAppleComputerUseRequest(
+      id: "dry-run-binding",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    ), consent: .notRequired)
+    let approvedPlan = try #require(dryRun.plan)
+    let approvedPlanDigest = try #require(dryRun.audit.planDigest)
+    let tamperedPlan = CoreAgentAppleComputerUsePlan(
+      steps: [
+        .init(id: "inspect", summary: "Inspect target state."),
+        .init(id: "delete", summary: "Perform a different action."),
+      ],
+      requiredEvidence: [.screenshotDigest]
+    )
+    let tamperedRequest = CoreAgentAppleComputerUseRequest(
+      id: "execute-tampered",
+      actionID: "click-toolbar-save",
+      mode: .execute,
+      approvedPlan: tamperedPlan,
+      approvedPlanDigest: approvedPlanDigest
+    )
+
+    let tampered = await executor.run(tamperedRequest, consent: .notRequired)
+
+    #expect(tampered.status == .failed(.approvedPlanDigestMismatch))
+    #expect(await recorder.executeCount == 0)
+
+    let requirement = gate.consentRequirement(for: .computerUseExecution(
+      actionID: "click-toolbar-save",
+      approvedPlanDigest: approvedPlanDigest
+    ))
+    let receipt = CoreAgentAppleConsentReceipt.issue(
+      id: "computer-use-plan-bound",
+      issuerID: Self.issuerID,
+      requirement: requirement,
+      signingKey: Self.signingKey,
+      grantedAt: now.addingTimeInterval(-10),
+      expiresAt: now.addingTimeInterval(60)
+    )
+    let unboundRequirement = gate.consentRequirement(for: .computerUse(actionID: "click-toolbar-save"))
+    let unboundReceipt = CoreAgentAppleConsentReceipt.issue(
+      id: "computer-use-unbound",
+      issuerID: Self.issuerID,
+      requirement: unboundRequirement,
+      signingKey: Self.signingKey,
+      grantedAt: now.addingTimeInterval(-10),
+      expiresAt: now.addingTimeInterval(60)
+    )
+    let approvedRequest = CoreAgentAppleComputerUseRequest(
+      id: "execute-approved",
+      actionID: "click-toolbar-save",
+      mode: .execute,
+      approvedPlan: approvedPlan,
+      approvedPlanDigest: approvedPlanDigest
+    )
+    let unbound = await executor.run(approvedRequest, consent: .granted(unboundReceipt))
+    let approved = await executor.run(approvedRequest, consent: .granted(receipt))
+
+    #expect(unbound.status == .denied(.consentRequestMismatch(
+      expected: requirement.requestFingerprint,
+      actual: unboundRequirement.requestFingerprint
+    )))
+    #expect(approved.status == .executed)
+  }
+
+  @Test("Computer use executor denies missing capability and honors cancellation")
+  func computerUseExecutorDeniesMissingCapabilityAndHonorsCancellation() async {
+    let recorder = ComputerUseRecorder()
+    let deniedExecutor = CoreAgentAppleComputerUseExecutor(
+      actionGate: CoreAgentAppleActionGate(
+        sandbox: CoreAgentAppleSandboxProfile(
+          capabilities: [],
+          workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+          networkPolicy: .denied
+        )
+      ),
+      backend: Self.computerUseBackend(recorder: recorder)
+    )
+    let request = CoreAgentAppleComputerUseRequest(
+      id: "denied",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    )
+
+    let denied = await deniedExecutor.run(request, consent: .notRequired)
+    #expect(denied.status == .denied(.missingCapability(.computerUse)))
+    #expect(await recorder.planCount == 0)
+    #expect(await recorder.executeCount == 0)
+
+    let allowedExecutor = CoreAgentAppleComputerUseExecutor(
+      actionGate: CoreAgentAppleActionGate(
+        sandbox: CoreAgentAppleSandboxProfile(
+          capabilities: [.computerUse],
+          workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+          networkPolicy: .denied
+        )
+      ),
+      backend: Self.computerUseBackend(recorder: recorder)
+    )
+    let cancelled = await Task {
+      withUnsafeCurrentTask { task in
+        task?.cancel()
+      }
+      return await allowedExecutor.run(request, consent: .notRequired)
+    }.value
+
+    #expect(cancelled.status == .failed(.cancelled))
+    #expect(await recorder.planCount == 0)
+    #expect(await recorder.executeCount == 0)
+  }
+
+  @Test("Computer use execution fails closed on missing or malformed evidence")
+  func computerUseExecutionFailsClosedOnMissingOrMalformedEvidence() async {
+    let now = Date(timeIntervalSince1970: 1_800_000_200)
+    let gate = CoreAgentAppleActionGate(
+      sandbox: CoreAgentAppleSandboxProfile(
+        capabilities: [.computerUse],
+        workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+        networkPolicy: .denied,
+        authorityBoundaryID: "workspace:coreagent",
+        policyVersion: 12
+      ),
+      trustedConsentIssuerID: Self.issuerID,
+      consentSigningKey: Self.signingKey,
+      now: { now }
+    )
+    let plan = CoreAgentAppleComputerUsePlan(
+      steps: [.init(id: "inspect", summary: "Inspect target.")],
+      requiredEvidence: [.screenshotDigest]
+    )
+    let missingEvidenceExecutor = CoreAgentAppleComputerUseExecutor(
+      actionGate: gate,
+      backend: CoreAgentAppleComputerUseBackend(
+        plan: { _ in plan },
+        execute: { _, _ in [] }
+      ),
+      clock: { now }
+    )
+    let malformedEvidenceExecutor = CoreAgentAppleComputerUseExecutor(
+      actionGate: gate,
+      backend: CoreAgentAppleComputerUseBackend(
+        plan: { _ in plan },
+        execute: { _, _ in [
+          CoreAgentAppleComputerUseEvidence(
+            kind: .screenshotDigest,
+            digest: "sha256:not-hex",
+            capturedAt: now
+          )
+        ] }
+      ),
+      clock: { now }
+    )
+    _ = await missingEvidenceExecutor.run(CoreAgentAppleComputerUseRequest(
+      id: "dry-run-missing-evidence",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    ), consent: .notRequired)
+    _ = await malformedEvidenceExecutor.run(CoreAgentAppleComputerUseRequest(
+      id: "dry-run-malformed-evidence",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    ), consent: .notRequired)
+    let request = CoreAgentAppleComputerUseRequest(
+      id: "execute-evidence",
+      actionID: "click-toolbar-save",
+      mode: .execute,
+      approvedPlan: plan,
+      approvedPlanDigest: plan.digest
+    )
+    let requirement = gate.consentRequirement(for: .computerUseExecution(
+      actionID: request.actionID,
+      approvedPlanDigest: plan.digest
+    ))
+    let missing = await missingEvidenceExecutor.run(
+      request,
+      consent: .granted(CoreAgentAppleConsentReceipt.issue(
+        id: "computer-use-missing-evidence",
+        issuerID: Self.issuerID,
+        requirement: requirement,
+        signingKey: Self.signingKey,
+        grantedAt: now.addingTimeInterval(-10),
+        expiresAt: now.addingTimeInterval(60)
+      ))
+    )
+    let malformed = await malformedEvidenceExecutor.run(
+      request,
+      consent: .granted(CoreAgentAppleConsentReceipt.issue(
+        id: "computer-use-malformed-evidence",
+        issuerID: Self.issuerID,
+        requirement: requirement,
+        signingKey: Self.signingKey,
+        grantedAt: now.addingTimeInterval(-10),
+        expiresAt: now.addingTimeInterval(60)
+      ))
+    )
+
+    #expect(missing.status == .failed(.missingEvidence(kind: .screenshotDigest)))
+    #expect(missing.evidence.isEmpty)
+    #expect(malformed.status == .failed(.invalidEvidenceDigest(kind: .screenshotDigest)))
+    #expect(malformed.evidence.count == 1)
+  }
+
+  @Test("Computer use executor validates request and plan structure")
+  func computerUseExecutorValidatesRequestAndPlanStructure() async {
+    let now = Date(timeIntervalSince1970: 1_800_000_200)
+    let recorder = ComputerUseRecorder()
+    let executor = CoreAgentAppleComputerUseExecutor(
+      actionGate: CoreAgentAppleActionGate(
+        sandbox: CoreAgentAppleSandboxProfile(
+          capabilities: [.computerUse],
+          workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+          networkPolicy: .denied
+        )
+      ),
+      backend: Self.computerUseBackend(recorder: recorder),
+      clock: { now }
+    )
+    let invalidRequest = await executor.run(CoreAgentAppleComputerUseRequest(
+      id: " ",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    ), consent: .notRequired)
+    let invalidPlanExecutor = CoreAgentAppleComputerUseExecutor(
+      actionGate: CoreAgentAppleActionGate(
+        sandbox: CoreAgentAppleSandboxProfile(
+          capabilities: [.computerUse],
+          workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+          networkPolicy: .denied
+        )
+      ),
+      backend: CoreAgentAppleComputerUseBackend(
+        plan: { _ in
+          CoreAgentAppleComputerUsePlan(
+            steps: [
+              .init(id: "same", summary: "First."),
+              .init(id: "same", summary: "Duplicate."),
+            ],
+            requiredEvidence: [.screenshotDigest]
+          )
+        },
+        execute: { _, _ in [] }
+      ),
+      clock: { now }
+    )
+    let invalidPlan = await invalidPlanExecutor.run(CoreAgentAppleComputerUseRequest(
+      id: "invalid-plan",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    ), consent: .notRequired)
+    let missingBaselineExecutor = CoreAgentAppleComputerUseExecutor(
+      actionGate: CoreAgentAppleActionGate(
+        sandbox: CoreAgentAppleSandboxProfile(
+          capabilities: [.computerUse],
+          workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+          networkPolicy: .denied
+        )
+      ),
+      backend: CoreAgentAppleComputerUseBackend(
+        plan: { _ in
+          CoreAgentAppleComputerUsePlan(
+            steps: [.init(id: "inspect", summary: "Inspect target.")],
+            requiredEvidence: []
+          )
+        },
+        execute: { _, _ in [] }
+      ),
+      minimumRequiredEvidence: [],
+      clock: { now }
+    )
+    let missingBaseline = await missingBaselineExecutor.run(CoreAgentAppleComputerUseRequest(
+      id: "missing-baseline",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    ), consent: .notRequired)
+
+    #expect(invalidRequest.status == .failed(.invalidRequest("request id")))
+    #expect(await recorder.planCount == 0)
+    #expect(invalidPlan.status == .failed(.invalidPlan("duplicate step id")))
+    #expect(missingBaseline.status == .failed(.invalidPlan("missing baseline evidence")))
+  }
+
+  @Test("Computer use executor records cancellation during backend execution")
+  func computerUseExecutorRecordsCancellationDuringBackendExecution() async {
+    let now = Date(timeIntervalSince1970: 1_800_000_200)
+    let gate = CoreAgentAppleActionGate(
+      sandbox: CoreAgentAppleSandboxProfile(
+        capabilities: [.computerUse],
+        workspaceRoot: URL(fileURLWithPath: "/tmp/coreagent-computer-use"),
+        networkPolicy: .denied,
+        authorityBoundaryID: "workspace:coreagent",
+        policyVersion: 12
+      ),
+      trustedConsentIssuerID: Self.issuerID,
+      consentSigningKey: Self.signingKey,
+      now: { now }
+    )
+    let plan = CoreAgentAppleComputerUsePlan(
+      steps: [.init(id: "inspect", summary: "Inspect target.")],
+      requiredEvidence: [.screenshotDigest]
+    )
+    let executor = CoreAgentAppleComputerUseExecutor(
+      actionGate: gate,
+      backend: CoreAgentAppleComputerUseBackend(
+        plan: { _ in plan },
+        execute: { _, _ in
+          try? await Task.sleep(nanoseconds: 50_000_000)
+          return [
+            CoreAgentAppleComputerUseEvidence(
+              kind: .screenshotDigest,
+              digest: Self.screenshotDigest,
+              capturedAt: now
+            )
+          ]
+        }
+      ),
+      clock: { now }
+    )
+    let request = CoreAgentAppleComputerUseRequest(
+      id: "execute-cancelled",
+      actionID: "click-toolbar-save",
+      mode: .dryRun
+    )
+    _ = await executor.run(request, consent: .notRequired)
+    let executeRequest = CoreAgentAppleComputerUseRequest(
+      id: "execute-cancelled",
+      actionID: "click-toolbar-save",
+      mode: .execute,
+      approvedPlan: plan
+    )
+    let requirement = gate.consentRequirement(for: .computerUseExecution(
+      actionID: executeRequest.actionID,
+      approvedPlanDigest: plan.digest
+    ))
+    let receipt = CoreAgentAppleConsentReceipt.issue(
+        id: "computer-use-cancelled-during-execute",
+        issuerID: Self.issuerID,
+        requirement: requirement,
+        signingKey: Self.signingKey,
+        grantedAt: now.addingTimeInterval(-10),
+        expiresAt: now.addingTimeInterval(60)
+    )
+    let task = Task {
+      await executor.run(executeRequest, consent: .granted(receipt))
+    }
+    try? await Task.sleep(nanoseconds: 5_000_000)
+    task.cancel()
+    let result = await task.value
+
+    #expect(result.status == .failed(.cancelled))
+    #expect(result.evidence.count == 1)
+  }
+

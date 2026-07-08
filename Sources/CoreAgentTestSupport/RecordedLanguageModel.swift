@@ -1,3 +1,4 @@
+import CoreAgent
 import Foundation
 import FoundationModels
 
@@ -35,7 +36,7 @@ public enum RecordedLanguageModelStep: Sendable {
   case failure(String)
 }
 
-public final class RecordedLanguageModelRecorder: @unchecked Sendable {
+public final class RecordedLanguageModelRecorder: @unchecked Sendable, CoreAgentScriptedModelResponding {
   private let lock = NSLock()
   private var steps: [RecordedLanguageModelStep]
   private var requestTranscripts: [Transcript] = []
@@ -45,45 +46,228 @@ public final class RecordedLanguageModelRecorder: @unchecked Sendable {
   }
 
   public func capturedTranscripts() -> [Transcript] {
-    lock.withLock { requestTranscripts }
+    lock.lock()
+    defer { lock.unlock() }
+    return requestTranscripts
   }
 
-  fileprivate func next(for request: LanguageModelExecutorGenerationRequest) throws
-    -> RecordedLanguageModelStep
-  {
-    try lock.withLock {
-      requestTranscripts.append(request.transcript)
-      guard !steps.isEmpty else {
-        throw RecordedLanguageModelError.scriptExhausted
-      }
-      return steps.removeFirst()
+  package func makeScriptedResponse<Content: Generable & Sendable>(
+    for transcript: Transcript,
+    contentType: Content.Type
+  ) async throws -> CoreAgentScriptedModelResponse<Content> {
+    let step = try nextStep(recording: transcript)
+    switch step {
+    case .response(
+      let text,
+      let inputTokens,
+      let cachedInputTokens,
+      let outputTokens,
+      let reasoningTokens
+    ):
+      return try makeTextResponse(
+        text: text,
+        contentType: contentType,
+        inputTokens: inputTokens,
+        cachedInputTokens: cachedInputTokens,
+        outputTokens: outputTokens,
+        reasoningTokens: reasoningTokens,
+        continuesAfterToolCalls: false
+      )
+
+    case .toolCall(let id, let name, let argumentsJSON, let inputTokens, let outputTokens):
+      let arguments = try GeneratedContent(json: argumentsJSON)
+      let entry = CoreAgentScriptedModelSupport.toolCallsEntry(
+        id: id,
+        name: name,
+        arguments: arguments
+      )
+      let content = try placeholderContent(contentType)
+      let rawContent = try GeneratedContent(json: #"{"text":""}"#)
+      return CoreAgentScriptedModelResponse(
+        content: content,
+        rawContent: rawContent,
+        transcriptEntries: [entry][...],
+        usage: CoreAgentScriptedModelSupport.usage(
+          inputTokens: inputTokens,
+          outputTokens: outputTokens
+        ),
+        continuesAfterToolCalls: true
+      )
+
+    case .responseFragments(let fragments):
+      let text = fragments.joined()
+      return try makeTextResponse(
+        text: text,
+        contentType: contentType,
+        inputTokens: 1,
+        cachedInputTokens: 0,
+        outputTokens: fragments.count,
+        reasoningTokens: 0,
+        continuesAfterToolCalls: false
+      )
+
+    case .failure(let message):
+      throw RecordedLanguageModelError.scriptedFailure(message)
+
+    case .delayedResponse(let text, let delay):
+      try await Task.sleep(for: delay)
+      return try makeTextResponse(
+        text: text,
+        contentType: contentType,
+        inputTokens: 1,
+        cachedInputTokens: 0,
+        outputTokens: 1,
+        reasoningTokens: 0,
+        continuesAfterToolCalls: false
+      )
     }
   }
+
+  package func makeScriptedStreamSnapshot<Content: Generable & Sendable>(
+    for transcript: Transcript,
+    contentType: Content.Type,
+    onPartialResponse: @Sendable (Content.PartiallyGenerated, GeneratedContent) async -> Void
+  ) async throws -> CoreAgentScriptedStreamSnapshot<Content>
+  where Content.PartiallyGenerated: Sendable {
+    let step = try nextStep(recording: transcript)
+    switch step {
+    case .responseFragments(let fragments):
+      var combined = ""
+      var partial = try makePartial("", contentType: contentType).0
+      var rawContent = try makePartial("", contentType: contentType).1
+      for fragment in fragments {
+        combined.append(fragment)
+        (partial, rawContent) = try makePartial(combined, contentType: contentType)
+        await onPartialResponse(partial, rawContent)
+      }
+      let entry = CoreAgentScriptedModelSupport.responseEntry(for: combined)
+      return CoreAgentScriptedStreamSnapshot(
+        content: partial,
+        rawContent: rawContent,
+        transcriptEntries: [entry][...],
+        usage: CoreAgentScriptedModelSupport.usage(
+          inputTokens: 1,
+          outputTokens: fragments.count
+        )
+      )
+
+    case .response(let text, let inputTokens, let cachedInputTokens, let outputTokens, let reasoningTokens):
+      let (partial, rawContent) = try makePartial(text, contentType: contentType)
+      await onPartialResponse(partial, rawContent)
+      return CoreAgentScriptedStreamSnapshot(
+        content: partial,
+        rawContent: rawContent,
+        transcriptEntries: [CoreAgentScriptedModelSupport.responseEntry(for: text)][...],
+        usage: CoreAgentScriptedModelSupport.usage(
+          inputTokens: inputTokens,
+          cachedInputTokens: cachedInputTokens,
+          outputTokens: outputTokens,
+          reasoningTokens: reasoningTokens
+        )
+      )
+
+    case .failure(let message):
+      throw RecordedLanguageModelError.scriptedFailure(message)
+
+    case .delayedResponse(let text, let delay):
+      try await Task.sleep(for: delay)
+      let (partial, rawContent) = try makePartial(text, contentType: contentType)
+      await onPartialResponse(partial, rawContent)
+      return CoreAgentScriptedStreamSnapshot(
+        content: partial,
+        rawContent: rawContent,
+        transcriptEntries: [CoreAgentScriptedModelSupport.responseEntry(for: text)][...],
+        usage: CoreAgentScriptedModelSupport.usage(inputTokens: 1, outputTokens: 1)
+      )
+
+    case .toolCall:
+      throw RecordedLanguageModelError.scriptedFailure(
+        "RecordedLanguageModel streaming does not support tool-call scripted steps."
+      )
+    }
+  }
+
+
+  private func makePartial<Content: Generable & Sendable>(
+    _ text: String,
+    contentType: Content.Type
+  ) throws -> (Content.PartiallyGenerated, GeneratedContent)
+  where Content.PartiallyGenerated: Sendable {
+    let raw = try GeneratedContent(json: text.hasPrefix("{") ? text : #"{"text":"\#(text)"}"#)
+    if Content.self == String.self {
+      let partial = text as! Content.PartiallyGenerated
+      return (partial, raw)
+    }
+    let partial = try Content.PartiallyGenerated(raw)
+    return (partial, raw)
+  }
+
+  private func nextStep(recording transcript: Transcript) throws -> RecordedLanguageModelStep {
+    lock.lock()
+    defer { lock.unlock() }
+    requestTranscripts.append(transcript)
+    guard !steps.isEmpty else {
+      throw RecordedLanguageModelError.scriptExhausted
+    }
+    return steps.removeFirst()
+  }
+
+  private func makeTextResponse<Content: Generable & Sendable>(
+    text: String,
+    contentType: Content.Type,
+    inputTokens: Int,
+    cachedInputTokens: Int,
+    outputTokens: Int,
+    reasoningTokens: Int,
+    continuesAfterToolCalls: Bool
+  ) throws -> CoreAgentScriptedModelResponse<Content> {
+    let content: Content
+    let rawContent: GeneratedContent
+    if Content.self == String.self {
+      content = text as! Content
+      rawContent = try GeneratedContent(json: #"{"text":"\#(text)"}"#)
+    } else {
+      rawContent = try GeneratedContent(json: text)
+      content = try Content(rawContent)
+    }
+    return CoreAgentScriptedModelResponse(
+      content: content,
+      rawContent: rawContent,
+      transcriptEntries: [CoreAgentScriptedModelSupport.responseEntry(for: text)][...],
+      usage: CoreAgentScriptedModelSupport.usage(
+        inputTokens: inputTokens,
+        cachedInputTokens: cachedInputTokens,
+        outputTokens: outputTokens,
+        reasoningTokens: reasoningTokens
+      ),
+      continuesAfterToolCalls: continuesAfterToolCalls
+    )
+  }
+
+  private func placeholderContent<Content: Generable & Sendable>(
+    _ contentType: Content.Type
+  ) throws -> Content {
+    if Content.self == String.self {
+      return "" as! Content
+    }
+    return try Content(GeneratedContent(json: "{}"))
+  }
 }
 
-public struct RecordedLanguageModel: LanguageModel {
-  public typealias Executor = RecordedLanguageModelExecutor
-
+public struct RecordedLanguageModel: Sendable {
   public let recorder: RecordedLanguageModelRecorder
-  public let capabilities: LanguageModelCapabilities
 
-  public init(
-    steps: [RecordedLanguageModelStep],
-    capabilities: [LanguageModelCapabilities.Capability] = [
-      .guidedGeneration,
-      .toolCalling,
-    ]
-  ) {
+  public init(steps: [RecordedLanguageModelStep]) {
     self.recorder = RecordedLanguageModelRecorder(steps: steps)
-    self.capabilities = LanguageModelCapabilities(capabilities)
   }
 
-  public var executorConfiguration: RecordedLanguageModelExecutor.Configuration {
-    .init(recorder: recorder)
+  public init(_ recorder: RecordedLanguageModelRecorder) {
+    self.recorder = recorder
   }
 }
 
-public struct RecordedLanguageModelExecutor: LanguageModelExecutor {
+
+public struct RecordedLanguageModelUnimplementedExecutor: LanguageModelExecutor {
   public typealias Model = RecordedLanguageModel
 
   public struct Configuration: Hashable, Sendable {
@@ -105,94 +289,30 @@ public struct RecordedLanguageModelExecutor: LanguageModelExecutor {
   }
 
   nonisolated(nonsending)
-    public func respond(
-      to request: LanguageModelExecutorGenerationRequest,
-      model: RecordedLanguageModel,
-      streamingInto channel: LanguageModelExecutorGenerationChannel
-    ) async throws
-  {
-    switch try recorder.next(for: request) {
-    case .response(
-      let text,
-      let inputTokens,
-      let cachedInputTokens,
-      let outputTokens,
-      let reasoningTokens
-    ):
-      await channel.send(
-        .response(action: .appendText(text, tokenCount: outputTokens))
-      )
-      await channel.send(
-        .response(
-          action: .updateUsage(
-            input: .init(
-              totalTokenCount: inputTokens,
-              cachedTokenCount: cachedInputTokens
-            ),
-            output: .init(
-              totalTokenCount: outputTokens,
-              reasoningTokenCount: reasoningTokens
-            )
-          )
-        )
-      )
-
-    case .toolCall(
-      let id,
-      let name,
-      let argumentsJSON,
-      let inputTokens,
-      let outputTokens
-    ):
-      await channel.send(
-        .toolCalls(
-          action: .toolCall(
-            id: id,
-            name: name,
-            action: .appendArguments(argumentsJSON, tokenCount: outputTokens)
-          )
-        )
-      )
-      await channel.send(
-        .toolCalls(
-          action: .updateUsage(
-            input: .init(totalTokenCount: inputTokens, cachedTokenCount: 0),
-            output: .init(totalTokenCount: outputTokens, reasoningTokenCount: 0)
-          )
-        )
-      )
-
-    case .responseFragments(let fragments):
-      for fragment in fragments {
-        await channel.send(
-          .response(action: .appendText(fragment, tokenCount: 1))
-        )
-      }
-      await channel.send(
-        .response(
-          action: .updateUsage(
-            input: .init(totalTokenCount: 1, cachedTokenCount: 0),
-            output: .init(totalTokenCount: fragments.count, reasoningTokenCount: 0)
-          )
-        )
-      )
-
-    case .failure(let message):
-      throw RecordedLanguageModelError.scriptedFailure(message)
-
-    case .delayedResponse(let text, let delay):
-      try await Task.sleep(for: delay)
-      await channel.send(
-        .response(action: .appendText(text, tokenCount: 1))
-      )
-      await channel.send(
-        .response(
-          action: .updateUsage(
-            input: .init(totalTokenCount: 1, cachedTokenCount: 0),
-            output: .init(totalTokenCount: 1, reasoningTokenCount: 0)
-          )
-        )
-      )
-    }
+  public func respond(
+    to request: LanguageModelExecutorGenerationRequest,
+    model: RecordedLanguageModel,
+    streamingInto channel: LanguageModelExecutorGenerationChannel
+  ) async throws {
+    _ = (request, model, channel, recorder)
+    throw RecordedLanguageModelError.scriptedFailure(
+      "RecordedLanguageModel must run through CoreAgentSession scripted routing."
+    )
   }
+}
+
+extension RecordedLanguageModel: LanguageModel {
+  public typealias Executor = RecordedLanguageModelUnimplementedExecutor
+
+  public var capabilities: LanguageModelCapabilities {
+    LanguageModelCapabilities([.guidedGeneration, .toolCalling])
+  }
+
+  public var executorConfiguration: RecordedLanguageModelUnimplementedExecutor.Configuration {
+    .init(recorder: recorder)
+  }
+}
+
+extension RecordedLanguageModel: CoreAgentScriptedLanguageModelHarness {
+  package var scriptedRecorder: any CoreAgentScriptedModelResponding { recorder }
 }

@@ -1,0 +1,1435 @@
+You are reviewing a Swift 6.4 / Xcode 27 package slice for CoreAgent.
+
+Scope: live Apple SwiftData Engine trace/issue-store slice. The code adds a ModelContext-backed CoreAgentSwiftDataEngineStore over CoreAgentEngineTrace/CoreAgentEngineIssue, plus SwiftData @Model records for trace and issue payloads.
+
+Review priorities:
+- SwiftData ModelContext actor isolation, Sendable/protocol existential behavior, and Swift Testing concurrency safety.
+- Trace integrity: redaction parity with InMemoryCoreAgentEngineStore, receipt verification, sidecar metadata binding, project+run identity, thread query semantics, duplicate replacement/order.
+- Issue lifecycle semantics: explicit status updates, scanner upsert behavior, resolved->reopened only with new runs, ignored not reset, first/last seen bounds, duplicate row collapse.
+- Fail-closed behavior for invalid JSON, stale/wrong receipts, unredacted persisted rows, mismatched sidecar metadata, corrupt issue rows, and unknown status raw values.
+- Apple/latest Swift practices: no shared mutable coders, no brittle tests, no SwiftData row shape as canonical truth.
+
+Return:
+VERDICT: PASS or BLOCK
+FINDINGS: list only actionable correctness/security/data-integrity issues, each with severity P1/P2/P3, file/symbol, why it matters, and concrete fix.
+TEST GAPS: only gaps that would catch realistic regressions in this slice.
+
+Context follows.
+# SwiftData Engine Store Review Context
+
+## Sources/CoreAgentEngine/CoreAgentEngine.swift lines 100-260
+   100	  func traces(projectID: String) async -> [CoreAgentEngineTrace] {
+   101	    await traces(projectID: projectID, threadID: nil)
+   102	  }
+   103
+   104	  func issues(projectID: String) async -> [CoreAgentEngineIssue] {
+   105	    await issues(projectID: projectID, status: nil)
+   106	  }
+   107	}
+   108
+   109	public struct CoreAgentEngineRedactionPolicy: Sendable {
+   110	  private let redactor: @Sendable (String) -> String
+   111
+   112	  public init(_ redactor: @escaping @Sendable (String) -> String) {
+   113	    self.redactor = redactor
+   114	  }
+   115
+   116	  public func redact(_ value: String) -> String {
+   117	    redactor(value)
+   118	  }
+   119
+   120	  public func redacted(run: CoreAgentRun) -> CoreAgentRun {
+   121	    CoreAgentRun(
+   122	      id: run.id,
+   123	      startedAt: run.startedAt,
+   124	      endedAt: run.endedAt,
+   125	      usage: run.usage,
+   126	      events: run.events.map { event in
+   127	        CoreAgentEvent(
+   128	          id: event.id,
+   129	          runID: event.runID,
+   130	          timestamp: event.timestamp,
+   131	          kind: event.kind,
+   132	          message: redact(event.message),
+   133	          attributes: redact(attributes: event.attributes)
+   134	        )
+   135	      }
+   136	    )
+   137	  }
+   138
+   139	  public static let standard = CoreAgentEngineRedactionPolicy { value in
+   140	    var result = value
+   141	    let patterns: [(String, String)] = [
+   142	      (#"(?i)bearer\s+[a-z0-9._~+/=-]{1,256}"#, "Bearer [REDACTED]"),
+   143	      (#"(?i)\bsk-[a-z0-9_-]{8,128}\b"#, "[REDACTED_API_KEY]"),
+   144	      (
+   145	        #"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]{1,256}"#,
+   146	        "$1=[REDACTED]"
+   147	      ),
+   148	    ]
+   149	    for (pattern, replacement) in patterns {
+   150	      result = result.replacingOccurrences(
+   151	        of: pattern,
+   152	        with: replacement,
+   153	        options: .regularExpression
+   154	      )
+   155	    }
+   156	    return result
+   157	  }
+   158
+   159	  func redact(attributes: [String: String]) -> [String: String] {
+   160	    let sensitiveMarkers = ["authorization", "api_key", "apikey", "token", "secret", "password"]
+   161	    return attributes.reduce(into: [:]) { result, pair in
+   162	      if sensitiveMarkers.contains(where: { pair.key.lowercased().contains($0) }) {
+   163	        result[pair.key] = "[REDACTED]"
+   164	      } else {
+   165	        result[pair.key] = redactor(pair.value)
+   166	      }
+   167	    }
+   168	  }
+   169
+   170	  func redact(run: CoreAgentRun) -> CoreAgentRun {
+   171	    redacted(run: run)
+   172	  }
+   173	}
+   174
+   175	public actor InMemoryCoreAgentEngineStore: CoreAgentEngineStore {
+   176	  private let redactionPolicy: CoreAgentEngineRedactionPolicy
+   177	  private var tracesByKey: [TraceKey: StoredTrace] = [:]
+   178	  private var issuesByID: [String: CoreAgentEngineIssue] = [:]
+   179	  private var nextSequence = 0
+   180
+   181	  public init(redactionPolicy: CoreAgentEngineRedactionPolicy = .standard) {
+   182	    self.redactionPolicy = redactionPolicy
+   183	  }
+   184
+   185	  @discardableResult
+   186	  public func ingest(
+   187	    _ run: CoreAgentRun,
+   188	    projectID: String,
+   189	    threadID: String? = nil
+   190	  ) async throws -> CoreAgentEngineTrace {
+   191	    try validate(run)
+   192	    let redactedRun = redactionPolicy.redact(run: run)
+   193	    let trace = try CoreAgentEngineTrace(
+   194	      projectID: projectID,
+   195	      threadID: threadID,
+   196	      run: redactedRun,
+   197	      receipt: CoreAgentRunReceipt(run: redactedRun)
+   198	    )
+   199	    let sequence = nextSequence
+   200	    nextSequence += 1
+   201	    tracesByKey[TraceKey(projectID: projectID, runID: redactedRun.id)] = StoredTrace(
+   202	      sequence: sequence,
+   203	      trace: trace
+   204	    )
+   205	    return trace
+   206	  }
+   207
+   208	  public func trace(projectID: String, runID: UUID) async -> CoreAgentEngineTrace? {
+   209	    guard let trace = tracesByKey[TraceKey(projectID: projectID, runID: runID)]?.trace,
+   210	      verified(trace)
+   211	    else {
+   212	      return nil
+   213	    }
+   214	    return trace
+   215	  }
+   216
+   217	  public func traces(projectID: String, threadID: String? = nil) async -> [CoreAgentEngineTrace] {
+   218	    tracesByKey.values
+   219	      .filter {
+   220	        $0.trace.projectID == projectID
+   221	          && (threadID == nil || $0.trace.threadID == threadID)
+   222	          && verified($0.trace)
+   223	      }
+   224	      .sorted { $0.sequence < $1.sequence }
+   225	      .map(\.trace)
+   226	  }
+   227
+   228	  public func upsertIssue(_ issue: CoreAgentEngineIssue) async throws -> CoreAgentEngineIssue {
+   229	    if let existing = issuesByID[issue.id] {
+   230	      let existingRuns = Set(existing.contributingRunIDs)
+   231	      let incomingRuns = Set(issue.contributingRunIDs)
+   232	      let hasNewRuns = !incomingRuns.isSubset(of: existingRuns)
+   233	      let nextStatus =
+   234	        existing.status == .resolved && hasNewRuns
+   235	        ? CoreAgentEngineIssueStatus.reopened
+   236	        : existing.status
+   237	      let merged = CoreAgentEngineIssue(
+   238	        id: existing.id,
+   239	        projectID: existing.projectID,
+   240	        fingerprint: existing.fingerprint,
+   241	        title: issue.title,
+   242	        contributingRunIDs: issue.contributingRunIDs,
+   243	        status: nextStatus,
+   244	        firstSeenAt: min(existing.firstSeenAt, issue.firstSeenAt),
+   245	        lastSeenAt: max(existing.lastSeenAt, issue.lastSeenAt)
+   246	      )
+   247	      issuesByID[issue.id] = merged
+   248	      return merged
+   249	    }
+   250	    issuesByID[issue.id] = issue
+   251	    return issue
+   252	  }
+   253
+   254	  public func updateIssueStatus(
+   255	    _ issueID: String,
+   256	    status: CoreAgentEngineIssueStatus
+   257	  ) async throws {
+   258	    guard let issue = issuesByID[issueID] else { return }
+   259	    issuesByID[issueID] = CoreAgentEngineIssue(
+   260	      id: issue.id,
+
+## Sources/CoreAgentEngine/CoreAgentEngine.swift lines 314-405
+   314	  private let store: any CoreAgentEngineStore
+   315
+   316	  public init(store: any CoreAgentEngineStore) {
+   317	    self.store = store
+   318	  }
+   319
+   320	  public func scan(projectID: String) async throws -> [CoreAgentEngineIssue] {
+   321	    let traces = await store.traces(projectID: projectID)
+   322	    let groups = Dictionary(grouping: traces.compactMap(FailureEvidence.init(trace:))) {
+   323	      $0.fingerprint
+   324	    }
+   325
+   326	    var issues: [CoreAgentEngineIssue] = []
+   327	    for fingerprint in groups.keys.sorted() {
+   328	      guard let evidence = groups[fingerprint]?.sorted(by: { lhs, rhs in
+   329	        lhs.trace.run.startedAt < rhs.trace.run.startedAt
+   330	      }) else {
+   331	        continue
+   332	      }
+   333	      let first = evidence[0]
+   334	      let issue = CoreAgentEngineIssue(
+   335	        id: Self.issueID(projectID: projectID, fingerprint: fingerprint),
+   336	        projectID: projectID,
+   337	        fingerprint: fingerprint,
+   338	        title: first.title,
+   339	        contributingRunIDs: evidence.map(\.trace.run.id),
+   340	        status: .open,
+   341	        firstSeenAt: evidence.map(\.trace.run.startedAt).min() ?? Date(),
+   342	        lastSeenAt: evidence.map(\.trace.run.endedAt).max() ?? Date()
+   343	      )
+   344	      issues.append(try await store.upsertIssue(issue))
+   345	    }
+   346	    return issues
+   347	  }
+   348
+   349	  private static func issueID(projectID: String, fingerprint: String) -> String {
+   350	    let data = Data("coreagent-engine-issue-v1\u{0}\(projectID)\u{0}\(fingerprint)".utf8)
+   351	    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+   352	    return "issue-\(digest)"
+   353	  }
+   354
+   355	  private struct FailureEvidence {
+   356	    let trace: CoreAgentEngineTrace
+   357	    let fingerprint: String
+   358	    let title: String
+   359
+   360	    init?(trace: CoreAgentEngineTrace) {
+   361	      guard let failed = trace.run.events.first(where: { $0.kind == .runFailed }) else {
+   362	        return nil
+   363	      }
+   364	      let errorType = failed.attributes["error_type"] ?? "unknown"
+   365	      let tool = failed.attributes["tool"] ?? failed.attributes["tool_name"] ?? "none"
+   366	      self.trace = trace
+   367	      self.fingerprint = [
+   368	        failed.kind.rawValue,
+   369	        errorType,
+   370	        tool,
+   371	      ].map { "\($0.count):\($0)" }.joined(separator: "|")
+   372	      self.title = "\(failed.kind.rawValue): \(errorType) / \(tool)"
+   373	    }
+   374	  }
+   375	}
+   376
+   377	public struct CoreAgentEnginePlugin: CoreAgentSessionPlugin, CoreAgentRunObserver {
+   378	  public let identifier: String
+   379	  private let store: any CoreAgentEngineStore
+   380	  private let projectID: String
+   381	  private let threadID: String?
+   382	  private let onIngestFailure: (@Sendable (CoreAgentRun, any Error) async -> Void)?
+   383
+   384	  public init(
+   385	    identifier: String = "coreagent.engine",
+   386	    store: any CoreAgentEngineStore,
+   387	    projectID: String,
+   388	    threadID: String? = nil,
+   389	    onIngestFailure: (@Sendable (CoreAgentRun, any Error) async -> Void)? = nil
+   390	  ) {
+   391	    self.identifier = identifier
+   392	    self.store = store
+   393	    self.projectID = projectID
+   394	    self.threadID = threadID
+   395	    self.onIngestFailure = onIngestFailure
+   396	  }
+   397
+   398	  public func coreAgentRunDidFinish(_ run: CoreAgentRun) async {
+   399	    do {
+   400	      try await store.ingest(run, projectID: projectID, threadID: threadID)
+   401	    } catch {
+   402	      await onIngestFailure?(run, error)
+   403	    }
+   404	  }
+   405	}
+
+## Sources/CoreAgentApplePlatform/CoreAgentApplePlatform.swift lines 440-900
+   440	    traceDigest: String
+   441	  ) {
+   442	    self.traceScopeKey = Self.scopeKey(projectID: projectID, runID: runID)
+   443	    self.projectID = projectID
+   444	    self.threadID = threadID
+   445	    self.runID = runID
+   446	    self.startedAt = startedAt
+   447	    self.endedAt = endedAt
+   448	    self.ingestedAt = ingestedAt
+   449	    self.sequence = sequence
+   450	    self.encodedTrace = encodedTrace
+   451	    self.traceDigest = traceDigest
+   452	  }
+   453
+   454	  public var trace: CoreAgentEngineTrace? {
+   455	    guard traceDigest == Self.integrityDigest(
+   456	      projectID: projectID,
+   457	      threadID: threadID,
+   458	      runID: runID,
+   459	      startedAt: startedAt,
+   460	      endedAt: endedAt,
+   461	      ingestedAt: ingestedAt,
+   462	      encodedTrace: encodedTrace
+   463	    ) else {
+   464	      return nil
+   465	    }
+   466	    guard let trace = try? CoreAgentSwiftDataEngineCodec.decode(
+   467	      CoreAgentEngineTrace.self,
+   468	      from: encodedTrace
+   469	    ) else {
+   470	      return nil
+   471	    }
+   472	    guard trace.projectID == projectID,
+   473	      trace.threadID == threadID,
+   474	      trace.run.id == runID,
+   475	      trace.run.startedAt == startedAt,
+   476	      trace.run.endedAt == endedAt,
+   477	      trace.ingestedAt == ingestedAt,
+   478	      trace.receipt.runID == trace.run.id,
+   479	      trace.receipt.verify()
+   480	    else {
+   481	      return nil
+   482	    }
+   483	    return trace
+   484	  }
+   485
+   486	  public static func scopeKey(projectID: String, runID: UUID) -> String {
+   487	    let fields = [
+   488	      projectID,
+   489	      runID.uuidString.lowercased(),
+   490	    ]
+   491	    return "engine-trace-scope-sha256-v1:" + sha256Hex(framed(fields))
+   492	  }
+   493
+   494	  static func integrityDigest(
+   495	    projectID: String,
+   496	    threadID: String?,
+   497	    runID: UUID,
+   498	    startedAt: Date,
+   499	    endedAt: Date,
+   500	    ingestedAt: Date,
+   501	    encodedTrace: Data
+   502	  ) -> String {
+   503	    let fields = [
+   504	      projectID,
+   505	      threadID ?? "nil",
+   506	      runID.uuidString.lowercased(),
+   507	      timeToken(startedAt),
+   508	      timeToken(endedAt),
+   509	      timeToken(ingestedAt),
+   510	      sha256Hex(encodedTrace),
+   511	    ]
+   512	    return "sha256:" + sha256Hex(framed(fields))
+   513	  }
+   514	}
+   515
+   516	@Model
+   517	public final class CoreAgentSwiftDataEngineIssueRecord {
+   518	  public private(set) var issueID: String
+   519	  public private(set) var projectID: String
+   520	  public private(set) var fingerprint: String
+   521	  public private(set) var statusRawValue: String
+   522	  public private(set) var firstSeenAt: Date
+   523	  public private(set) var lastSeenAt: Date
+   524	  public private(set) var encodedIssue: Data
+   525	  public private(set) var issueDigest: String
+   526
+   527	  public convenience init(issue: CoreAgentEngineIssue) throws {
+   528	    let encodedIssue = try CoreAgentSwiftDataEngineCodec.encode(issue)
+   529	    self.init(
+   530	      issueID: issue.id,
+   531	      projectID: issue.projectID,
+   532	      fingerprint: issue.fingerprint,
+   533	      statusRawValue: issue.status.rawValue,
+   534	      firstSeenAt: issue.firstSeenAt,
+   535	      lastSeenAt: issue.lastSeenAt,
+   536	      encodedIssue: encodedIssue,
+   537	      issueDigest: Self.integrityDigest(
+   538	        issueID: issue.id,
+   539	        projectID: issue.projectID,
+   540	        fingerprint: issue.fingerprint,
+   541	        statusRawValue: issue.status.rawValue,
+   542	        firstSeenAt: issue.firstSeenAt,
+   543	        lastSeenAt: issue.lastSeenAt,
+   544	        encodedIssue: encodedIssue
+   545	      )
+   546	    )
+   547	  }
+   548
+   549	  public init(
+   550	    issueID: String,
+   551	    projectID: String,
+   552	    fingerprint: String,
+   553	    statusRawValue: String,
+   554	    firstSeenAt: Date,
+   555	    lastSeenAt: Date,
+   556	    encodedIssue: Data,
+   557	    issueDigest: String
+   558	  ) {
+   559	    self.issueID = issueID
+   560	    self.projectID = projectID
+   561	    self.fingerprint = fingerprint
+   562	    self.statusRawValue = statusRawValue
+   563	    self.firstSeenAt = firstSeenAt
+   564	    self.lastSeenAt = lastSeenAt
+   565	    self.encodedIssue = encodedIssue
+   566	    self.issueDigest = issueDigest
+   567	  }
+   568
+   569	  public var issue: CoreAgentEngineIssue? {
+   570	    guard issueDigest == Self.integrityDigest(
+   571	      issueID: issueID,
+   572	      projectID: projectID,
+   573	      fingerprint: fingerprint,
+   574	      statusRawValue: statusRawValue,
+   575	      firstSeenAt: firstSeenAt,
+   576	      lastSeenAt: lastSeenAt,
+   577	      encodedIssue: encodedIssue
+   578	    ) else {
+   579	      return nil
+   580	    }
+   581	    guard let issue = try? CoreAgentSwiftDataEngineCodec.decode(
+   582	      CoreAgentEngineIssue.self,
+   583	      from: encodedIssue
+   584	    ) else {
+   585	      return nil
+   586	    }
+   587	    guard issue.id == issueID,
+   588	      issue.projectID == projectID,
+   589	      issue.fingerprint == fingerprint,
+   590	      issue.status.rawValue == statusRawValue,
+   591	      issue.firstSeenAt == firstSeenAt,
+   592	      issue.lastSeenAt == lastSeenAt
+   593	    else {
+   594	      return nil
+   595	    }
+   596	    return issue
+   597	  }
+   598
+   599	  static func integrityDigest(
+   600	    issueID: String,
+   601	    projectID: String,
+   602	    fingerprint: String,
+   603	    statusRawValue: String,
+   604	    firstSeenAt: Date,
+   605	    lastSeenAt: Date,
+   606	    encodedIssue: Data
+   607	  ) -> String {
+   608	    let fields = [
+   609	      issueID,
+   610	      projectID,
+   611	      fingerprint,
+   612	      statusRawValue,
+   613	      timeToken(firstSeenAt),
+   614	      timeToken(lastSeenAt),
+   615	      sha256Hex(encodedIssue),
+   616	    ]
+   617	    return "sha256:" + sha256Hex(framed(fields))
+   618	  }
+   619	}
+   620
+   621	@MainActor
+   622	public final class CoreAgentSwiftDataEngineStore: CoreAgentEngineStore {
+   623	  private let modelContext: ModelContext
+   624	  private let redactionPolicy: CoreAgentEngineRedactionPolicy
+   625	  private let rollsBackOnFailure: Bool
+   626
+   627	  public init(
+   628	    modelContext: ModelContext,
+   629	    redactionPolicy: CoreAgentEngineRedactionPolicy = .standard,
+   630	    rollsBackOnFailure: Bool = false
+   631	  ) {
+   632	    self.modelContext = modelContext
+   633	    self.redactionPolicy = redactionPolicy
+   634	    self.rollsBackOnFailure = rollsBackOnFailure
+   635	  }
+   636
+   637	  public convenience init(
+   638	    modelContainer: ModelContainer,
+   639	    redactionPolicy: CoreAgentEngineRedactionPolicy = .standard
+   640	  ) {
+   641	    self.init(
+   642	      modelContext: ModelContext(modelContainer),
+   643	      redactionPolicy: redactionPolicy,
+   644	      rollsBackOnFailure: true
+   645	    )
+   646	  }
+   647
+   648	  @discardableResult
+   649	  public func ingest(
+   650	    _ run: CoreAgentRun,
+   651	    projectID: String,
+   652	    threadID: String? = nil
+   653	  ) async throws -> CoreAgentEngineTrace {
+   654	    try validate(run)
+   655	    let redactedRun = redactionPolicy.redacted(run: run)
+   656	    let trace = try CoreAgentEngineTrace(
+   657	      projectID: projectID,
+   658	      threadID: threadID,
+   659	      run: redactedRun,
+   660	      receipt: CoreAgentRunReceipt(run: redactedRun)
+   661	    )
+   662	    do {
+   663	      for record in try traceRecords(projectID: projectID, runID: redactedRun.id) {
+   664	        modelContext.delete(record)
+   665	      }
+   666	      modelContext.insert(try CoreAgentSwiftDataEngineTraceRecord(
+   667	        trace: trace,
+   668	        sequence: nextTraceSequence()
+   669	      ))
+   670	      try modelContext.save()
+   671	      return trace
+   672	    } catch {
+   673	      recoverAfterFailedMutation()
+   674	      throw error
+   675	    }
+   676	  }
+   677
+   678	  public func trace(projectID: String, runID: UUID) async -> CoreAgentEngineTrace? {
+   679	    guard let records = try? traceRecords(projectID: projectID, runID: runID) else {
+   680	      return nil
+   681	    }
+   682	    return records.compactMap(verifiedTrace(from:)).first
+   683	  }
+   684
+   685	  public func traces(projectID: String, threadID: String? = nil) async -> [CoreAgentEngineTrace] {
+   686	    guard let records = try? traceRecords(projectID: projectID, threadID: threadID) else {
+   687	      return []
+   688	    }
+   689	    return records.compactMap(verifiedTrace(from:))
+   690	  }
+   691
+   692	  public func upsertIssue(_ issue: CoreAgentEngineIssue) async throws -> CoreAgentEngineIssue {
+   693	    let storedIssue: CoreAgentEngineIssue
+   694	    if let existing = try issueRecords(issueID: issue.id).first?.issue {
+   695	      let existingRuns = Set(existing.contributingRunIDs)
+   696	      let incomingRuns = Set(issue.contributingRunIDs)
+   697	      let hasNewRuns = !incomingRuns.isSubset(of: existingRuns)
+   698	      let nextStatus =
+   699	        existing.status == .resolved && hasNewRuns
+   700	        ? CoreAgentEngineIssueStatus.reopened
+   701	        : existing.status
+   702	      storedIssue = CoreAgentEngineIssue(
+   703	        id: existing.id,
+   704	        projectID: existing.projectID,
+   705	        fingerprint: existing.fingerprint,
+   706	        title: issue.title,
+   707	        contributingRunIDs: issue.contributingRunIDs,
+   708	        status: nextStatus,
+   709	        firstSeenAt: min(existing.firstSeenAt, issue.firstSeenAt),
+   710	        lastSeenAt: max(existing.lastSeenAt, issue.lastSeenAt)
+   711	      )
+   712	    } else {
+   713	      storedIssue = issue
+   714	    }
+   715	    do {
+   716	      for record in try issueRecords(issueID: storedIssue.id) {
+   717	        modelContext.delete(record)
+   718	      }
+   719	      modelContext.insert(try CoreAgentSwiftDataEngineIssueRecord(issue: storedIssue))
+   720	      try modelContext.save()
+   721	      return storedIssue
+   722	    } catch {
+   723	      recoverAfterFailedMutation()
+   724	      throw error
+   725	    }
+   726	  }
+   727
+   728	  public func updateIssueStatus(
+   729	    _ issueID: String,
+   730	    status: CoreAgentEngineIssueStatus
+   731	  ) async throws {
+   732	    guard let issue = try issueRecords(issueID: issueID).first?.issue else {
+   733	      return
+   734	    }
+   735	    let updated = CoreAgentEngineIssue(
+   736	      id: issue.id,
+   737	      projectID: issue.projectID,
+   738	      fingerprint: issue.fingerprint,
+   739	      title: issue.title,
+   740	      contributingRunIDs: issue.contributingRunIDs,
+   741	      status: status,
+   742	      firstSeenAt: issue.firstSeenAt,
+   743	      lastSeenAt: issue.lastSeenAt
+   744	    )
+   745	    do {
+   746	      for record in try issueRecords(issueID: updated.id) {
+   747	        modelContext.delete(record)
+   748	      }
+   749	      modelContext.insert(try CoreAgentSwiftDataEngineIssueRecord(issue: updated))
+   750	      try modelContext.save()
+   751	    } catch {
+   752	      recoverAfterFailedMutation()
+   753	      throw error
+   754	    }
+   755	  }
+   756
+   757	  public func issues(
+   758	    projectID: String,
+   759	    status: CoreAgentEngineIssueStatus? = nil
+   760	  ) async -> [CoreAgentEngineIssue] {
+   761	    (try? issueRecords(projectID: projectID, status: status).compactMap(\.issue)) ?? []
+   762	  }
+   763
+   764	  private func traceRecords(
+   765	    projectID: String,
+   766	    runID: UUID
+   767	  ) throws -> [CoreAgentSwiftDataEngineTraceRecord] {
+   768	    let scopeKey = CoreAgentSwiftDataEngineTraceRecord.scopeKey(projectID: projectID, runID: runID)
+   769	    let descriptor = FetchDescriptor<CoreAgentSwiftDataEngineTraceRecord>(
+   770	      predicate: #Predicate<CoreAgentSwiftDataEngineTraceRecord> { record in
+   771	        record.traceScopeKey == scopeKey
+   772	          && record.projectID == projectID
+   773	          && record.runID == runID
+   774	      },
+   775	      sortBy: [
+   776	        SortDescriptor(\.sequence, order: .reverse),
+   777	        SortDescriptor(\.ingestedAt, order: .reverse),
+   778	      ]
+   779	    )
+   780	    return try modelContext.fetch(descriptor)
+   781	  }
+   782
+   783	  private func traceRecords(
+   784	    projectID: String,
+   785	    threadID: String?
+   786	  ) throws -> [CoreAgentSwiftDataEngineTraceRecord] {
+   787	    let descriptor: FetchDescriptor<CoreAgentSwiftDataEngineTraceRecord>
+   788	    if let threadID {
+   789	      descriptor = FetchDescriptor<CoreAgentSwiftDataEngineTraceRecord>(
+   790	        predicate: #Predicate<CoreAgentSwiftDataEngineTraceRecord> { record in
+   791	          record.projectID == projectID && record.threadID == threadID
+   792	        },
+   793	        sortBy: [SortDescriptor(\.sequence)]
+   794	      )
+   795	    } else {
+   796	      descriptor = FetchDescriptor<CoreAgentSwiftDataEngineTraceRecord>(
+   797	        predicate: #Predicate<CoreAgentSwiftDataEngineTraceRecord> { record in
+   798	          record.projectID == projectID
+   799	        },
+   800	        sortBy: [SortDescriptor(\.sequence)]
+   801	      )
+   802	    }
+   803	    return try modelContext.fetch(descriptor)
+   804	  }
+   805
+   806	  private func issueRecords(issueID: String) throws -> [CoreAgentSwiftDataEngineIssueRecord] {
+   807	    let descriptor = FetchDescriptor<CoreAgentSwiftDataEngineIssueRecord>(
+   808	      predicate: #Predicate<CoreAgentSwiftDataEngineIssueRecord> { record in
+   809	        record.issueID == issueID
+   810	      },
+   811	      sortBy: [SortDescriptor(\.lastSeenAt, order: .reverse)]
+   812	    )
+   813	    return try modelContext.fetch(descriptor)
+   814	  }
+   815
+   816	  private func issueRecords(
+   817	    projectID: String,
+   818	    status: CoreAgentEngineIssueStatus?
+   819	  ) throws -> [CoreAgentSwiftDataEngineIssueRecord] {
+   820	    let descriptor: FetchDescriptor<CoreAgentSwiftDataEngineIssueRecord>
+   821	    if let status {
+   822	      let rawStatus = status.rawValue
+   823	      descriptor = FetchDescriptor<CoreAgentSwiftDataEngineIssueRecord>(
+   824	        predicate: #Predicate<CoreAgentSwiftDataEngineIssueRecord> { record in
+   825	          record.projectID == projectID && record.statusRawValue == rawStatus
+   826	        },
+   827	        sortBy: [
+   828	          SortDescriptor(\.firstSeenAt),
+   829	          SortDescriptor(\.fingerprint),
+   830	        ]
+   831	      )
+   832	    } else {
+   833	      descriptor = FetchDescriptor<CoreAgentSwiftDataEngineIssueRecord>(
+   834	        predicate: #Predicate<CoreAgentSwiftDataEngineIssueRecord> { record in
+   835	          record.projectID == projectID
+   836	        },
+   837	        sortBy: [
+   838	          SortDescriptor(\.firstSeenAt),
+   839	          SortDescriptor(\.fingerprint),
+   840	        ]
+   841	      )
+   842	    }
+   843	    return try modelContext.fetch(descriptor)
+   844	  }
+   845
+   846	  private func nextTraceSequence() throws -> Int {
+   847	    let descriptor = FetchDescriptor<CoreAgentSwiftDataEngineTraceRecord>(
+   848	      sortBy: [SortDescriptor(\.sequence, order: .reverse)]
+   849	    )
+   850	    return ((try modelContext.fetch(descriptor).first?.sequence) ?? -1) + 1
+   851	  }
+   852
+   853	  private func verifiedTrace(
+   854	    from record: CoreAgentSwiftDataEngineTraceRecord
+   855	  ) -> CoreAgentEngineTrace? {
+   856	    guard let trace = record.trace,
+   857	      redactionPolicy.redacted(run: trace.run) == trace.run
+   858	    else {
+   859	      return nil
+   860	    }
+   861	    return trace
+   862	  }
+   863
+   864	  private func validate(_ run: CoreAgentRun) throws {
+   865	    guard run.events.contains(where: { $0.kind == .runCompleted || $0.kind == .runFailed })
+   866	    else {
+   867	      throw CoreAgentEngineStoreError.nonFinalizedRun(run.id)
+   868	    }
+   869	    for event in run.events where event.runID != run.id {
+   870	      throw CoreAgentEngineStoreError.eventRunIDMismatch(
+   871	        eventRunID: event.runID,
+   872	        runID: run.id
+   873	      )
+   874	    }
+   875	  }
+   876
+   877	  private func recoverAfterFailedMutation() {
+   878	    guard rollsBackOnFailure else {
+   879	      return
+   880	    }
+   881	    modelContext.rollback()
+   882	  }
+   883	}
+   884
+   885	private enum CoreAgentSwiftDataEngineCodec {
+   886	  static func encode(_ value: some Encodable) throws -> Data {
+   887	    let encoder = JSONEncoder()
+   888	    encoder.dateEncodingStrategy = .deferredToDate
+   889	    encoder.outputFormatting = [.sortedKeys]
+   890	    return try encoder.encode(value)
+   891	  }
+   892
+   893	  static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+   894	    let decoder = JSONDecoder()
+   895	    decoder.dateDecodingStrategy = .deferredToDate
+   896	    return try decoder.decode(type, from: data)
+   897	  }
+   898	}
+   899
+   900	private func framed(_ fields: [String]) -> Data {
+
+## Tests/CoreAgentApplePlatformTests/CoreAgentApplePlatformTests.swift lines 1140-1625
+  1140	      ))
+  1141	    ) == .denied(.appIntentDonationDisabled(identifier: "CoreAgentReadTaskIntent")))
+  1142	  }
+  1143
+  1144	  @MainActor
+  1145	  @Test("SwiftData Engine store ingests redacted verified traces")
+  1146	  func swiftDataEngineStoreIngestsRedactedVerifiedTraces() async throws {
+  1147	    let context = try Self.swiftDataEngineContext()
+  1148	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1149	    let runID = Self.uuid(701)
+  1150	    let run = Self.engineRun(
+  1151	      id: runID,
+  1152	      events: [
+  1153	        Self.event(
+  1154	          runID: runID,
+  1155	          kind: .toolExecutionFailed,
+  1156	          message: "Failed with token=canary-not-a-token-regex",
+  1157	          attributes: ["api_key": "canary-not-a-token-regex", "tool": "search"]
+  1158	        ),
+  1159	        Self.event(
+  1160	          runID: runID,
+  1161	          kind: .runFailed,
+  1162	          message: "Failed with token=canary-not-a-token-regex",
+  1163	          attributes: ["api_key": "canary-not-a-token-regex", "tool": "search"]
+  1164	        ),
+  1165	      ]
+  1166	    )
+  1167
+  1168	    let trace = try await store.ingest(run, projectID: "coreagent", threadID: "thread-a")
+  1169	    let readback = try #require(await store.trace(projectID: "coreagent", runID: runID))
+  1170
+  1171	    #expect(trace.run.events.first?.message == "Failed with token=[REDACTED]")
+  1172	    #expect(readback.run.events.first?.attributes["api_key"] == "[REDACTED]")
+  1173	    #expect(readback.run.events.first?.attributes["tool"] == "search")
+  1174	    #expect(readback.projectID == "coreagent")
+  1175	    #expect(readback.threadID == "thread-a")
+  1176	    #expect(readback.receipt.verify())
+  1177	  }
+  1178
+  1179	  @MainActor
+  1180	  @Test("SwiftData Engine store queries traces by project and thread")
+  1181	  func swiftDataEngineStoreQueriesTracesByProjectAndThread() async throws {
+  1182	    let context = try Self.swiftDataEngineContext()
+  1183	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1184
+  1185	    try await store.ingest(Self.engineRun(id: Self.uuid(711)), projectID: "coreagent", threadID: "a")
+  1186	    try await store.ingest(Self.engineRun(id: Self.uuid(712)), projectID: "coreagent", threadID: "b")
+  1187	    try await store.ingest(Self.engineRun(id: Self.uuid(713)), projectID: "other", threadID: "a")
+  1188
+  1189	    #expect(await store.traces(projectID: "coreagent").map(\.run.id) == [
+  1190	      Self.uuid(711),
+  1191	      Self.uuid(712),
+  1192	    ])
+  1193	    #expect(await store.traces(projectID: "coreagent", threadID: "a").map(\.run.id) == [
+  1194	      Self.uuid(711)
+  1195	    ])
+  1196	  }
+  1197
+  1198	  @MainActor
+  1199	  @Test("SwiftData Engine store persists issue lifecycle and reopening")
+  1200	  func swiftDataEngineStorePersistsIssueLifecycleAndReopening() async throws {
+  1201	    let context = try Self.swiftDataEngineContext()
+  1202	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1203	    let scanner = CoreAgentEngineIssueScanner(store: store)
+  1204
+  1205	    try await store.ingest(
+  1206	      Self.engineFailedRun(id: Self.uuid(721), errorType: "authorization", tool: "write_file"),
+  1207	      projectID: "coreagent"
+  1208	    )
+  1209	    let first = try #require(try await scanner.scan(projectID: "coreagent").first)
+  1210	    try await store.updateIssueStatus(first.id, status: .resolved)
+  1211
+  1212	    let stillResolved = try #require(try await scanner.scan(projectID: "coreagent").first)
+  1213	    #expect(stillResolved.status == .resolved)
+  1214
+  1215	    try await store.ingest(
+  1216	      Self.engineFailedRun(id: Self.uuid(722), errorType: "authorization", tool: "write_file"),
+  1217	      projectID: "coreagent"
+  1218	    )
+  1219
+  1220	    let rescanned = try #require(try await scanner.scan(projectID: "coreagent").first)
+  1221
+  1222	    #expect(rescanned.status == .reopened)
+  1223	    #expect(rescanned.contributingRunIDs == [Self.uuid(721), Self.uuid(722)])
+  1224	    #expect(await store.issues(projectID: "coreagent", status: .reopened).map(\.id) == [
+  1225	      first.id
+  1226	    ])
+  1227
+  1228	    try await store.updateIssueStatus(first.id, status: .ignored)
+  1229	    try await store.ingest(
+  1230	      Self.engineFailedRun(id: Self.uuid(723), errorType: "authorization", tool: "write_file"),
+  1231	      projectID: "coreagent"
+  1232	    )
+  1233	    let ignoredAfterNewRun = try #require(try await scanner.scan(projectID: "coreagent").first)
+  1234	    #expect(ignoredAfterNewRun.status == .ignored)
+  1235	    #expect(ignoredAfterNewRun.contributingRunIDs == [
+  1236	      Self.uuid(721),
+  1237	      Self.uuid(722),
+  1238	      Self.uuid(723),
+  1239	    ])
+  1240	  }
+  1241
+  1242	  @MainActor
+  1243	  @Test("SwiftData Engine store fails closed on corrupted trace payloads")
+  1244	  func swiftDataEngineStoreFailsClosedOnCorruptedTracePayloads() async throws {
+  1245	    let context = try Self.swiftDataEngineContext()
+  1246	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1247	    let runID = Self.uuid(731)
+  1248	    context.insert(CoreAgentSwiftDataEngineTraceRecord(
+  1249	      projectID: "coreagent",
+  1250	      threadID: "thread-a",
+  1251	      runID: runID,
+  1252	      startedAt: Date(timeIntervalSince1970: 1),
+  1253	      endedAt: Date(timeIntervalSince1970: 2),
+  1254	      ingestedAt: Date(timeIntervalSince1970: 3),
+  1255	      encodedTrace: Data("not-json".utf8),
+  1256	      traceDigest: "sha256:corrupted"
+  1257	    ))
+  1258	    try context.save()
+  1259
+  1260	    #expect(await store.trace(projectID: "coreagent", runID: runID) == nil)
+  1261	    #expect(await store.traces(projectID: "coreagent").isEmpty)
+  1262	  }
+  1263
+  1264	  @MainActor
+  1265	  @Test("SwiftData Engine store rejects valid trace JSON with stale receipts or unredacted runs")
+  1266	  func swiftDataEngineStoreRejectsValidTraceJSONWithStaleReceiptsOrUnredactedRuns() async throws {
+  1267	    let context = try Self.swiftDataEngineContext()
+  1268	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1269	    let redactedRunID = Self.uuid(732)
+  1270	    let redactedRun = CoreAgentEngineRedactionPolicy.standard.redacted(run: Self.engineRun(
+  1271	      id: redactedRunID,
+  1272	      events: [
+  1273	        Self.event(
+  1274	          runID: redactedRunID,
+  1275	          kind: .runFailed,
+  1276	          message: "Failed with token=canary-not-a-token-regex",
+  1277	          attributes: ["api_key": "canary-not-a-token-regex"]
+  1278	        )
+  1279	      ]
+  1280	    ))
+  1281	    let validReceipt = try CoreAgentRunReceipt(run: redactedRun)
+  1282	    let staleReceipt = CoreAgentRunReceipt(
+  1283	      runID: Self.uuid(799),
+  1284	      receipts: validReceipt.receipts,
+  1285	      rootHash: validReceipt.rootHash
+  1286	    )
+  1287	    let staleReceiptTrace = CoreAgentEngineTrace(
+  1288	      projectID: "coreagent",
+  1289	      threadID: "thread-a",
+  1290	      run: redactedRun,
+  1291	      receipt: staleReceipt,
+  1292	      ingestedAt: Date(timeIntervalSince1970: 1_800_000_020)
+  1293	    )
+  1294	    let staleReceiptData = try Self.engineTraceData(staleReceiptTrace)
+  1295	    context.insert(CoreAgentSwiftDataEngineTraceRecord(
+  1296	      projectID: "coreagent",
+  1297	      threadID: "thread-a",
+  1298	      runID: redactedRunID,
+  1299	      startedAt: redactedRun.startedAt,
+  1300	      endedAt: redactedRun.endedAt,
+  1301	      ingestedAt: staleReceiptTrace.ingestedAt,
+  1302	      encodedTrace: staleReceiptData,
+  1303	      traceDigest: CoreAgentSwiftDataEngineTraceRecord.integrityDigest(
+  1304	        projectID: "coreagent",
+  1305	        threadID: "thread-a",
+  1306	        runID: redactedRunID,
+  1307	        startedAt: redactedRun.startedAt,
+  1308	        endedAt: redactedRun.endedAt,
+  1309	        ingestedAt: staleReceiptTrace.ingestedAt,
+  1310	        encodedTrace: staleReceiptData
+  1311	      )
+  1312	    ))
+  1313
+  1314	    let unredactedRunID = Self.uuid(733)
+  1315	    let unredactedRun = Self.engineRun(
+  1316	      id: unredactedRunID,
+  1317	      events: [
+  1318	        Self.event(
+  1319	          runID: unredactedRunID,
+  1320	          kind: .runFailed,
+  1321	          message: "Failed with token=canary-not-a-token-regex",
+  1322	          attributes: ["api_key": "canary-not-a-token-regex"]
+  1323	        )
+  1324	      ]
+  1325	    )
+  1326	    let unredactedTrace = try CoreAgentEngineTrace(
+  1327	      projectID: "coreagent",
+  1328	      threadID: "thread-a",
+  1329	      run: unredactedRun,
+  1330	      receipt: CoreAgentRunReceipt(run: unredactedRun),
+  1331	      ingestedAt: Date(timeIntervalSince1970: 1_800_000_021)
+  1332	    )
+  1333	    let unredactedData = try Self.engineTraceData(unredactedTrace)
+  1334	    context.insert(CoreAgentSwiftDataEngineTraceRecord(
+  1335	      projectID: "coreagent",
+  1336	      threadID: "thread-a",
+  1337	      runID: unredactedRunID,
+  1338	      startedAt: unredactedRun.startedAt,
+  1339	      endedAt: unredactedRun.endedAt,
+  1340	      ingestedAt: unredactedTrace.ingestedAt,
+  1341	      encodedTrace: unredactedData,
+  1342	      traceDigest: CoreAgentSwiftDataEngineTraceRecord.integrityDigest(
+  1343	        projectID: "coreagent",
+  1344	        threadID: "thread-a",
+  1345	        runID: unredactedRunID,
+  1346	        startedAt: unredactedRun.startedAt,
+  1347	        endedAt: unredactedRun.endedAt,
+  1348	        ingestedAt: unredactedTrace.ingestedAt,
+  1349	        encodedTrace: unredactedData
+  1350	      )
+  1351	    ))
+  1352	    try context.save()
+  1353
+  1354	    #expect(await store.trace(projectID: "coreagent", runID: redactedRunID) == nil)
+  1355	    #expect(await store.trace(projectID: "coreagent", runID: unredactedRunID) == nil)
+  1356	    #expect(await store.traces(projectID: "coreagent").isEmpty)
+  1357	  }
+  1358
+  1359	  @MainActor
+  1360	  @Test("SwiftData Engine trace records bind indexed sidecar metadata into integrity")
+  1361	  func swiftDataEngineTraceRecordsBindIndexedSidecarMetadataIntoIntegrity() async throws {
+  1362	    let context = try Self.swiftDataEngineContext()
+  1363	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1364	    let baseRunID = Self.uuid(734)
+  1365	    let baseRun = Self.engineRun(id: baseRunID)
+  1366	    let baseTrace = try CoreAgentEngineTrace(
+  1367	      projectID: "encoded-project",
+  1368	      threadID: "encoded-thread",
+  1369	      run: baseRun,
+  1370	      receipt: CoreAgentRunReceipt(run: baseRun),
+  1371	      ingestedAt: Date(timeIntervalSince1970: 1_800_000_030.123456)
+  1372	    )
+  1373	    let encodedTraceData = try Self.engineTraceData(baseTrace)
+  1374	    let sidecarProjectID = "coreagent"
+  1375	    let sidecarThreadID = "thread-a"
+  1376	    let sidecarIngestedAt = Date(timeIntervalSince1970: 1_800_000_031.654321)
+  1377
+  1378	    context.insert(CoreAgentSwiftDataEngineTraceRecord(
+  1379	      projectID: sidecarProjectID,
+  1380	      threadID: sidecarThreadID,
+  1381	      runID: baseRunID,
+  1382	      startedAt: baseRun.startedAt,
+  1383	      endedAt: baseRun.endedAt,
+  1384	      ingestedAt: sidecarIngestedAt,
+  1385	      encodedTrace: encodedTraceData,
+  1386	      traceDigest: CoreAgentSwiftDataEngineTraceRecord.integrityDigest(
+  1387	        projectID: sidecarProjectID,
+  1388	        threadID: sidecarThreadID,
+  1389	        runID: baseRunID,
+  1390	        startedAt: baseRun.startedAt,
+  1391	        endedAt: baseRun.endedAt,
+  1392	        ingestedAt: sidecarIngestedAt,
+  1393	        encodedTrace: encodedTraceData
+  1394	      )
+  1395	    ))
+  1396
+  1397	    let digestRunID = Self.uuid(735)
+  1398	    let digestRun = Self.engineRun(id: digestRunID)
+  1399	    let digestTrace = try CoreAgentEngineTrace(
+  1400	      projectID: sidecarProjectID,
+  1401	      threadID: sidecarThreadID,
+  1402	      run: digestRun,
+  1403	      receipt: CoreAgentRunReceipt(run: digestRun),
+  1404	      ingestedAt: Date(timeIntervalSince1970: 1_800_000_032)
+  1405	    )
+  1406	    let digestData = try Self.engineTraceData(digestTrace)
+  1407	    context.insert(CoreAgentSwiftDataEngineTraceRecord(
+  1408	      projectID: sidecarProjectID,
+  1409	      threadID: sidecarThreadID,
+  1410	      runID: digestRunID,
+  1411	      startedAt: digestRun.startedAt,
+  1412	      endedAt: digestRun.endedAt,
+  1413	      ingestedAt: digestTrace.ingestedAt,
+  1414	      encodedTrace: digestData,
+  1415	      traceDigest: "sha256:stale"
+  1416	    ))
+  1417	    try context.save()
+  1418
+  1419	    #expect(await store.trace(projectID: sidecarProjectID, runID: baseRunID) == nil)
+  1420	    #expect(await store.trace(projectID: sidecarProjectID, runID: digestRunID) == nil)
+  1421	    #expect(await store.traces(projectID: sidecarProjectID).isEmpty)
+  1422	  }
+  1423
+  1424	  @MainActor
+  1425	  @Test("SwiftData Engine store scopes traces by project plus run ID")
+  1426	  func swiftDataEngineStoreScopesTracesByProjectAndRunID() async throws {
+  1427	    let context = try Self.swiftDataEngineContext()
+  1428	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1429	    let runID = Self.uuid(736)
+  1430	    let run = Self.engineRun(id: runID)
+  1431
+  1432	    try await store.ingest(run, projectID: "coreagent", threadID: "a")
+  1433	    try await store.ingest(run, projectID: "other", threadID: "b")
+  1434
+  1435	    #expect(await store.trace(projectID: "coreagent", runID: runID)?.projectID == "coreagent")
+  1436	    #expect(await store.trace(projectID: "other", runID: runID)?.projectID == "other")
+  1437	    #expect(await store.traces(projectID: "coreagent").map(\.threadID) == ["a"])
+  1438	    #expect(await store.traces(projectID: "other").map(\.threadID) == ["b"])
+  1439	  }
+  1440
+  1441	  @MainActor
+  1442	  @Test("SwiftData Engine store replaces duplicate traces and keeps stable ordering")
+  1443	  func swiftDataEngineStoreReplacesDuplicateTracesAndKeepsStableOrdering() async throws {
+  1444	    let context = try Self.swiftDataEngineContext()
+  1445	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1446	    let firstRunID = Self.uuid(737)
+  1447	    let secondRunID = Self.uuid(738)
+  1448
+  1449	    try await store.ingest(Self.engineRun(id: firstRunID), projectID: "coreagent", threadID: "old")
+  1450	    try await store.ingest(Self.engineRun(id: secondRunID), projectID: "coreagent", threadID: "middle")
+  1451	    let replacement = Self.engineRun(
+  1452	      id: firstRunID,
+  1453	      events: [
+  1454	        Self.event(
+  1455	          runID: firstRunID,
+  1456	          kind: .runCompleted,
+  1457	          message: "Run completed after replacement."
+  1458	        )
+  1459	      ]
+  1460	    )
+  1461	    try await store.ingest(replacement, projectID: "coreagent", threadID: "new")
+  1462
+  1463	    let rawRecords = try context.fetch(FetchDescriptor<CoreAgentSwiftDataEngineTraceRecord>())
+  1464	      .filter { $0.projectID == "coreagent" }
+  1465
+  1466	    #expect(rawRecords.filter { $0.runID == firstRunID }.count == 1)
+  1467	    #expect(rawRecords.count == 2)
+  1468	    #expect(await store.traces(projectID: "coreagent").map(\.run.id) == [
+  1469	      secondRunID,
+  1470	      firstRunID,
+  1471	    ])
+  1472	    #expect(await store.trace(projectID: "coreagent", runID: firstRunID)?.threadID == "new")
+  1473	    #expect(
+  1474	      await store.trace(projectID: "coreagent", runID: firstRunID)?
+  1475	        .run.events.first?.message == "Run completed after replacement."
+  1476	    )
+  1477	  }
+  1478
+  1479	  @MainActor
+  1480	  @Test("SwiftData Engine store preserves issue status and seen bounds on upsert")
+  1481	  func swiftDataEngineStorePreservesIssueStatusAndSeenBoundsOnUpsert() async throws {
+  1482	    let context = try Self.swiftDataEngineContext()
+  1483	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1484	    let issueID = "issue-manual"
+  1485	    let firstRunID = Self.uuid(739)
+  1486	    let secondRunID = Self.uuid(740)
+  1487	    let baseIssue = CoreAgentEngineIssue(
+  1488	      id: issueID,
+  1489	      projectID: "coreagent",
+  1490	      fingerprint: "fingerprint",
+  1491	      title: "First title",
+  1492	      contributingRunIDs: [firstRunID],
+  1493	      status: .open,
+  1494	      firstSeenAt: Date(timeIntervalSince1970: 200),
+  1495	      lastSeenAt: Date(timeIntervalSince1970: 300)
+  1496	    )
+  1497	    _ = try await store.upsertIssue(baseIssue)
+  1498	    try await store.updateIssueStatus(issueID, status: .ignored)
+  1499	    let incomingIssue = CoreAgentEngineIssue(
+  1500	      id: issueID,
+  1501	      projectID: "coreagent",
+  1502	      fingerprint: "fingerprint",
+  1503	      title: "Latest title",
+  1504	      contributingRunIDs: [firstRunID, secondRunID],
+  1505	      status: .open,
+  1506	      firstSeenAt: Date(timeIntervalSince1970: 100),
+  1507	      lastSeenAt: Date(timeIntervalSince1970: 400)
+  1508	    )
+  1509
+  1510	    let stored = try await store.upsertIssue(incomingIssue)
+  1511	    let rawRecords = try context.fetch(FetchDescriptor<CoreAgentSwiftDataEngineIssueRecord>())
+  1512
+  1513	    #expect(stored.status == .ignored)
+  1514	    #expect(stored.title == "Latest title")
+  1515	    #expect(stored.contributingRunIDs == [firstRunID, secondRunID])
+  1516	    #expect(stored.firstSeenAt == Date(timeIntervalSince1970: 100))
+  1517	    #expect(stored.lastSeenAt == Date(timeIntervalSince1970: 400))
+  1518	    #expect(rawRecords.filter { $0.issueID == issueID }.count == 1)
+  1519	    #expect(await store.issues(projectID: "coreagent", status: .ignored).map(\.id) == [issueID])
+  1520	  }
+  1521
+  1522	  @MainActor
+  1523	  @Test("SwiftData Engine issue records fail closed on corrupted sidecar fields")
+  1524	  func swiftDataEngineIssueRecordsFailClosedOnCorruptedSidecarFields() async throws {
+  1525	    let context = try Self.swiftDataEngineContext()
+  1526	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1527	    let issue = CoreAgentEngineIssue(
+  1528	      id: "issue-corrupt",
+  1529	      projectID: "coreagent",
+  1530	      fingerprint: "fingerprint",
+  1531	      title: "Corrupt issue",
+  1532	      contributingRunIDs: [Self.uuid(741)],
+  1533	      status: .open,
+  1534	      firstSeenAt: Date(timeIntervalSince1970: 100),
+  1535	      lastSeenAt: Date(timeIntervalSince1970: 200)
+  1536	    )
+  1537	    let encodedIssue = try Self.engineIssueData(issue)
+  1538	    context.insert(CoreAgentSwiftDataEngineIssueRecord(
+  1539	      issueID: issue.id,
+  1540	      projectID: issue.projectID,
+  1541	      fingerprint: issue.fingerprint,
+  1542	      statusRawValue: "unknown",
+  1543	      firstSeenAt: issue.firstSeenAt,
+  1544	      lastSeenAt: issue.lastSeenAt,
+  1545	      encodedIssue: encodedIssue,
+  1546	      issueDigest: CoreAgentSwiftDataEngineIssueRecord.integrityDigest(
+  1547	        issueID: issue.id,
+  1548	        projectID: issue.projectID,
+  1549	        fingerprint: issue.fingerprint,
+  1550	        statusRawValue: "unknown",
+  1551	        firstSeenAt: issue.firstSeenAt,
+  1552	        lastSeenAt: issue.lastSeenAt,
+  1553	        encodedIssue: encodedIssue
+  1554	      )
+  1555	    ))
+  1556	    context.insert(CoreAgentSwiftDataEngineIssueRecord(
+  1557	      issueID: issue.id,
+  1558	      projectID: issue.projectID,
+  1559	      fingerprint: "tampered",
+  1560	      statusRawValue: issue.status.rawValue,
+  1561	      firstSeenAt: issue.firstSeenAt,
+  1562	      lastSeenAt: issue.lastSeenAt,
+  1563	      encodedIssue: encodedIssue,
+  1564	      issueDigest: CoreAgentSwiftDataEngineIssueRecord.integrityDigest(
+  1565	        issueID: issue.id,
+  1566	        projectID: issue.projectID,
+  1567	        fingerprint: "tampered",
+  1568	        statusRawValue: issue.status.rawValue,
+  1569	        firstSeenAt: issue.firstSeenAt,
+  1570	        lastSeenAt: issue.lastSeenAt,
+  1571	        encodedIssue: encodedIssue
+  1572	      )
+  1573	    ))
+  1574	    try context.save()
+  1575
+  1576	    #expect(await store.issues(projectID: "coreagent").isEmpty)
+  1577	    #expect(await store.issues(projectID: "coreagent", status: .open).isEmpty)
+  1578	  }
+  1579
+  1580	  @MainActor
+  1581	  @Test("SwiftData Engine store preserves subsecond trace dates")
+  1582	  func swiftDataEngineStorePreservesSubsecondTraceDates() async throws {
+  1583	    let context = try Self.swiftDataEngineContext()
+  1584	    let store = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1585	    let runID = Self.uuid(742)
+  1586	    let eventTimestamp = Date(timeIntervalSinceReferenceDate: 987_654_321.123456)
+  1587	    let run = CoreAgentRun(
+  1588	      id: runID,
+  1589	      startedAt: Date(timeIntervalSinceReferenceDate: 987_654_320.654321),
+  1590	      endedAt: Date(timeIntervalSinceReferenceDate: 987_654_322.987654),
+  1591	      usage: nil,
+  1592	      events: [
+  1593	        CoreAgentEvent(
+  1594	          id: UUID(),
+  1595	          runID: runID,
+  1596	          timestamp: eventTimestamp,
+  1597	          kind: .runCompleted,
+  1598	          message: "Run completed.",
+  1599	          attributes: [:]
+  1600	        )
+  1601	      ]
+  1602	    )
+  1603
+  1604	    let trace = try await store.ingest(run, projectID: "coreagent", threadID: "subsecond")
+  1605	    let readback = try #require(await store.trace(projectID: "coreagent", runID: runID))
+  1606
+  1607	    #expect(readback.run.startedAt == run.startedAt)
+  1608	    #expect(readback.run.endedAt == run.endedAt)
+  1609	    #expect(readback.run.events.first?.timestamp == eventTimestamp)
+  1610	    #expect(readback.ingestedAt == trace.ingestedAt)
+  1611	  }
+  1612
+  1613	  @MainActor
+  1614	  @Test("SwiftData Engine store works through the portable store protocol")
+  1615	  func swiftDataEngineStoreWorksThroughThePortableStoreProtocol() async throws {
+  1616	    let context = try Self.swiftDataEngineContext()
+  1617	    let store: any CoreAgentEngineStore = CoreAgentSwiftDataEngineStore(modelContext: context)
+  1618	    let run = Self.engineRun(id: Self.uuid(743))
+  1619
+  1620	    try await store.ingest(run, projectID: "coreagent", threadID: "portable")
+  1621	    let readback = try #require(await store.trace(projectID: "coreagent", runID: run.id))
+  1622
+  1623	    #expect(readback.threadID == "portable")
+  1624	    #expect(readback.receipt.verify())
+  1625	  }
+
+## Documentation/CoreAgentApplePlatform-Runtime.md
+     1	# CoreAgentApplePlatform Runtime
+     2
+     3	Date: 2026-07-06
+     4	Status: Apple adapter contract foundation with live persistence stores
+     5
+     6	`CoreAgentApplePlatform` is the optional Apple-only adapter target for platform
+     7	integration points that should not leak into the portable CoreAgent products.
+     8	This slice defines tested contracts for SwiftData checkpoint wrapping, platform
+     9	capability gating, App Intent exposure policy, and SwiftUI/Observation run
+    10	projections, plus the first live `ModelContext` checkpoint-store adapter. It is
+    11	also includes a live SwiftData Engine trace/issue store. It is not a full
+    12	sandbox backend, graph SwiftData store, or App Intents bundle.
+    13
+    14	## Implemented
+    15
+    16	- `CoreAgentSwiftDataCheckpointSnapshot`
+    17	  - Encodes a canonical `CoreAgentCheckpoint` as CoreAgent-owned JSON bytes.
+    18	    Dates use lossless `Date` coding rather than the default ISO-8601 strategy
+    19	    so sub-second checkpoint timestamps round trip exactly.
+    20	  - Stores indexed metadata beside those bytes: checkpoint ID, checkpoint key,
+    21	    authority boundary, policy version, checkpoint format, compatibility
+    22	    revision, save time, store time, and SHA-256 digest.
+    23	  - Binds the checkpoint ID/key, authority boundary, policy version, format,
+    24	    compatibility revision, save time, and canonical checkpoint bytes into the
+    25	    digest so SwiftData sidecar metadata cannot be replayed across logical
+    26	    checkpoints or authority boundaries without detection.
+    27	  - Enforces authority-boundary and policy-version read barriers before digest
+    28	    verification and checkpoint decode.
+    29	  - Verifies decoded checkpoint format, compatibility, and save time metadata
+    30	    against the indexed record metadata.
+    31
+    32	- `CoreAgentSwiftDataCheckpointRecord`
+    33	  - SwiftData `@Model` wrapper around the snapshot fields.
+    34	  - Keeps the encoded checkpoint bytes as the canonical payload. SwiftData row
+    35	    fields are indexes/readback metadata, not the checkpoint schema.
+    36	  - Stores a deterministic scope key over checkpoint key, authority boundary,
+    37	    and policy version so live store operations can filter and collapse rows by
+    38	    the same authority boundary that decode enforces.
+    39
+    40	- `CoreAgentSwiftDataCheckpointStore`
+    41	  - Main-actor `CoreAgentCheckpointStore` implementation over a supplied
+    42	    SwiftData `ModelContext`.
+    43	  - Saves, loads, replaces, and hard-deletes checkpoints by scoped key:
+    44	    checkpoint key, authority boundary, and policy version.
+    45	  - Uses a SwiftData predicate for the composite scope rather than fetching the
+    46	    whole checkpoint table and filtering in memory.
+    47	  - Uses `CoreAgentSwiftDataCheckpointSnapshot` for all persisted bytes and
+    48	    verifies the same authority/policy/digest metadata on readback.
+    49	  - Reuses the same lossless checkpoint validation as `FileCheckpointStore` by
+    50	    default, rejecting typed metadata and custom transcript segments before any
+    51	    SwiftData row is inserted unless an app explicitly opts into Foundation
+    52	    Models type erasure.
+    53	  - Collapses duplicate same-scope rows deterministically during replacement
+    54	    and chooses the newest scoped row by checkpoint save time, store time, then
+    55	    checkpoint ID when reading preexisting duplicates.
+    56	  - Does not own `CoreAgentAppleActionGate` evaluation. Hosts should gate
+    57	    `.swiftDataCheckpointPersistence(checkpointKey:)` before injecting or using
+    58	    this store; the store itself enforces persistence integrity and read
+    59	    barriers.
+    60	  - Offers a `ModelContainer` initializer that creates an isolated
+    61	    `ModelContext` and rolls it back on failed mutations. When a host supplies a
+    62	  shared `ModelContext`, rollback is caller-owned so unrelated pending app
+    63	  changes are not discarded by the checkpoint store.
+    64
+    65	- `CoreAgentSwiftDataEngineTraceRecord`
+    66	  - SwiftData `@Model` wrapper for redacted `CoreAgentEngineTrace` payloads.
+    67	  - Stores project ID, optional thread ID, run ID, run timing, ingestion time,
+    68	    sequence, canonical encoded trace bytes, and an integrity digest.
+    69	  - Binds the indexed sidecar metadata and encoded trace bytes into the digest,
+    70	    then verifies decoded trace project/thread/run/timing metadata and
+    71	    receipt validity before readback.
+    72
+    73	- `CoreAgentSwiftDataEngineIssueRecord`
+    74	  - SwiftData `@Model` wrapper for `CoreAgentEngineIssue` payloads.
+    75	  - Stores issue ID, project ID, fingerprint, status raw value, first/last seen
+    76	    times, encoded issue bytes, and an integrity digest.
+    77	  - Fails closed when encoded issue metadata disagrees with indexed fields or
+    78	    status raw values drift from the typed issue status.
+    79
+    80	- `CoreAgentSwiftDataEngineStore`
+    81	  - Main-actor `CoreAgentEngineStore` implementation over a supplied SwiftData
+    82	    `ModelContext`.
+    83	  - Ingests only finalized runs, reuses the shared Engine redaction policy, and
+    84	    stores receipt-verifiable redacted traces.
+    85	  - Keys traces by project ID plus run ID so projects can safely reuse run
+    86	    identifiers without leakage or overwrite.
+    87	  - Supports project/thread trace queries with stable sequence ordering,
+    88	    deterministic duplicate replacement, and portable protocol existential use.
+    89	  - Persists issue lifecycle state with the same scanner/upsert semantics as
+    90	    the in-memory store: explicit status updates are authoritative, resolved
+    91	    issues reopen only when new contributing runs appear, and ignored issues
+    92	    are not reset by later scans.
+    93	  - Rejects valid-looking trace rows whose receipt is stale, whose sidecar
+    94	    metadata has been replayed, or whose run still contains content the
+    95	    configured redaction policy would redact.
+    96
+    97	- `CoreAgentAppleSandboxProfile` and `CoreAgentAppleActionGate`
+    98	  - Capability-scoped policy vocabulary for deterministic/WASI/helper/remote
+    99	    code interpreters, computer use, App Intent execution/donation, and
+   100	    SwiftData checkpoint persistence.
+   101	  - Keeps code interpreter authority separate from computer-use consent.
+   102	  - Requires scoped consent receipts for computer-use/App Intent actions and
+   103	    higher-risk helper/remote interpreter tiers. A receipt must match the
+   104	    sandbox authority boundary, policy version, required capability, request
+   105	    fingerprint, non-nil expiry, trusted issuer, and HMAC signature. Issued
+   106	    receipts require expiry, and verification uses CryptoKit authentication-code
+   107	    validation rather than string equality.
+   108	  - Rejects remote interpreter requests unless the sandbox network policy
+   109	    explicitly allows network execution.
+   110	  - Enforces SwiftData checkpoint persistence and App Intent donation as
+   111	    separate gateable capabilities instead of passive vocabulary.
+   112	  - Donation requests carry the App Intent descriptor and are denied when the
+   113	    descriptor's donation policy is `doNotDonate`.
+   114
+   115	- `CoreAgentAppIntentDescriptor`
+   116	  - App Intent exposure policy descriptor for stable workflow/entity actions.
+   117	  - Requires the host to mark a descriptor as agent-exposed before it can pass
+   118	    validation for agent execution.
+   119	  - Rejects mutating/destructive intents unless authorization and HITL are
+   120	    required and foreground execution is allowed.
+   121	  - Captures supported modes, execution targets, and donation policy as typed
+   122	    metadata that concrete App Intent wrappers can map to OS APIs.
+   123	  - App Intent execution requests pass the descriptor plus the current mode and
+   124	    execution target through `CoreAgentAppleActionGate`; descriptor validation
+   125	    alone is not treated as execution authority.
+   126	  - Consent request fingerprints include a descriptor exposure fingerprint over
+   127	    identifier, title, mutability, explicit agent exposure, exposure revision,
+   128	    supported modes, allowed targets, donation policy, and authorization/HITL
+   129	    requirements, so old receipts cannot be replayed after security-relevant
+   130	    descriptor changes. Execution and donation fingerprints use separate
+   131	    request-type discriminants.
+   132
+   133	- `CoreAgentRunProjectionStore`
+   134	  - Main-actor `@Observable` projection store for SwiftUI apps.
+   135	  - Produces narrow `CoreAgentRunProjection` values from `CoreAgentEngineTrace`.
+   136	  - Deduplicates projections by run ID when a trace batch contains repeated
+   137	    runs.
+   138	  - Merges incremental trace batches into existing projections instead of
+   139	    replacing previously observed runs.
+   140	  - Exposes run ID, project/thread IDs, timing, status, last event kind, and
+   141	    event counts.
+   142	  - Deliberately omits raw event messages, attributes, receipts, transcripts,
+   143	    and trace blobs from view state to avoid accidental exposure of secrets,
+   144	    private user content, receipts, and large trace payloads through SwiftUI
+   145	    observation.
+   146
+   147	## Explicit Non-Goals For This Slice
+   148
+   149	- No SwiftData graph checkpointer/store yet.
+   150	- No JavaScriptCore, WASI, helper-process, shell, remote, or computer-use
+   151	  executor implementation yet.
+   152	- No concrete `AppIntent` structs, `AppIntentsTesting` integration target, or
+   153	  donation invalidation implementation yet.
+   154	- No SwiftUI views. This target provides the observable projection model that
+   155	  app UI can consume.
+   156
+   157	These should build on the tested contracts here rather than inventing separate
+   158	authority, checkpoint, projection, or App Intent exposure shapes.
+   159
+   160	## Verification
+   161
+   162	- `swift test --skip-update --filter CoreAgentApplePlatformTests` first failed
+   163	  on missing Apple adapter API, then passed 17 focused tests after
+   164	  implementation and hardening.
+   165	- A delegated Swift/iOS review found two valid authority gaps: generic consent
+   166	  receipts and descriptor-detached App Intent execution. Both were fixed with
+   167	  regressions.
+   168	- VibeProxy review found valid hardening gaps around lossless checkpoint date
+   169	  coding, descriptor-bound App Intent consent, direct test-target dependencies,
+   170	  and gateable checkpoint/donation capabilities. Those were fixed with focused
+   171	  regressions.
+   172	- Follow-up VibeProxy review found two more valid contract gaps: checkpoint
+   173	  sidecar metadata was not digest-bound, and App Intent donation was
+   174	  descriptor-detached. Those were fixed with envelope digests and
+   175	  descriptor-bound donation requests.
+   176	- Final VibeProxy review found valid hardening gaps in checkpoint identity and
+   177	  `savedAt` parity, incremental projection merging, constant-time consent
+   178	  signature verification, issued-receipt expiry, and App Intent
+   179	  donation/execution replay. Those were fixed with focused regressions,
+   180	  including an in-memory SwiftData `ModelContext` persistence round trip.
+   181	- A delegated Swift/iOS review of the live checkpoint-store slice found valid
+   182	  requirements around actor isolation, composite scope filtering, duplicate
+   183	  scoped rows, lossless checkpoint validation, and hard-delete documentation.
+   184	  The store is `@MainActor`, works through the portable
+   185	  `CoreAgentCheckpointStore` existential, uses a deterministic scope key,
+   186	  reuses CoreAgent checkpoint validation, and has a CoreAgentSession restore
+   187	  regression.
+   188	- A delegated Swift/iOS review of the live Engine-store slice found valid
+   189	  requirements around shared redaction, actor isolation, receipt/readback
+   190	  corruption, sidecar metadata binding, project/run identity, issue lifecycle
+   191	  semantics, duplicate trace replacement, and plugin integration.
+   192	- `swift test --skip-update --filter CoreAgentApplePlatformTests` passed 39
+   193	  Apple-platform focused tests after the SwiftData Engine trace/issue store
+   194	  implementation and sidecar hardening.
+
+## Documentation/DeepAgents-Port-Task-Ledger.md L15 and evidence excerpts
+23:| L11 | Codex | complete_for_foundation | Add Apple-platform adapter design and later implementation slices for sandboxed code/computer-use executors, SwiftData checkpointing/snapshotting, SwiftUI store projections, and App Intents/donations. | `CoreAgentApplePlatform` now has SwiftData checkpoint snapshots/records with digest-bound sidecars, a live `ModelContext` checkpoint store, capability/consent action gating, App Intent exposure descriptors, a live SwiftData Engine trace/issue store, and a main-actor `@Observable` run projection store with focused tests. SwiftData graph stores, concrete sandbox/computer-use executors, AppIntentsTesting bundles, and donation invalidation remain later slices. |
+27:| L15 | Codex + Swift sidecar reviewer | complete_for_engine_store | Add live SwiftData Engine trace/issue store for embedded LangSmith-style local persistence. | `CoreAgentSwiftDataEngineStore` is live over SwiftData `ModelContext`; focused Apple tests cover redacted receipt-verifiable trace ingest/readback, project/thread predicates, project+run identity, duplicate replacement/order, subsecond dates, protocol existential use, CoreAgentEnginePlugin integration, issue upsert/reopen/ignore/status filters, and tampered payload fail-closed behavior. VibeProxy and full-suite verification remain pending for this slice. |
+631:- Started live SwiftData Engine trace/issue-store adapter slice (L15). TDD red
+633:  failed because `CoreAgentSwiftDataEngineStore`,
+634:  `CoreAgentSwiftDataEngineTraceRecord`, and
+635:  `CoreAgentSwiftDataEngineIssueRecord` did not exist.
+642:- Added `CoreAgentSwiftDataEngineTraceRecord`,
+643:  `CoreAgentSwiftDataEngineIssueRecord`, and main-actor
+644:  `CoreAgentSwiftDataEngineStore`. The store ingests finalized runs as redacted
+650:  Apple-platform focused tests after the live SwiftData Engine trace/issue
+680:  trace/issue stores to `ModelContext`-backed graph stores, concrete sandbox

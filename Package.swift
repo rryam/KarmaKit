@@ -11,7 +11,14 @@ let package = Package(
   ],
   products: [
     .library(name: "CoreAgent", targets: ["CoreAgent"]),
+    .library(name: "CoreAgentAppIntents", targets: ["CoreAgentAppIntents"]),
+    .library(name: "CoreAgentApplePlatform", targets: ["CoreAgentApplePlatform"]),
+    .library(name: "CoreAgentDeep", targets: ["CoreAgentDeep"]),
+    .library(name: "CoreAgentEngine", targets: ["CoreAgentEngine"]),
+    .library(name: "CoreAgentGraph", targets: ["CoreAgentGraph"]),
     .library(name: "CoreAgentMemory", targets: ["CoreAgentMemory"]),
+    .library(name: "CoreAgentSkills", targets: ["CoreAgentSkills"]),
+    .library(name: "CoreAgentAgenticKit", targets: ["CoreAgentAgenticKit"]),
     .library(name: "CoreAgentTestSupport", targets: ["CoreAgentTestSupport"]),
     .library(name: "CoreAgentProviders", targets: ["CoreAgentProviders"]),
   ],
@@ -52,9 +59,43 @@ let package = Package(
   targets: [
     .target(name: "CoreAgent"),
     .target(
+      name: "CoreAgentApplePlatform",
+      dependencies: ["CoreAgent", "CoreAgentEngine", "CoreAgentGraph"]
+    ),
+    .target(
+      name: "CoreAgentAppIntents",
+      dependencies: ["CoreAgentApplePlatform"]
+    ),
+    .target(
+      name: "CoreAgentDeep",
+      dependencies: ["CoreAgent", "CoreAgentGraph"]
+    ),
+    .target(
+      name: "CoreAgentEngine",
+      dependencies: ["CoreAgent"]
+    ),
+    .target(
+      name: "CoreAgentGraph",
+      dependencies: ["CoreAgent"]
+    ),
+    .target(
       name: "CoreAgentMemory",
       dependencies: ["CoreAgent"],
       linkerSettings: [.linkedLibrary("sqlite3")]
+    ),
+    .target(
+      name: "CoreAgentSkills",
+      dependencies: ["CoreAgent", "CoreAgentEngine"]
+    ),
+    .target(
+      name: "CoreAgentAgenticKit",
+      dependencies: [
+        "CoreAgent",
+        "CoreAgentDeep",
+        "CoreAgentEngine",
+        "CoreAgentGraph",
+        "CoreAgentSkills",
+      ]
     ),
     .target(
       name: "CoreAgentTestSupport",
@@ -91,6 +132,23 @@ let package = Package(
       dependencies: ["CoreAgent", "CoreAgentTestSupport"]
     ),
     .testTarget(
+      name: "CoreAgentApplePlatformTests",
+      dependencies: [
+        "CoreAgent",
+        "CoreAgentApplePlatform",
+        "CoreAgentEngine",
+        "CoreAgentGraph",
+        "CoreAgentTestSupport",
+      ]
+    ),
+    .testTarget(
+      name: "CoreAgentAppIntentsTests",
+      dependencies: [
+        "CoreAgentApplePlatform",
+        "CoreAgentAppIntents",
+      ]
+    ),
+    .testTarget(
       name: "CoreAgentProviderTests",
       dependencies: ["CoreAgent", "CoreAgentProviders"],
       swiftSettings: [
@@ -106,6 +164,33 @@ let package = Package(
     .testTarget(
       name: "CoreAgentMemoryIntegrationTests",
       dependencies: ["CoreAgent", "CoreAgentMemory", "CoreAgentTestSupport"]
+    ),
+    .testTarget(
+      name: "CoreAgentGraphTests",
+      dependencies: ["CoreAgentGraph"]
+    ),
+    .testTarget(
+      name: "CoreAgentDeepTests",
+      dependencies: ["CoreAgentDeep", "CoreAgentTestSupport"]
+    ),
+    .testTarget(
+      name: "CoreAgentEngineTests",
+      dependencies: ["CoreAgentEngine", "CoreAgentTestSupport"]
+    ),
+    .testTarget(
+      name: "CoreAgentSkillsTests",
+      dependencies: ["CoreAgent", "CoreAgentEngine", "CoreAgentSkills", "CoreAgentTestSupport"]
+    ),
+    .testTarget(
+      name: "CoreAgentAgenticKitTests",
+      dependencies: [
+        "CoreAgent",
+        "CoreAgentAgenticKit",
+        "CoreAgentDeep",
+        "CoreAgentEngine",
+        "CoreAgentGraph",
+        "CoreAgentTestSupport",
+      ]
     ),
   ]
 )
