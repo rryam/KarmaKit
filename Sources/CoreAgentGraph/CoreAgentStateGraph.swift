@@ -39,6 +39,8 @@ public enum CoreAgentGraphCompileError: Error, Equatable, Sendable {
   )
   case unknownCommandRouteSource(CoreAgentGraphNodeID)
   case unknownCommandRouteTarget(source: CoreAgentGraphNodeID, target: CoreAgentGraphNodeID)
+  case unknownSendEdgeSource(CoreAgentGraphNodeID)
+  case unknownSendEdgeTarget(source: CoreAgentGraphNodeID, target: CoreAgentGraphNodeID)
   case orphanedNode(CoreAgentGraphNodeID)
 }
 
@@ -51,6 +53,7 @@ public enum CoreAgentGraphRuntimeError: Error, Equatable, Sendable {
   case stateUpdateRequiresCheckpoint
   case stateUpdateRequiresCheckpointer
   case undeclaredCommandTarget(source: CoreAgentGraphNodeID, target: CoreAgentGraphEndpoint)
+  case undeclaredSendTarget(source: CoreAgentGraphNodeID, target: CoreAgentGraphNodeID)
   case unknownCommandRouteSource(CoreAgentGraphNodeID)
   case unknownCommandRouteTarget(source: CoreAgentGraphNodeID, target: CoreAgentGraphNodeID)
   case unknownStateUpdateNode(CoreAgentGraphNodeID)
@@ -64,6 +67,13 @@ public enum CoreAgentGraphStreamEvent<State: Sendable>: Sendable {
   case taskStarted(nodeID: CoreAgentGraphNodeID, step: Int)
   case nodeCacheHit(nodeID: CoreAgentGraphNodeID, key: CoreAgentGraphCacheKey, step: Int)
   case command(nodeID: CoreAgentGraphNodeID, goto: [CoreAgentGraphEndpoint], step: Int)
+  case send(
+    source: CoreAgentGraphNodeID,
+    target: CoreAgentGraphNodeID,
+    state: State,
+    taskID: CoreAgentGraphTaskID,
+    step: Int
+  )
   case taskCompleted(nodeID: CoreAgentGraphNodeID, step: Int)
   case taskFailed(nodeID: CoreAgentGraphNodeID, step: Int)
   case interrupted(nodeID: CoreAgentGraphNodeID, CoreAgentGraphInterrupt, step: Int)
@@ -99,32 +109,48 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
   public let edges: [CoreAgentGraphEdge]
 
   private struct NodeExecutionResult: @unchecked Sendable {
-    let nodeID: CoreAgentGraphNodeID
+    let task: CoreAgentGraphPendingTask<State>
+    let order: Int
     let update: State?
     let commandGoto: [CoreAgentGraphEndpoint]?
+    let commandSends: [CoreAgentGraphSend<State>]
     let cacheKey: CoreAgentGraphCacheKey?
     let error: (any Error)?
 
+    var nodeID: CoreAgentGraphNodeID {
+      task.nodeID
+    }
+
     static func success(
-      nodeID: CoreAgentGraphNodeID,
+      task: CoreAgentGraphPendingTask<State>,
+      order: Int,
       update: State?,
       commandGoto: [CoreAgentGraphEndpoint]? = nil,
+      commandSends: [CoreAgentGraphSend<State>] = [],
       cacheKey: CoreAgentGraphCacheKey? = nil
     ) -> Self {
       NodeExecutionResult(
-        nodeID: nodeID,
+        task: task,
+        order: order,
         update: update,
         commandGoto: commandGoto,
+        commandSends: commandSends,
         cacheKey: cacheKey,
         error: nil
       )
     }
 
-    static func failure(nodeID: CoreAgentGraphNodeID, error: any Error) -> Self {
+    static func failure(
+      task: CoreAgentGraphPendingTask<State>,
+      order: Int,
+      error: any Error
+    ) -> Self {
       NodeExecutionResult(
-        nodeID: nodeID,
+        task: task,
+        order: order,
         update: nil,
         commandGoto: nil,
+        commandSends: [],
         cacheKey: nil,
         error: error
       )
@@ -134,6 +160,7 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
   let nodes: [CoreAgentGraphNodeID: CoreAgentStateGraph<State>.Node]
   let conditionalEdges: [CoreAgentStateGraph<State>.ConditionalEdges]
   let commandRoutes: [CoreAgentStateGraph<State>.CommandRoutes]
+  let sendEdges: [CoreAgentStateGraph<State>.SendEdges]
   let stateReducer: CoreAgentStateGraph<State>.StateReducer
   private let permitsParallelUpdates: Bool
   let checkpointer: (any CoreAgentGraphCheckpointer<State>)?
@@ -145,6 +172,7 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
     edges: [CoreAgentGraphEdge],
     conditionalEdges: [CoreAgentStateGraph<State>.ConditionalEdges],
     commandRoutes: [CoreAgentStateGraph<State>.CommandRoutes],
+    sendEdges: [CoreAgentStateGraph<State>.SendEdges],
     stateReducer: @escaping CoreAgentStateGraph<State>.StateReducer,
     permitsParallelUpdates: Bool,
     checkpointer: (any CoreAgentGraphCheckpointer<State>)?,
@@ -156,6 +184,7 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
     self.edges = edges
     self.conditionalEdges = conditionalEdges
     self.commandRoutes = commandRoutes
+    self.sendEdges = sendEdges
     self.stateReducer = stateReducer
     self.permitsParallelUpdates = permitsParallelUpdates
     self.checkpointer = checkpointer
@@ -217,26 +246,34 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
     let runID = CoreAgentGraphRunID.make()
     let restored = try await restoredCheckpoint(id: checkpointID)
     var state = restored?.state ?? initialState
-    var pendingCommandTargets: [CoreAgentGraphNodeID] = []
+    var pendingCommandTasks: [CoreAgentGraphPendingTask<State>] = []
     for pendingWrite in (restored?.pendingWrites ?? []).sorted(by: {
-      if $0.step == $1.step { return $0.nodeID < $1.nodeID }
+      if $0.step == $1.step {
+        return pendingWriteSortKey($0) < pendingWriteSortKey($1)
+      }
       return $0.step < $1.step
     }) {
       if let commandGoto = pendingWrite.commandGoto {
         await emit?(
           .command(nodeID: pendingWrite.nodeID, goto: commandGoto, step: pendingWrite.step))
-        pendingCommandTargets.append(
-          contentsOf: try commandNodeIDs(from: commandGoto, source: pendingWrite.nodeID)
+        pendingCommandTasks.append(
+          contentsOf: try commandTasks(from: commandGoto, source: pendingWrite.nodeID)
         )
       }
+      pendingCommandTasks.append(
+        contentsOf: try commandSendTasks(
+          from: pendingWrite.commandSends,
+          source: pendingWrite.nodeID
+        )
+      )
       await emit?(.taskCompleted(nodeID: pendingWrite.nodeID, step: pendingWrite.step))
       await emit?(
         .updates(nodeID: pendingWrite.nodeID, update: pendingWrite.update, step: pendingWrite.step))
       state = try stateReducer(state, pendingWrite.update)
     }
-    var frontier = restored?.nextNodeIDs ?? startNodeIDs()
-    frontier.append(contentsOf: pendingCommandTargets)
-    frontier = Array(Set(frontier)).sorted()
+    var frontier = restored?.nextTasks ?? startTasks()
+    frontier.append(contentsOf: pendingCommandTasks)
+    frontier = canonicalizeTasks(frontier, scheduledForStep: (restored?.step ?? 0) + 1)
     var parentCheckpointID = restored?.id
     let firstStep = (restored?.step ?? 0) + 1
     let initialStep = restored?.step ?? 0
@@ -246,7 +283,7 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
     if restored == nil {
       let checkpoint = try await saveCheckpoint(
         state: state,
-        nextNodeIDs: frontier,
+        nextTasks: frontier,
         step: 0,
         threadID: threadID,
         namespace: namespace,
@@ -266,9 +303,9 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
         )
       }
 
-      let activeNodeIDs = Array(Set(frontier)).sorted()
-      guard permitsParallelUpdates || activeNodeIDs.count <= 1 else {
-        throw CoreAgentGraphRuntimeError.parallelUpdatesRequireReducer(activeNodeIDs)
+      let activeTasks = canonicalizeTasks(frontier, scheduledForStep: step)
+      guard permitsParallelUpdates || activeTasks.count <= 1 else {
+        throw CoreAgentGraphRuntimeError.parallelUpdatesRequireReducer(activeTasks.map(\.nodeID))
       }
       let customEventWriter: (@Sendable (CoreAgentGraphCustomEvent) async -> Void)?
       let eventStep = step
@@ -290,27 +327,30 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
       )
       let snapshot = state
 
-      for nodeID in activeNodeIDs {
-        await emit?(.taskStarted(nodeID: nodeID, step: step))
+      for task in activeTasks {
+        await emit?(.taskStarted(nodeID: task.nodeID, step: step))
       }
 
       let results = await executeNodes(
-        activeNodeIDs,
+        activeTasks,
         snapshot: snapshot,
         context: context
       )
 
       if let failure = firstFailure(in: results) {
-        let failedIndex = activeNodeIDs.firstIndex(of: failure.nodeID) ?? 0
-        let retryNodeIDs = Array(activeNodeIDs[failedIndex...])
+        // `failure.order` is the task's index within `activeTasks` (assigned via
+        // `activeTasks.enumerated()` in `executeNodes`). Slice `activeTasks` by that
+        // order directly: `results` can be shorter than `activeTasks` when a task is
+        // skipped (missing node), so a `results` position would mis-align the retry set.
+        let retryTasks = Array(activeTasks[failure.order...])
         let pendingWrites = pendingWrites(
           from: results,
-          before: failure.nodeID,
+          before: failure.order,
           step: step
         )
         let checkpoint = try await saveCheckpoint(
           state: state,
-          nextNodeIDs: retryNodeIDs,
+          nextTasks: retryTasks,
           pendingWrites: pendingWrites,
           step: step,
           threadID: threadID,
@@ -346,11 +386,25 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
         state = try stateReducer(state, update)
       }
       await emit?(.values(state, step: step))
-      frontier = try await nextNodeIDs(after: results, state: state, context: context)
+      frontier = try await nextTasks(after: results, state: state, context: context)
+      frontier = canonicalizeTasks(frontier, scheduledForStep: step + 1)
+      for task in frontier where task.isPushed {
+        if let source = task.source, let input = task.input, let taskID = task.taskID {
+          await emit?(
+            .send(
+              source: source,
+              target: task.nodeID,
+              state: input,
+              taskID: taskID,
+              step: step
+            )
+          )
+        }
+      }
       stepCommand = nil
       let checkpoint = try await saveCheckpoint(
         state: state,
-        nextNodeIDs: frontier,
+        nextTasks: frontier,
         pendingWrites: [],
         step: step,
         threadID: threadID,
@@ -368,15 +422,21 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
   }
 
   private func executeNodes(
-    _ activeNodeIDs: [CoreAgentGraphNodeID],
+    _ activeTasks: [CoreAgentGraphPendingTask<State>],
     snapshot: State,
     context: CoreAgentGraphRuntimeContext
   ) async -> [NodeExecutionResult] {
     await withTaskGroup(of: NodeExecutionResult.self) { group in
-      for nodeID in activeNodeIDs {
-        guard let node = nodes[nodeID] else { continue }
+      for (order, task) in activeTasks.enumerated() {
+        guard let node = nodes[task.nodeID] else { continue }
         group.addTask {
-          await executeNode(node, snapshot: snapshot, context: context)
+          await executeNode(
+            node,
+            task: task,
+            order: order,
+            snapshot: task.input ?? snapshot,
+            context: context
+          )
         }
       }
 
@@ -384,25 +444,28 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
       for await result in group {
         results.append(result)
       }
-      return results.sorted { $0.nodeID < $1.nodeID }
+      return results.sorted { $0.order < $1.order }
     }
   }
 
   private func executeNode(
     _ node: CoreAgentStateGraph<State>.Node,
+    task: CoreAgentGraphPendingTask<State>,
+    order: Int,
     snapshot: State,
     context: CoreAgentGraphRuntimeContext
   ) async -> NodeExecutionResult {
-    let scopedContext = context.scoped(to: node.id)
+    let scopedContext = context.scoped(to: node.id, taskID: task.taskID)
     do {
       if let cache, let cachePolicy = node.cachePolicy {
         let cacheKey = try cachePolicy.key(for: snapshot, context: scopedContext)
         if let entry = try await cache.entry(forKey: cacheKey, nodeID: node.id, now: Date()) {
-          return .success(nodeID: node.id, update: entry.update, cacheKey: cacheKey)
+          return .success(task: task, order: order, update: entry.update, cacheKey: cacheKey)
         }
         let output = try await node.operation(snapshot, scopedContext)
-        let result = try nodeResult(from: output, nodeID: node.id)
-        guard let update = result.update, result.commandGoto == nil else {
+        let result = try nodeResult(from: output, task: task, order: order)
+        guard let update = result.update, result.commandGoto == nil, result.commandSends.isEmpty
+        else {
           return result
         }
         let storedAt = Date()
@@ -415,25 +478,33 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
           forKey: cacheKey,
           nodeID: node.id
         )
-        return .success(nodeID: node.id, update: update)
+        return .success(task: task, order: order, update: update)
       }
       let output = try await node.operation(snapshot, scopedContext)
-      return try nodeResult(from: output, nodeID: node.id)
+      return try nodeResult(from: output, task: task, order: order)
     } catch {
-      return .failure(nodeID: node.id, error: error)
+      return .failure(task: task, order: order, error: error)
     }
   }
 
   private func nodeResult(
     from output: CoreAgentGraphNodeOutput<State>,
-    nodeID: CoreAgentGraphNodeID
+    task: CoreAgentGraphPendingTask<State>,
+    order: Int
   ) throws -> NodeExecutionResult {
     switch output {
     case .update(let update):
-      return .success(nodeID: nodeID, update: update)
+      return .success(task: task, order: order, update: update)
     case .command(let command):
-      _ = try commandNodeIDs(from: command.goto, source: nodeID)
-      return .success(nodeID: nodeID, update: command.update, commandGoto: command.goto)
+      _ = try commandTasks(from: command.goto, source: task.nodeID)
+      _ = try commandSendTasks(from: command.sends, source: task.nodeID)
+      return .success(
+        task: task,
+        order: order,
+        update: command.update,
+        commandGoto: command.goto,
+        commandSends: command.sends
+      )
     }
   }
 
@@ -445,124 +516,42 @@ public struct CoreAgentCompiledGraph<State: Sendable>: Sendable {
 
   private func pendingWrites(
     from results: [NodeExecutionResult],
-    before failedNodeID: CoreAgentGraphNodeID,
+    before failedOrder: Int,
     step: Int
   ) -> [CoreAgentGraphPendingWrite<State>] {
-    results.prefix { $0.nodeID < failedNodeID }.compactMap { result in
+    results.prefix { $0.order < failedOrder }.compactMap { result in
       guard let update = result.update else { return nil }
       return CoreAgentGraphPendingWrite(
         nodeID: result.nodeID,
+        taskID: result.task.taskID,
         step: step,
         update: update,
-        commandGoto: result.commandGoto
+        commandGoto: result.commandGoto,
+        commandSends: result.commandSends
       )
     }
   }
 
-  private func restoredCheckpoint(
-    id: CoreAgentGraphCheckpointID?
-  ) async throws -> CoreAgentGraphCheckpoint<State>? {
-    guard let id else { return nil }
-    guard let checkpoint = try await checkpointer?.checkpoint(id: id) else {
-      throw CoreAgentGraphRuntimeError.checkpointNotFound(id)
-    }
-    return checkpoint
-  }
-
-  private func saveCheckpoint(
-    state: State,
-    nextNodeIDs: [CoreAgentGraphNodeID],
-    pendingWrites: [CoreAgentGraphPendingWrite<State>] = [],
-    step: Int,
-    threadID: CoreAgentGraphThreadID,
-    namespace: CoreAgentGraphCheckpointNamespace,
-    parentCheckpointID: CoreAgentGraphCheckpointID?
-  ) async throws -> CoreAgentGraphCheckpoint<State>? {
-    guard let checkpointer else { return nil }
-    let checkpoint = CoreAgentGraphCheckpoint(
-      threadID: threadID,
-      namespace: namespace,
-      parentCheckpointID: parentCheckpointID,
-      step: step,
-      state: state,
-      nextNodeIDs: nextNodeIDs,
-      pendingWrites: pendingWrites
-    )
-    try await checkpointer.save(checkpoint)
-    return checkpoint
-  }
-
-  private func startNodeIDs() -> [CoreAgentGraphNodeID] {
-    edges.compactMap { edge -> CoreAgentGraphNodeID? in
-      guard edge.source == .start, case .node(let id) = edge.target else { return nil }
-      return id
-    }.sorted()
-  }
-
-  private func nextNodeIDs(
+  private func nextTasks(
     after results: [NodeExecutionResult],
     state: State,
     context: CoreAgentGraphRuntimeContext
-  ) async throws -> [CoreAgentGraphNodeID] {
-    var next: [CoreAgentGraphNodeID] = []
+  ) async throws -> [CoreAgentGraphPendingTask<State>] {
+    var next: [CoreAgentGraphPendingTask<State>] = []
     for result in results {
       if let commandGoto = result.commandGoto {
-        next.append(contentsOf: try commandNodeIDs(from: commandGoto, source: result.nodeID))
-      } else {
+        next.append(contentsOf: try commandTasks(from: commandGoto, source: result.nodeID))
         next.append(
-          contentsOf: try await nextNodeIDs(after: [result.nodeID], state: state, context: context)
+          contentsOf: try commandSendTasks(from: result.commandSends, source: result.nodeID))
+      } else {
+        let scopedContext = context.scoped(to: result.nodeID, taskID: result.task.taskID)
+        next.append(
+          contentsOf: try await nextTasks(
+            after: [result.nodeID],
+            state: state,
+            context: scopedContext
+          )
         )
-      }
-    }
-    return Array(Set(next)).sorted()
-  }
-
-  func nextNodeIDs(
-    after activeNodeIDs: [CoreAgentGraphNodeID],
-    state: State,
-    context: CoreAgentGraphRuntimeContext
-  ) async throws -> [CoreAgentGraphNodeID] {
-    var next: [CoreAgentGraphNodeID] = []
-    let regularTargets = Dictionary(grouping: edges, by: \.source)
-    let conditionals = Dictionary(grouping: conditionalEdges, by: \.source)
-
-    for nodeID in activeNodeIDs {
-      for edge in regularTargets[.node(nodeID), default: []] {
-        if case .node(let target) = edge.target {
-          next.append(target)
-        }
-      }
-
-      for conditional in conditionals[nodeID, default: []] {
-        guard let selector = conditional.selector else {
-          throw CoreAgentGraphRuntimeError.missingConditionalSelector(source: nodeID)
-        }
-        let route = try await selector(state, context)
-        let target = conditional.routes[route] ?? conditional.defaultTarget
-        guard let target else {
-          throw CoreAgentGraphRuntimeError.invalidConditionalRoute(source: nodeID, route: route)
-        }
-        if case .node(let targetID) = target {
-          next.append(targetID)
-        }
-      }
-    }
-
-    return next.sorted()
-  }
-
-  func commandNodeIDs(
-    from goto: [CoreAgentGraphEndpoint],
-    source: CoreAgentGraphNodeID
-  ) throws -> [CoreAgentGraphNodeID] {
-    let declared = Set(commandRoutes.filter { $0.source == source }.flatMap(\.targets))
-    var next: [CoreAgentGraphNodeID] = []
-    for target in goto {
-      guard declared.contains(target) else {
-        throw CoreAgentGraphRuntimeError.undeclaredCommandTarget(source: source, target: target)
-      }
-      if case .node(let targetID) = target {
-        next.append(targetID)
       }
     }
     return next
@@ -580,6 +569,9 @@ public struct CoreAgentStateGraph<State: Sendable>: Sendable {
   public typealias ConditionalSelector =
     @Sendable (State, CoreAgentGraphRuntimeContext) async throws
     -> String
+  public typealias SendSelector =
+    @Sendable (State, CoreAgentGraphRuntimeContext) async throws
+    -> [CoreAgentGraphSend<State>]
 
   struct Node: Sendable {
     let id: CoreAgentGraphNodeID
@@ -599,10 +591,17 @@ public struct CoreAgentStateGraph<State: Sendable>: Sendable {
     let selector: ConditionalSelector?
   }
 
+  struct SendEdges: Sendable {
+    let source: CoreAgentGraphNodeID
+    let targets: [CoreAgentGraphNodeID]
+    let selector: SendSelector
+  }
+
   var nodes: [CoreAgentGraphNodeID: Node] = [:]
   var edges: [CoreAgentGraphEdge] = []
   var conditionalEdges: [ConditionalEdges] = []
   var commandRoutes: [CommandRoutes] = []
+  var sendEdges: [SendEdges] = []
   private let stateReducer: StateReducer
   private let permitsParallelUpdates: Bool
 
@@ -663,6 +662,14 @@ public struct CoreAgentStateGraph<State: Sendable>: Sendable {
     commandRoutes.append(CommandRoutes(source: source, targets: targets))
   }
 
+  public mutating func addSendEdges(
+    from source: CoreAgentGraphNodeID,
+    to targets: [CoreAgentGraphNodeID],
+    _ selector: @escaping SendSelector
+  ) throws {
+    sendEdges.append(SendEdges(source: source, targets: targets, selector: selector))
+  }
+
   public mutating func addEdge(
     _ source: CoreAgentGraphEndpoint,
     _ target: CoreAgentGraphEndpoint
@@ -708,6 +715,7 @@ public struct CoreAgentStateGraph<State: Sendable>: Sendable {
     try validateKnownEdgeEndpoints()
     try validateKnownConditionalEdges()
     try validateKnownCommandRoutes()
+    try validateKnownSendEdges()
     guard edges.contains(where: { $0.source == .start }) else {
       throw CoreAgentGraphCompileError.missingEntryPoint
     }
@@ -719,6 +727,7 @@ public struct CoreAgentStateGraph<State: Sendable>: Sendable {
       edges: edges,
       conditionalEdges: conditionalEdges,
       commandRoutes: commandRoutes,
+      sendEdges: sendEdges,
       stateReducer: stateReducer,
       permitsParallelUpdates: permitsParallelUpdates,
       checkpointer: checkpointer,

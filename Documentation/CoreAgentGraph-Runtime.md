@@ -27,9 +27,16 @@ or LangSmith-style Engine products.
   actor-backed cache implementation. Cached node updates still flow through the
   normal reducer, checkpoint, and stream paths.
 - LangGraph-style command node outputs through
-  `CoreAgentGraphNodeOutput.command(update:goto:)`. Command updates flow through
-  the normal reducer, declared command routes fail closed when undeclared, and
-  command execution emits proof-visible stream events.
+  `CoreAgentGraphNodeOutput.command(update:goto:sends:)`. Command updates flow
+  through the normal reducer, declared command routes fail closed when
+  undeclared, and command execution emits proof-visible stream events.
+- Swift-native LangGraph `Send` fanout through `CoreAgentGraphSend<State>` and
+  `CoreAgentStateGraph.addSendEdges(from:to:_:)`. Sends schedule typed pushed
+  tasks, so the same target node can run multiple times with distinct sent
+  `State` values while all updates merge back through the graph reducer.
+  Command outputs can also carry typed sends. Checkpoints persist authoritative
+  `nextTasks` and task-ID-keyed pending writes while `nextNodeIDs` remains a
+  compatibility projection.
 - Checkpointing by thread and namespace with parent checkpoint lineage,
   checkpoint history, time-travel resume, forked child lineages, and pending
   writes for failed super-steps.
@@ -49,8 +56,10 @@ or LangSmith-style Engine products.
 ## Not Implemented In This Slice
 
 - Deep Agents todo/planning/filesystem/subagent behavior.
-- LangGraph `Send`, parent-graph command routing, first-class executable
-  subgraphs, and deferred nodes.
+- Parent-graph command routing, first-class executable subgraphs, and deferred
+  nodes.
+- Python-style heterogeneous `Any` send payloads and send-specific timeout
+  policy. CoreAgent `Send` is generic over one `State: Sendable` type.
 - LangSmith-style tracing, eval, replay, annotation, dataset, or optimization
   engine.
 - SkillOpt curation, skill optimization, harness optimization, or recursive

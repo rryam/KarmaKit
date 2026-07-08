@@ -58,7 +58,10 @@ public struct CoreAgentGraphRuntimeContext: Sendable {
     await customEventWriter(event)
   }
 
-  func scoped(to nodeID: CoreAgentGraphNodeID) -> Self {
+  func scoped(
+    to nodeID: CoreAgentGraphNodeID,
+    taskID: CoreAgentGraphTaskID? = nil
+  ) -> Self {
     CoreAgentGraphRuntimeContext(
       configuration: configuration,
       runID: runID,
@@ -66,7 +69,7 @@ public struct CoreAgentGraphRuntimeContext: Sendable {
       checkpointNamespace: checkpointNamespace,
       step: step,
       nodeID: nodeID,
-      taskID: taskID,
+      taskID: taskID ?? self.taskID,
       command: command,
       customEventWriter: customEventWriter
     )

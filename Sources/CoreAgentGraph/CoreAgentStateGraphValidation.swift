@@ -63,6 +63,22 @@ extension CoreAgentStateGraph {
     }
   }
 
+  func validateKnownSendEdges() throws {
+    for edge in sendEdges.sorted(by: { $0.source < $1.source }) {
+      guard nodes[edge.source] != nil else {
+        throw CoreAgentGraphCompileError.unknownSendEdgeSource(edge.source)
+      }
+      for target in edge.targets.sorted() {
+        guard nodes[target] != nil else {
+          throw CoreAgentGraphCompileError.unknownSendEdgeTarget(
+            source: edge.source,
+            target: target
+          )
+        }
+      }
+    }
+  }
+
   func validateReachability() throws {
     let regularTargets = Dictionary(grouping: edges, by: \.source)
       .mapValues { $0.map(\.target) }
@@ -82,6 +98,8 @@ extension CoreAgentStateGraph {
           return targets
         }
       }
+    let sendTargets = Dictionary(grouping: sendEdges, by: \.source)
+      .mapValues { edges in edges.flatMap(\.targets) }
 
     var reachable: Set<CoreAgentGraphNodeID> = []
     var frontier = regularTargets[.start, default: []].compactMap {
@@ -99,6 +117,7 @@ extension CoreAgentStateGraph {
         frontier.append(id)
       }
       frontier.append(contentsOf: conditionalTargets[current, default: []])
+      frontier.append(contentsOf: sendTargets[current, default: []])
       for route in commandRoutes where route.source == current {
         for endpoint in route.targets {
           guard case .node(let id) = endpoint else { continue }

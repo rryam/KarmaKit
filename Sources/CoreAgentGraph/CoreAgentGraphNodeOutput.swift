@@ -1,13 +1,16 @@
 public struct CoreAgentGraphNodeCommand<State: Sendable>: Sendable {
   public let update: State?
   public let goto: [CoreAgentGraphEndpoint]
+  public let sends: [CoreAgentGraphSend<State>]
 
   public init(
     update: State? = nil,
-    goto: [CoreAgentGraphEndpoint]
+    goto: [CoreAgentGraphEndpoint] = [],
+    sends: [CoreAgentGraphSend<State>] = []
   ) {
     self.update = update
     self.goto = goto
+    self.sends = sends
   }
 }
 
@@ -19,9 +22,10 @@ public enum CoreAgentGraphNodeOutput<State: Sendable>: Sendable {
 
   public static func command(
     update: State? = nil,
-    goto: [CoreAgentGraphEndpoint]
+    goto: [CoreAgentGraphEndpoint] = [],
+    sends: [CoreAgentGraphSend<State>] = []
   ) -> Self {
-    .command(CoreAgentGraphNodeCommand(update: update, goto: goto))
+    .command(CoreAgentGraphNodeCommand(update: update, goto: goto, sends: sends))
   }
 }
 

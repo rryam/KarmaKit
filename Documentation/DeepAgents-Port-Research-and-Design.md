@@ -757,10 +757,10 @@ the current port foundation.
 
 ### Explicitly Not Implemented Yet
 
-- LangGraph `Send`, parent-graph command routing, first-class executable
-  subgraphs, and deferred node scheduling. `CoreAgentGraph` now has typed
-  `Command(update:goto:)`-style node outputs plus checkpointer-backed
-  `updateState` / `bulkUpdateState`, but not subgraph send/parent semantics.
+- Parent-graph command routing, first-class executable subgraphs, and deferred
+  node scheduling. `CoreAgentGraph` now has typed `Send<State>` fanout,
+  `Command(update:goto:sends:)`-style node outputs, and checkpointer-backed
+  `updateState` / `bulkUpdateState`, but not subgraph or parent semantics.
 - OS-level sandbox interpreter runners and production remote/WASI runtime hosts
   (deterministic in-process, consent-gated helper-process, WASI backend boundary,
   and remote backend boundary exist; CoreAgent still does not launch sandboxes or
