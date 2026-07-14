@@ -9,37 +9,24 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  xcode-27:
-    runs-on: macos-26
-    outputs:
-      available: ${{ steps.detect.outputs.available }}
-    steps:
-      - name: Detect Xcode 27
-        id: detect
-        shell: bash
-        run: |
-          if find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | grep -q .; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::GitHub's macos-26 image does not yet include Xcode 27."
-          fi
+# Self-hosted Xcode 27 / Swift 6.4 runner (jaxs-macbook-air).
+# Fork PRs are blocked from persistent self-hosted infrastructure.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.app/Contents/Developer
 
+jobs:
   core-and-memory:
-    needs: xcode-27
-    if: needs.xcode-27.outputs.available == 'true'
-    runs-on: macos-26
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, xcode27]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode 27
+      - name: Verify Xcode 27
         shell: bash
         run: |
-          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
-          test -n "$XCODE_PATH"
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          test -d "$DEVELOPER_DIR"
           xcodebuild -version
+          swift --version
       - name: Check formatting
         run: xcrun swift-format lint --strict --recursive Package.swift Sources Tests
       - name: Build all test targets
@@ -73,43 +60,38 @@ jobs:
             .test-metrics/
 
   providers:
-    needs: xcode-27
-    if: needs.xcode-27.outputs.available == 'true'
-    runs-on: macos-26
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, xcode27]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode 27
+      - name: Verify Xcode 27
         shell: bash
         run: |
-          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
-          test -n "$XCODE_PATH"
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
       - name: Test every provider trait
         run: swift test --traits AllProviders
 
   talon-channels:
-    needs: xcode-27
-    if: needs.xcode-27.outputs.available == 'true'
-    runs-on: macos-26
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, xcode27]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode 27
+      - name: Verify Xcode 27
         shell: bash
         run: |
-          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
-          test -n "$XCODE_PATH"
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
       - name: Build TalonChannels trait target
         run: swift build --traits TalonChannels --build-tests
       - name: Test TalonChannels trait target
         run: swift test --traits TalonChannels
 
   platform-builds:
-    needs: xcode-27
-    if: needs.xcode-27.outputs.available == 'true'
-    runs-on: macos-26
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, xcode27]
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -119,12 +101,11 @@ jobs:
           - generic/platform=visionOS
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode 27
+      - name: Verify Xcode 27
         shell: bash
         run: |
-          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
-          test -n "$XCODE_PATH"
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
       - name: Build package products
         run: >-
           xcodebuild build
@@ -132,53 +113,38 @@ jobs:
           -destination '${{ matrix.destination }}'
           CODE_SIGNING_ALLOWED=NO
 
-  hosted-runner-notice:
-    needs: xcode-27
-    if: needs.xcode-27.outputs.available != 'true'
-    runs-on: macos-26
-    steps:
-      - name: Report unavailable toolchain
-        run: |
-          echo "### Xcode 27 CI is waiting on the GitHub-hosted runner image." >> "$GITHUB_STEP_SUMMARY"
-          echo "The workflow will enable all build and test jobs automatically when Xcode 27 appears under /Applications." >> "$GITHUB_STEP_SUMMARY"
-
   ci-gate:
     name: CI status
     runs-on: ubuntu-latest
     needs:
-      - xcode-27
       - core-and-memory
       - providers
       - talon-channels
       - platform-builds
-      - hosted-runner-notice
     if: always()
     steps:
       - name: Evaluate CI results
         run: |
-          if [[ "${{ needs.xcode-27.result }}" != "success" ]]; then
-            echo "Xcode detection failed"
+          # Skipped jobs (fork PRs) count as success for the gate.
+          if [[ "${{ needs.core-and-memory.result }}" != "success" && "${{ needs.core-and-memory.result }}" != "skipped" ]]; then
+            echo "core-and-memory failed: ${{ needs.core-and-memory.result }}"
             exit 1
           fi
-          if [[ "${{ needs.xcode-27.outputs.available }}" == "true" ]]; then
-            if [[ "${{ needs.core-and-memory.result }}" != "success" ]]; then exit 1; fi
-            if [[ "${{ needs.talon-channels.result }}" != "success" ]]; then exit 1; fi
-            # ADVISORY (not required) until a matched Xcode 27 + macOS 27 GA runner exists:
-            #  - providers: the pinned foundation-models-utilities rev cannot compile against
-            #    the Xcode 27 beta SDK at ANY available revision (upstream renamed
-            #    SamplingMode cases; the repo has a single commit). Requiring it would turn
-            #    every PR red on a third-party dep the moment hosted runners get Xcode 27.
-            #  - platform-builds (iOS/visionOS xcodebuild): shares the same provider-SDK skew
-            #    surface and cannot be trusted green until the runtime/SDK pair matches.
-            # RE-REQUIRE both (move back to hard `exit 1`) once the dep compiles against the
-            # GA SDK and a matched-GA runner image is available. Tracked in FINDINGS_LOG.
-            if [[ "${{ needs.providers.result }}" != "success" ]]; then
-              echo "::warning::providers job is advisory (not required) pending Xcode 27 GA + a foundation-models-utilities revision that compiles against the GA SDK."
-            fi
-            if [[ "${{ needs.platform-builds.result }}" != "success" ]]; then
-              echo "::warning::platform-builds job is advisory (not required) pending a matched Xcode 27 + macOS 27 GA runner image."
-            fi
-          else
-            if [[ "${{ needs.hosted-runner-notice.result }}" != "success" ]]; then exit 1; fi
+          if [[ "${{ needs.talon-channels.result }}" != "success" && "${{ needs.talon-channels.result }}" != "skipped" ]]; then
+            echo "talon-channels failed: ${{ needs.talon-channels.result }}"
+            exit 1
+          fi
+          # ADVISORY (not required) until Xcode 27 GA + matched deps:
+          #  - providers: pinned foundation-models-utilities may not compile against beta SDK
+          #  - platform-builds: iOS/visionOS share the same SDK skew surface
+          # RE-REQUIRE both (hard exit 1) once the dep compiles against GA SDK.
+          if [[ "${{ needs.providers.result }}" != "success" && "${{ needs.providers.result }}" != "skipped" ]]; then
+            echo "::warning::providers job is advisory (not required) pending Xcode 27 GA + a foundation-models-utilities revision that compiles against the GA SDK."
+          fi
+          if [[ "${{ needs.platform-builds.result }}" != "success" && "${{ needs.platform-builds.result }}" != "skipped" ]]; then
+            echo "::warning::platform-builds job is advisory (not required) pending a matched Xcode 27 + macOS 27 GA toolchain."
+          fi
+          if [[ "${{ needs.core-and-memory.result }}" == "skipped" ]]; then
+            echo "CI jobs skipped (untrusted fork PR); gate passes without self-hosted execution"
           fi
           echo "CI gate passed"

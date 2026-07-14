@@ -9,10 +9,12 @@ concurrency:
   group: readiness-${{ github.ref }}
   cancel-in-progress: true
 
+# Self-hosted Xcode 27 / Swift 6.4 runner. Fork PRs skipped.
 jobs:
   readiness:
     name: Structure and policy checks
-    runs-on: macos-26
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, xcode27]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -62,12 +64,16 @@ jobs:
 
   swiftlint:
     name: SwiftLint
-    runs-on: macos-26
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, xcode27]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install SwiftLint
-        run: brew install swiftlint
+      - name: Ensure SwiftLint
+        run: |
+          if ! command -v swiftlint >/dev/null 2>&1; then
+            brew install swiftlint
+          fi
       - name: Lint and record metrics
         run: |
           set -o pipefail
@@ -104,12 +110,15 @@ jobs:
     steps:
       - name: Require readiness checks
         run: |
-          if [[ "${{ needs.readiness.result }}" != "success" ]]; then
+          if [[ "${{ needs.readiness.result }}" != "success" && "${{ needs.readiness.result }}" != "skipped" ]]; then
             echo "Agent readiness checks failed"
             exit 1
           fi
-          if [[ "${{ needs.swiftlint.result }}" != "success" ]]; then
+          if [[ "${{ needs.swiftlint.result }}" != "success" && "${{ needs.swiftlint.result }}" != "skipped" ]]; then
             echo "SwiftLint failed"
             exit 1
+          fi
+          if [[ "${{ needs.readiness.result }}" == "skipped" ]]; then
+            echo "Readiness jobs skipped (untrusted fork PR); gate passes without self-hosted execution"
           fi
           echo "All agent readiness gates passed"

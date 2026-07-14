@@ -8,10 +8,14 @@ on:
   schedule:
     - cron: '0 6 * * 1'
 
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.app/Contents/Developer
+
 jobs:
   analyze:
     name: Analyze Swift
-    runs-on: macos-26
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, xcode27]
     timeout-minutes: 30
     permissions:
       actions: read
@@ -20,38 +24,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect Xcode 27
-        id: detect
+      - name: Verify Xcode 27
         shell: bash
         run: |
-          if find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | grep -q .; then
-            XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
-            sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-            xcodebuild -version
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            swift --version || true
-            echo "::warning::Skipping Swift CodeQL because GitHub's macos-26 image does not yet include Xcode 27."
-          fi
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          swift --version
 
       - name: Initialize CodeQL
-        if: steps.detect.outputs.available == 'true'
         uses: github/codeql-action/init@v3
         with:
           languages: swift
 
       - name: Autobuild
-        if: steps.detect.outputs.available == 'true'
         uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL analysis
-        if: steps.detect.outputs.available == 'true'
         uses: github/codeql-action/analyze@v3
         with:
           category: /language:swift
-
-      - name: Hosted runner notice
-        if: steps.detect.outputs.available != 'true'
-        run: |
-          echo "Swift CodeQL is skipped until GitHub-hosted macos-26 runners include Xcode 27." >> "$GITHUB_STEP_SUMMARY"
