@@ -311,6 +311,57 @@ struct FoundationModelsAgentTrajectoryTests {
     #expect(!trajectory.issues.map(\.kind).contains(.orphanedToolCall))
   }
 
+  @Test("Keeps conflicting name-only outcomes ambiguous for a single call")
+  func ambiguousSingleNameOnlyToolOutcomeEvidence() {
+    let transcript = Transcript(entries: [
+      .toolCalls(
+        Transcript.ToolCalls(
+          id: "lookup-group",
+          [
+            Transcript.ToolCall(
+              id: "lookup-call",
+              toolName: "lookup",
+              arguments: GeneratedContent(properties: ["query": "swift"])
+            )
+          ]
+        )
+      )
+    ])
+    let runID = UUID(uuidString: "00000000-0000-0000-0000-000000000025")!
+    let run = FoundationModelsAgentRun(
+      id: runID,
+      startedAt: Date(timeIntervalSince1970: 0),
+      endedAt: Date(timeIntervalSince1970: 1),
+      usage: nil,
+      events: [
+        FoundationModelsAgentEvent(
+          runID: runID,
+          kind: .toolExecutionCompleted,
+          message: "Completed",
+          attributes: ["tool": "lookup"]
+        ),
+        FoundationModelsAgentEvent(
+          runID: runID,
+          kind: .toolExecutionFailed,
+          message: "Failed",
+          attributes: ["tool": "lookup"]
+        ),
+      ]
+    )
+
+    let trajectory = FoundationModelsAgentTrajectory(transcript: transcript, run: run)
+
+    #expect(trajectory.toolCalls.first?.toolOutcome == .incomplete)
+    #expect(
+      trajectory.issues.filter { $0.kind == .ambiguousToolOutcome }.map(\.entryID)
+        == ["lookup-call"]
+    )
+    #expect(
+      trajectory.issues.filter { $0.kind == .unresolvedToolCall }.map(\.entryID)
+        == ["lookup-call"]
+    )
+  }
+
   @Test("Surfaces ambiguous outcomes for indistinguishable repeated calls")
   func ambiguousRepeatedToolOutcomeEvidence() {
     let transcript = Transcript(entries: [

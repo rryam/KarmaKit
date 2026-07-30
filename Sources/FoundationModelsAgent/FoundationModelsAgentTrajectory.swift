@@ -845,9 +845,18 @@ extension FoundationModelsAgentTrajectory {
 
         if indices.count == 1 {
           let index = indices[0]
-          if steps[index].toolOutcome == .incomplete, let outcome = outcomes.last {
+          let distinct = Set(outcomes)
+          guard distinct.count == 1, let outcome = outcomes.last else {
+            appendAmbiguousOutcomeIssue(
+              at: index,
+              detail:
+                "Name-only audited evidence contains conflicting outcomes for '\(toolName)'."
+            )
+            continue
+          }
+          if steps[index].toolOutcome == .incomplete {
             replaceToolOutcome(at: index, with: outcome)
-          } else if !unsuccessful.isEmpty {
+          } else if steps[index].toolOutcome != outcome {
             appendAmbiguousOutcomeIssue(
               at: index,
               detail:
