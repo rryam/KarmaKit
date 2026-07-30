@@ -80,22 +80,29 @@ public struct AgentSessionContextMeasurementRequest: Sendable {
   }
 }
 
-/// A model-specific context measurer bound to the exact explicit model type.
-public struct AgentSessionContextMeasurer<Model: LanguageModel>: Sendable {
+/// A context measurer that receives the exact native model selected for the session.
+///
+/// The model is type-erased so the same seam composes with heterogeneous
+/// ``FoundationModelsAgentRouter`` selections. Inspect or cast the model to call
+/// its real token-counting APIs; never substitute route metadata or an
+/// approximate tokenizer.
+public struct AgentSessionContextMeasurer: Sendable {
   private let operation:
-    @Sendable (Model, AgentSessionContextMeasurementRequest) async throws ->
+    @Sendable (any LanguageModel, AgentSessionContextMeasurementRequest) async throws ->
       AgentSessionContextTokenCounts
 
   public init(
     _ operation:
-      @escaping @Sendable (Model, AgentSessionContextMeasurementRequest) async throws ->
+      @escaping @Sendable (
+        any LanguageModel, AgentSessionContextMeasurementRequest
+      ) async throws ->
       AgentSessionContextTokenCounts
   ) {
     self.operation = operation
   }
 
   func measure(
-    model: Model,
+    model: any LanguageModel,
     request: AgentSessionContextMeasurementRequest
   ) async throws -> AgentSessionContextTokenCounts {
     try await operation(model, request)
@@ -209,9 +216,21 @@ public struct AgentSessionContextBudget: Sendable {
       if maximumUsableFraction == 1 {
         contextSize
       } else {
-        max(0, Int((Double(contextSize) * maximumUsableFraction).rounded(.down)))
+        Self.fractionLimit(
+          contextSize: contextSize,
+          maximumUsableFraction: maximumUsableFraction
+        )
       }
     return min(afterHeadroom, fractionLimit, maximumUsableTokens ?? Int.max)
+  }
+
+  private static func fractionLimit(
+    contextSize: Int,
+    maximumUsableFraction: Double
+  ) -> Int {
+    let scaled = (Double(contextSize) * maximumUsableFraction).rounded(.down)
+    guard scaled < Double(Int.max) else { return Int.max }
+    return max(0, Int(scaled))
   }
 
   func validate() throws {
@@ -287,7 +306,7 @@ struct ErasedAgentSessionContextMeasurer: Sendable {
 
   init<Model: LanguageModel>(
     model: Model,
-    custom: AgentSessionContextMeasurer<Model>?
+    custom: AgentSessionContextMeasurer?
   ) {
     if let custom {
       operation = { request in

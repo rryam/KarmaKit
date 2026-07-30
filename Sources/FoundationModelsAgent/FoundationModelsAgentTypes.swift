@@ -8,6 +8,7 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
   case invalidRetryAttemptCount(Int)
   case invalidDuration(name: String)
   case invalidToolCallLimit(Int)
+  case invalidPerToolCallLimit(toolName: String, limit: Int)
   case invalidHistoryLimit(Int)
   case invalidObserverQueueLimit(Int)
   case invalidReservedResponseTokens(Int)
@@ -17,6 +18,7 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
   case duplicatePluginIdentifier(String)
   case emptyPluginIdentifier
   case emptyCheckpointCompatibilityID
+  case invalidRoutingDecision
   case concurrentOperation
   case unsafeRetryConfiguration(String)
   case noActiveRun
@@ -33,6 +35,7 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
   case contextBudgetFixedComponentsExceeded(required: Int, limit: Int)
   case contextBudgetExceeded(required: Int, limit: Int)
   case contextTransformStillExceedsBudget(required: Int, limit: Int)
+  case invalidContextMeasurement(String)
   case invalidContextTransform(String)
 
   public var errorDescription: String? {
@@ -43,6 +46,8 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
       "\(name) must not be negative."
     case .invalidToolCallLimit(let limit):
       "The tool call limit must be zero or greater; received \(limit)."
+    case .invalidPerToolCallLimit(let toolName, let limit):
+      "The call limit for tool '\(toolName)' must be zero or greater; received \(limit)."
     case .invalidHistoryLimit(let limit):
       "The transcript history limit must be zero or greater; received \(limit)."
     case .invalidObserverQueueLimit(let limit):
@@ -61,6 +66,8 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
       "FoundationModelsAgent session plugin identifiers must not be empty."
     case .emptyCheckpointCompatibilityID:
       "The dynamic profile checkpoint compatibility ID must not be empty."
+    case .invalidRoutingDecision:
+      "An AgentSession routing decision must identify one selected candidate."
     case .concurrentOperation:
       "AgentSession already has an operation in flight."
     case .unsafeRetryConfiguration(let reason):
@@ -93,6 +100,8 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
       "The request requires \(required) input tokens, exceeding the usable input limit of \(limit)."
     case .contextTransformStillExceedsBudget(let required, let limit):
       "The transformed request still requires \(required) input tokens, exceeding the usable input limit of \(limit)."
+    case .invalidContextMeasurement(let reason):
+      "Invalid context measurement: \(reason)"
     case .invalidContextTransform(let reason):
       "Invalid context transform: \(reason)"
     }

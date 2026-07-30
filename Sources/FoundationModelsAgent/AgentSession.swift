@@ -18,6 +18,7 @@ public actor AgentSession {
   private let checkpointCompatibilityRevision: String
   private let acceptedCheckpointCompatibilityRevisions: Set<String>
   private let recordsProfileToolLifecycle: Bool
+  private let profileToolGovernanceRuntime: DynamicProfileToolGovernanceRuntime?
   private let sessionMode: AgentSessionMode
   private let plugins: [any AgentSessionPlugin]
   private let toolRuntime: FoundationModelsAgentToolRuntime
@@ -25,6 +26,7 @@ public actor AgentSession {
   private let contextInstructions: Instructions?
   private let contextTools: [any Tool]
   private let contextMeasurer: ErasedAgentSessionContextMeasurer?
+  private let routingDecision: FoundationModelsAgentRouteDecision?
 
   private var nativeSession: LanguageModelSession?
   private var authoritativeTranscript: Transcript?
@@ -33,10 +35,11 @@ public actor AgentSession {
 
   public init<Model: LanguageModel>(
     model: Model,
+    routingDecision: FoundationModelsAgentRouteDecision? = nil,
     tools: [any Tool] = [],
     instructions: Instructions? = nil,
     configuration: FoundationModelsAgentConfiguration = .default,
-    contextMeasurer: AgentSessionContextMeasurer<Model>? = nil,
+    contextMeasurer: AgentSessionContextMeasurer? = nil,
     toolConfiguration: FoundationModelsAgentToolConfiguration = .default,
     checkpointStore: (any FoundationModelsAgentCheckpointStore)? = nil,
     checkpointKey: String = "default",
@@ -49,6 +52,9 @@ public actor AgentSession {
     observers: [any FoundationModelsAgentObserver] = [],
     observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default
   ) throws {
+    if let routingDecision, !routingDecision.hasExecutableSelection {
+      throw FoundationModelsAgentError.invalidRoutingDecision
+    }
     try Self.validate(
       configuration: configuration,
       toolConfiguration: toolConfiguration,
@@ -115,6 +121,7 @@ public actor AgentSession {
       checkpointCompatibilityRevision: revision,
       acceptedCheckpointCompatibilityRevisions: [revision],
       recordsProfileToolLifecycle: false,
+      profileToolGovernanceRuntime: nil,
       sessionMode: .explicitModel,
       plugins: plugins,
       toolRuntime: runtime,
@@ -124,17 +131,63 @@ public actor AgentSession {
       contextMeasurer: ErasedAgentSessionContextMeasurer(
         model: model,
         custom: contextMeasurer
-      )
+      ),
+      routingDecision: routingDecision
+    )
+  }
+
+  /// Creates a session from one atomic native routing selection.
+  ///
+  /// Context preflight measures `selection.model`, the same value materialized
+  /// by the native `LanguageModelSession`. The route descriptor's declared
+  /// context size is audit evidence and is never used as token accounting.
+  public init(
+    selection: FoundationModelsAgentRouteSelection,
+    tools: [any Tool] = [],
+    instructions: Instructions? = nil,
+    configuration: FoundationModelsAgentConfiguration = .default,
+    contextMeasurer: AgentSessionContextMeasurer? = nil,
+    toolConfiguration: FoundationModelsAgentToolConfiguration = .default,
+    checkpointStore: (any FoundationModelsAgentCheckpointStore)? = nil,
+    checkpointKey: String = "default",
+    transcriptRetention: FoundationModelsAgentTranscriptRetention = .complete,
+    requiresMatchingToolset: Bool = true,
+    instructionRestorationPolicy: FoundationModelsAgentInstructionRestorationPolicy =
+      .replaceWithCurrent,
+    plugins: [any AgentSessionPlugin] = [],
+    redactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
+    observers: [any FoundationModelsAgentObserver] = [],
+    observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default
+  ) throws {
+    try self.init(
+      model: selection.model,
+      routingDecision: selection.decision,
+      tools: tools,
+      instructions: instructions,
+      configuration: configuration,
+      contextMeasurer: contextMeasurer,
+      toolConfiguration: toolConfiguration,
+      checkpointStore: checkpointStore,
+      checkpointKey: checkpointKey,
+      transcriptRetention: transcriptRetention,
+      requiresMatchingToolset: requiresMatchingToolset,
+      instructionRestorationPolicy: instructionRestorationPolicy,
+      plugins: plugins,
+      redactionPolicy: redactionPolicy,
+      observers: observers,
+      observerDeliveryConfiguration: observerDeliveryConfiguration
     )
   }
 
   /// Creates a harness around a native Xcode 27 dynamic profile.
   ///
   /// The factory is called again for lazy checkpoint restoration and `reset()`.
-  /// Profile-owned tools remain native and are not wrapped by FoundationModelsAgent policy.
+  /// Profile-owned tools remain native. Supply `toolGovernance` to authorize their native
+  /// pre-execution calls without wrapping their implementations.
   public init<Profile: LanguageModelSession.DynamicProfile>(
     checkpointCompatibilityID: String,
     configuration: FoundationModelsAgentConfiguration = .default,
+    toolGovernance: DynamicProfileToolGovernanceConfiguration? = nil,
     checkpointStore: (any FoundationModelsAgentCheckpointStore)? = nil,
     checkpointKey: String = "default",
     transcriptRetention: FoundationModelsAgentTranscriptRetention = .complete,
@@ -170,10 +223,47 @@ public actor AgentSession {
       deliveryConfiguration: observerDeliveryConfiguration
     )
     let runtime = FoundationModelsAgentToolRuntime(maximumCallsPerRun: nil)
+    let governanceModifier = toolGovernance.map(DynamicProfileToolGovernanceModifier.init)
+    let governanceRuntime = governanceModifier?.runtime
     let revision = Self.makeProfileRevision(checkpointCompatibilityID)
     let previousRevision = Self.makePreviousProfileRevision(checkpointCompatibilityID)
     let makeSession: SessionFactory = { transcript in
       let profile = makeProfile()
+      if let governanceModifier {
+        let governedProfile =
+          profile
+          .modifier(governanceModifier)
+          .onToolCall { call in
+            guard let runID = await runtime.activeRunID() else { return }
+            await recorder.record(
+              runID: runID,
+              kind: .nativeToolCallRecorded,
+              message: "Native dynamic profile emitted an allowed tool call.",
+              attributes: [
+                "native_call_id": call.id,
+                "tool": call.toolName,
+              ]
+            )
+          }
+          .onToolOutput { call, _ in
+            guard let runID = await runtime.activeRunID() else { return }
+            await recorder.record(
+              runID: runID,
+              kind: .nativeToolOutputRecorded,
+              message: "Native dynamic profile emitted tool output.",
+              attributes: [
+                "native_call_id": call.id,
+                "tool": call.toolName,
+              ]
+            )
+          }
+        return LanguageModelSession(
+          profile: governedProfile,
+          history: transcript?.history ?? []
+        )
+      }
+      let observedProfile =
+        profile
         .onToolCall { call in
           guard let runID = await runtime.activeRunID() else { return }
           await recorder.record(
@@ -199,7 +289,7 @@ public actor AgentSession {
           )
         }
       return LanguageModelSession(
-        profile: profile,
+        profile: observedProfile,
         history: transcript?.history ?? []
       )
     }
@@ -213,13 +303,15 @@ public actor AgentSession {
       checkpointCompatibilityRevision: revision,
       acceptedCheckpointCompatibilityRevisions: [revision, previousRevision],
       recordsProfileToolLifecycle: true,
+      profileToolGovernanceRuntime: governanceRuntime,
       sessionMode: .dynamicProfile,
       plugins: plugins,
       toolRuntime: runtime,
       recorder: recorder,
       contextInstructions: nil,
       contextTools: [],
-      contextMeasurer: nil
+      contextMeasurer: nil,
+      routingDecision: nil
     )
   }
 
@@ -233,13 +325,15 @@ public actor AgentSession {
     checkpointCompatibilityRevision: String,
     acceptedCheckpointCompatibilityRevisions: Set<String>,
     recordsProfileToolLifecycle: Bool,
+    profileToolGovernanceRuntime: DynamicProfileToolGovernanceRuntime?,
     sessionMode: AgentSessionMode,
     plugins: [any AgentSessionPlugin],
     toolRuntime: FoundationModelsAgentToolRuntime,
     recorder: FoundationModelsAgentEventRecorder,
     contextInstructions: Instructions?,
     contextTools: [any Tool],
-    contextMeasurer: ErasedAgentSessionContextMeasurer?
+    contextMeasurer: ErasedAgentSessionContextMeasurer?,
+    routingDecision: FoundationModelsAgentRouteDecision?
   ) {
     self.makeSession = makeSession
     self.configuration = configuration
@@ -250,6 +344,7 @@ public actor AgentSession {
     self.checkpointCompatibilityRevision = checkpointCompatibilityRevision
     self.acceptedCheckpointCompatibilityRevisions = acceptedCheckpointCompatibilityRevisions
     self.recordsProfileToolLifecycle = recordsProfileToolLifecycle
+    self.profileToolGovernanceRuntime = profileToolGovernanceRuntime
     self.sessionMode = sessionMode
     self.plugins = plugins
     self.toolRuntime = toolRuntime
@@ -257,6 +352,7 @@ public actor AgentSession {
     self.contextInstructions = contextInstructions
     self.contextTools = contextTools
     self.contextMeasurer = contextMeasurer
+    self.routingDecision = routingDecision
   }
 
   public func prewarm(promptPrefix: Prompt? = nil) async throws {
@@ -588,8 +684,10 @@ public actor AgentSession {
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models run started.")
+    await recordRoutingDecision(runID: runID)
     await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
+    await profileToolGovernanceRuntime?.begin(runID: runID, recorder: recorder)
     var committedTranscript = false
     var startedInference = false
     var pluginContext = PreparedPluginContext.empty
@@ -639,11 +737,11 @@ public actor AgentSession {
         runID: runID,
         kind: .modelResponseCompleted,
         message: "Native model response completed.",
-        attributes: [
+        attributes: runAttributes([
           "input_tokens": String(usage.inputTokens),
           "output_tokens": String(usage.outputTokens),
           "transcript_entries": String(nativeResponse.transcriptEntries.count),
-        ]
+        ])
       )
       try await persistAfterSuccessfulResponse(
         transcript: updatedAuthoritativeTranscript,
@@ -661,8 +759,13 @@ public actor AgentSession {
         )
       )
       await recorder.record(
-        runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
+        runID: runID,
+        kind: .runCompleted,
+        message: "Foundation Models run completed.",
+        attributes: runAttributes()
+      )
       let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
+      await profileToolGovernanceRuntime?.finish(runID: runID)
       await toolRuntime.finish(runID: runID)
       return FoundationModelsAgentResponse(
         content: nativeResponse.content,
@@ -714,9 +817,12 @@ public actor AgentSession {
         runID: runID,
         kind: .runFailed,
         message: String(describing: error),
-        attributes: ["error_type": String(reflecting: Swift.type(of: error))]
+        attributes: runAttributes([
+          "error_type": String(reflecting: Swift.type(of: error))
+        ])
       )
       _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
+      await profileToolGovernanceRuntime?.finish(runID: runID)
       await toolRuntime.finish(runID: runID)
       throw error
     }
@@ -932,7 +1038,7 @@ public actor AgentSession {
 
   private func validateContextCounts(_ counts: AgentSessionContextTokenCounts) throws {
     guard counts.contextSize > 0 else {
-      throw FoundationModelsAgentError.invalidContextTransform(
+      throw FoundationModelsAgentError.invalidContextMeasurement(
         "The measured context size must be greater than zero.")
     }
     let components = [
@@ -943,7 +1049,7 @@ public actor AgentSession {
       counts.transcript,
     ]
     guard components.allSatisfy({ $0 >= 0 }) else {
-      throw FoundationModelsAgentError.invalidContextTransform(
+      throw FoundationModelsAgentError.invalidContextMeasurement(
         "Measured component token counts must not be negative.")
     }
   }
@@ -1157,8 +1263,10 @@ public actor AgentSession {
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models streaming run started.")
+    await recordRoutingDecision(runID: runID)
     await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
+    await profileToolGovernanceRuntime?.begin(runID: runID, recorder: recorder)
 
     var committedTranscript = false
     var startedInference = false
@@ -1210,11 +1318,11 @@ public actor AgentSession {
         runID: runID,
         kind: .modelResponseCompleted,
         message: "Native model stream completed.",
-        attributes: [
+        attributes: runAttributes([
           "input_tokens": String(usage.inputTokens),
           "output_tokens": String(usage.outputTokens),
           "transcript_entries": String(lastSnapshot.transcriptEntries.count),
-        ]
+        ])
       )
       try await persistAfterSuccessfulResponse(
         transcript: updatedAuthoritativeTranscript,
@@ -1232,8 +1340,13 @@ public actor AgentSession {
         )
       )
       await recorder.record(
-        runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
+        runID: runID,
+        kind: .runCompleted,
+        message: "Foundation Models run completed.",
+        attributes: runAttributes()
+      )
       let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
+      await profileToolGovernanceRuntime?.finish(runID: runID)
       await toolRuntime.finish(runID: runID)
       return FoundationModelsAgentResponse(
         content: content,
@@ -1285,9 +1398,12 @@ public actor AgentSession {
         runID: runID,
         kind: .runFailed,
         message: String(describing: error),
-        attributes: ["error_type": String(reflecting: Swift.type(of: error))]
+        attributes: runAttributes([
+          "error_type": String(reflecting: Swift.type(of: error))
+        ])
       )
       _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
+      await profileToolGovernanceRuntime?.finish(runID: runID)
       await toolRuntime.finish(runID: runID)
       throw error
     }
@@ -1745,12 +1861,62 @@ public actor AgentSession {
 
   private func recordProfileAuditBoundary(runID: UUID) async {
     guard recordsProfileToolLifecycle else { return }
+    if profileToolGovernanceRuntime != nil {
+      await recorder.record(
+        runID: runID,
+        kind: .profileToolAuditBestEffort,
+        message:
+          "Dynamic-profile governance runs before opaque tool execution. Supplied inner lifecycle hooks run first and can preempt the outer governance hook; tool-output observation remains best effort."
+      )
+      return
+    }
     await recorder.record(
       runID: runID,
       kind: .profileToolAuditBestEffort,
       message:
         "Dynamic-profile tool observation is best effort; an earlier failing profile lifecycle hook can preempt FoundationModelsAgent observation."
     )
+  }
+
+  private func recordRoutingDecision(runID: UUID) async {
+    guard let routingDecision else { return }
+    for candidateDecision in routingDecision.candidateDecisions {
+      let descriptor = candidateDecision.candidate
+      let attributes = [
+        "route_id": descriptor.id.rawValue,
+        "privacy_class": descriptor.privacyClass.rawValue,
+        "network_class": descriptor.networkClass.rawValue,
+        "accounting_provenance": descriptor.accountingProvenance.auditValue,
+      ]
+      switch candidateDecision.outcome {
+      case .selected:
+        await recorder.record(
+          runID: runID,
+          kind: .routeSelected,
+          message: "Native language model route selected before execution.",
+          attributes: attributes.merging([
+            "fallback": String(routingDecision.selectedFallback)
+          ]) { current, _ in current }
+        )
+      case .rejected(let reasons):
+        await recorder.record(
+          runID: runID,
+          kind: .routeCandidateRejected,
+          message: reasons.map(\.explanation).joined(separator: " "),
+          attributes: attributes.merging([
+            "reason_codes": reasons.map(\.code.rawValue).joined(separator: ",")
+          ]) { current, _ in current }
+        )
+      }
+    }
+  }
+
+  private func runAttributes(_ attributes: [String: String] = [:]) -> [String: String] {
+    guard let descriptor = routingDecision?.selectedDescriptor else { return attributes }
+    return attributes.merging([
+      "route_id": descriptor.id.rawValue,
+      "accounting_provenance": descriptor.accountingProvenance.auditValue,
+    ]) { current, _ in current }
   }
 
   private func finishRun(
@@ -1764,7 +1930,8 @@ public actor AgentSession {
       startedAt: startedAt,
       endedAt: Date(),
       usage: usage,
-      events: events
+      events: events,
+      routingDecision: routingDecision
     )
     mostRecentRun = run
     await recorder.discard(runID: runID)

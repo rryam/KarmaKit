@@ -45,7 +45,10 @@ The Xcode 27 `LanguageModel` protocol itself does not require context
 measurement. Custom conformers therefore supply a model-bound seam:
 
 ```swift
-let measurer = AgentSessionContextMeasurer<MyLanguageModel> { model, request in
+let measurer = AgentSessionContextMeasurer { model, request in
+  guard let model = model as? MyLanguageModel else {
+    throw AppMeasurementError.unexpectedModel
+  }
   let contextSize = try await model.contextSizeForCurrentDeployment()
   return AgentSessionContextTokenCounts(
     contextSize: contextSize,
@@ -70,6 +73,13 @@ The closure receives the exact `selectedModel` value used by
 `LanguageModelSession`. The example method names are provider-specific
 placeholders: use the selected model's real token-counting API. Do not estimate
 tokens from characters or introduce a second tokenizer.
+
+When using ``FoundationModelsAgentRouter``, pass its complete selection to
+``AgentSession/init(selection:tools:instructions:configuration:contextMeasurer:toolConfiguration:checkpointStore:checkpointKey:transcriptRetention:requiresMatchingToolset:instructionRestorationPolicy:plugins:redactionPolicy:observers:observerDeliveryConfiguration:)``.
+The measurer receives that selection's actual native model. The route
+descriptor's declared context size is decision evidence only; it is never used
+as token accounting. An unsupported selected route fails before inference and
+does not silently advance to another fallback.
 
 `PrivateCloudComputeLanguageModel` exposes a context size in Xcode 27 but no
 matching public token-count overloads. It cannot use automatic preflight until

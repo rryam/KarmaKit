@@ -88,7 +88,7 @@ private func fixedMeasurer(
   prompt: Int = 1,
   schema: Int = 0,
   transcript: Int = 0
-) -> AgentSessionContextMeasurer<RecordedLanguageModel> {
+) -> AgentSessionContextMeasurer {
   AgentSessionContextMeasurer { _, _ in
     AgentSessionContextTokenCounts(
       contextSize: contextSize,
@@ -251,7 +251,7 @@ struct AgentSessionContextBudgetTests {
 
   @Test("Includes native tools and an applicable schema")
   func toolAndSchemaCost() async throws {
-    let measurer = AgentSessionContextMeasurer<RecordedLanguageModel> { _, request in
+    let measurer = AgentSessionContextMeasurer { _, request in
       AgentSessionContextTokenCounts(
         contextSize: 20,
         instructions: request.instructions == nil ? 0 : 2,
@@ -297,7 +297,7 @@ struct AgentSessionContextBudgetTests {
         authoritativeTranscriptPolicy: .preserve
       )
     }
-    let measurer = AgentSessionContextMeasurer<RecordedLanguageModel> { _, request in
+    let measurer = AgentSessionContextMeasurer { _, request in
       AgentSessionContextTokenCounts(
         contextSize: 6,
         instructions: 0,
@@ -356,7 +356,7 @@ struct AgentSessionContextBudgetTests {
         authoritativeTranscriptPolicy: .replace
       )
     }
-    let measurer = AgentSessionContextMeasurer<RecordedLanguageModel> { _, request in
+    let measurer = AgentSessionContextMeasurer { _, request in
       AgentSessionContextTokenCounts(
         contextSize: 6,
         instructions: 0,
@@ -405,7 +405,7 @@ struct AgentSessionContextBudgetTests {
         provenance: "test rematerialization"
       )
     }
-    let measurer = AgentSessionContextMeasurer<RecordedLanguageModel> { _, request in
+    let measurer = AgentSessionContextMeasurer { _, request in
       probe.record(request)
       return AgentSessionContextTokenCounts(
         contextSize: 6,
@@ -455,7 +455,7 @@ struct AgentSessionContextBudgetTests {
         provenance: "deliberate no-op"
       )
     }
-    let measurer = AgentSessionContextMeasurer<RecordedLanguageModel> { _, request in
+    let measurer = AgentSessionContextMeasurer { _, request in
       AgentSessionContextTokenCounts(
         contextSize: 4,
         instructions: 0,
@@ -512,7 +512,7 @@ struct AgentSessionContextBudgetTests {
         provenance: "invalid test transform"
       )
     }
-    let measurer = AgentSessionContextMeasurer<RecordedLanguageModel> { _, request in
+    let measurer = AgentSessionContextMeasurer { _, request in
       AgentSessionContextTokenCounts(
         contextSize: 3,
         instructions: 0,
@@ -565,7 +565,7 @@ struct AgentSessionContextBudgetTests {
   func measurementCancellation() async throws {
     let gate = MeasurementGate()
     let model = RecordedLanguageModel(steps: [.response(text: "unused")])
-    let measurer = AgentSessionContextMeasurer<RecordedLanguageModel> { _, _ in
+    let measurer = AgentSessionContextMeasurer { _, _ in
       await gate.markStarted()
       try await Task.sleep(for: .seconds(30))
       return AgentSessionContextTokenCounts(
