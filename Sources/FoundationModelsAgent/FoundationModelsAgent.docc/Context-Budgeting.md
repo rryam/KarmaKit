@@ -101,9 +101,10 @@ let budget = AgentSessionContextBudget(
 FoundationModelsAgent checks cancellation, validates the affected range and
 provenance, requires the range to cover every rewrite while preserving
 instruction entries, rejects orphaned or incomplete tool exchanges, remeasures
-every component, and installs the rewrite only when it fits. A changed
-transcript creates a new native session and invalidates the model's prompt
-cache.
+every component from the candidate native session after current instructions
+and tools are rematerialized, and installs the rewrite only when it fits. A
+changed transcript creates a new native session and invalidates the model's
+prompt cache.
 
 With `.preserve`, `transcript()` and checkpoints retain the complete
 authoritative history while the active native session uses the compacted

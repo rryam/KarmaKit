@@ -49,6 +49,30 @@ private final class TransformProbe: @unchecked Sendable {
   }
 }
 
+private final class MeasurementTranscriptProbe: @unchecked Sendable {
+  struct Snapshot {
+    let instructionEntryIDs: [String]
+    let historyEntryIDs: [String]
+  }
+
+  private let lock = NSLock()
+  private var value: [Snapshot] = []
+
+  func record(_ request: AgentSessionContextMeasurementRequest) {
+    lock.withLock {
+      value.append(
+        Snapshot(
+          instructionEntryIDs: request.instructionEntries.map(\.id),
+          historyEntryIDs: request.transcriptEntries.map(\.id)
+        ))
+    }
+  }
+
+  var snapshots: [Snapshot] {
+    lock.withLock { value }
+  }
+}
+
 private actor MeasurementGate {
   private(set) var started = false
 
@@ -366,6 +390,60 @@ struct AgentSessionContextBudgetTests {
     let event = try #require(
       second.run.events.first { $0.kind == .contextBudgetTransformed })
     #expect(event.attributes["authoritative_transcript_policy"] == "replace")
+  }
+
+  @Test("Remeasures the transcript rematerialized for inference")
+  func remeasuresRematerializedTranscript() async throws {
+    let probe = MeasurementTranscriptProbe()
+    let transform = AgentSessionContextTransform(identifier: "rematerialize") { request in
+      var transcript = request.transcript
+      let affected = 0..<transcript.history.count
+      transcript.history = []
+      return AgentSessionContextTransformResult(
+        transcript: transcript,
+        affectedHistoryRange: affected,
+        provenance: "test rematerialization"
+      )
+    }
+    let measurer = AgentSessionContextMeasurer<RecordedLanguageModel> { _, request in
+      probe.record(request)
+      return AgentSessionContextTokenCounts(
+        contextSize: 6,
+        instructions: 0,
+        tools: 0,
+        prompt: 1,
+        schema: 0,
+        transcript: request.transcriptEntries.count * 3
+      )
+    }
+    let model = RecordedLanguageModel(steps: [
+      .response(text: "one"),
+      .response(text: "two"),
+    ])
+    let session = try AgentSession(
+      model: model,
+      instructions: Instructions("Current instructions."),
+      configuration: .init(
+        contextBudget: .init(
+          reservedResponseTokens: 0,
+          overflowPolicy: .transform(transform)
+        )
+      ),
+      contextMeasurer: measurer
+    )
+
+    _ = try await session.respond(to: "First")
+    _ = try await session.respond(to: "Second")
+
+    let snapshots = probe.snapshots
+    #expect(snapshots.count == 3)
+    #expect(snapshots[2].historyEntryIDs.isEmpty)
+    let requests = model.recorder.capturedTranscripts()
+    let inferredInstructionIDs = requests[1].compactMap { entry -> String? in
+      if case .instructions = entry { return entry.id }
+      return nil
+    }
+    #expect(snapshots[2].instructionEntryIDs == inferredInstructionIDs)
   }
 
   @Test("A transform that still overflows records post-transform counts")

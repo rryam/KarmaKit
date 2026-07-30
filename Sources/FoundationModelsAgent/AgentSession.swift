@@ -818,9 +818,20 @@ public actor AgentSession {
         failureAttributes["authoritative_transcript_policy"] =
           result.authoritativeTranscriptPolicy.rawValue
         try validateCompleteHistory(result.transcript.history)
+        let invalidatesCache = result.transcript != activeTranscript
+        let rewrittenSession: LanguageModelSession
+        if invalidatesCache {
+          let replacement = makeSession(result.transcript)
+          replacement.transcriptErrorHandlingPolicy =
+            configuration.transcriptErrorHandlingPolicy.nativeValue
+          rewrittenSession = replacement
+        } else {
+          rewrittenSession = session
+        }
+        let rewrittenTranscript = rewrittenSession.transcript
         let after = try await contextMeasurer.measure(
           contextMeasurementRequest(
-            transcript: result.transcript,
+            transcript: rewrittenTranscript,
             prompt: prompt,
             schema: schema
           )
@@ -843,18 +854,9 @@ public actor AgentSession {
           )
         }
 
-        let invalidatesCache = result.transcript != activeTranscript
-        let rewrittenSession: LanguageModelSession
         if invalidatesCache {
-          let replacement = makeSession(result.transcript)
-          replacement.transcriptErrorHandlingPolicy =
-            configuration.transcriptErrorHandlingPolicy.nativeValue
-          nativeSession = replacement
-          rewrittenSession = replacement
-        } else {
-          rewrittenSession = session
+          nativeSession = rewrittenSession
         }
-        let rewrittenTranscript = rewrittenSession.transcript
         let authoritativeAfterTransform: Transcript
         switch result.authoritativeTranscriptPolicy {
         case .preserve:
