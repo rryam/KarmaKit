@@ -443,6 +443,23 @@ public actor AgentSession {
     }
   }
 
+  func respondForChild(
+    to prompt: String,
+    lineage: AgentRunLineage,
+    maximumToolCalls: Int?
+  ) async throws -> FoundationModelsAgentResponse<String> {
+    try await performResponse(
+      prompt: Prompt(prompt),
+      schema: nil,
+      contextQuery: prompt,
+      metadata: [:],
+      lineage: lineage,
+      maximumToolCallsPerRun: maximumToolCalls
+    ) {
+      try await $0.respond(to: $1)
+    }
+  }
+
   @discardableResult
   public func respond(
     to prompt: String,
@@ -734,6 +751,7 @@ public actor AgentSession {
     contextQuery: String?,
     metadata: FoundationModelsAgentRequestMetadata,
     lineage suppliedLineage: AgentRunLineage?,
+    maximumToolCallsPerRun: Int? = nil,
     _ operation:
       @escaping @Sendable (LanguageModelSession, Prompt) async throws ->
       LanguageModelSession.Response<Content>
@@ -747,7 +765,10 @@ public actor AgentSession {
     await recordPendingCheckpointRestore(runID: runID)
     await recordRoutingDecision(runID: runID)
     await recordProfileAuditBoundary(runID: runID)
-    await toolRuntime.begin(runID: runID)
+    await toolRuntime.begin(
+      runID: runID,
+      maximumCallsPerRun: maximumToolCallsPerRun
+    )
     await profileToolGovernanceRuntime?.begin(runID: runID, recorder: recorder)
     let initialSession: LanguageModelSession
     do {
@@ -768,6 +789,13 @@ public actor AgentSession {
     var committedTranscript = false
     var startedInference = false
     var pluginContext = PreparedPluginContext.empty
+    let inheritedMaximumDepth =
+      AgentSessionExecutionContext.current?.maximumChildDepth ?? .max
+    let executionContext = AgentSessionExecutionContextValue(
+      lineage: lineage,
+      childBudget: ChildAgentInvocationBudget(),
+      maximumChildDepth: inheritedMaximumDepth
+    )
 
     do {
       pluginContext = try await preparePlugins(
@@ -784,11 +812,15 @@ public actor AgentSession {
         runID: runID
       )
       startedInference = true
-      let nativeResponse = try await responseWithRetry(
-        session: runContext.session,
-        runID: runID,
-        operation: { try await operation($0, preparedPrompt) }
-      )
+      let nativeResponse = try await AgentSessionExecutionContext.$current.withValue(
+        executionContext
+      ) {
+        try await responseWithRetry(
+          session: runContext.session,
+          runID: runID,
+          operation: { try await operation($0, preparedPrompt) }
+        )
+      }
       let usage = FoundationModelsAgentUsage(nativeResponse.usage)
       let sanitizedTranscript = try await sanitizeCompletedTranscript(
         runContext.session.transcript,
@@ -1364,6 +1396,11 @@ public actor AgentSession {
     var committedTranscript = false
     var startedInference = false
     var pluginContext = PreparedPluginContext.empty
+    let executionContext = AgentSessionExecutionContextValue(
+      lineage: lineage,
+      childBudget: ChildAgentInvocationBudget(),
+      maximumChildDepth: AgentSessionExecutionContext.current?.maximumChildDepth ?? .max
+    )
     do {
       pluginContext = try await preparePlugins(
         runID: runID,
@@ -1379,12 +1416,16 @@ public actor AgentSession {
         runID: runID
       )
       startedInference = true
-      let lastSnapshot = try await streamWithRetry(
-        session: runContext.session,
-        runID: runID,
-        makeStream: { makeStream($0, preparedPrompt) },
-        onPartialResponse: onPartialResponse
-      )
+      let lastSnapshot = try await AgentSessionExecutionContext.$current.withValue(
+        executionContext
+      ) {
+        try await streamWithRetry(
+          session: runContext.session,
+          runID: runID,
+          makeStream: { makeStream($0, preparedPrompt) },
+          onPartialResponse: onPartialResponse
+        )
+      }
       let content = try Content(lastSnapshot.rawContent)
       let usage = FoundationModelsAgentUsage(lastSnapshot.usage)
       let sanitizedTranscript = try await sanitizeCompletedTranscript(

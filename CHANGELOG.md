@@ -30,6 +30,12 @@
   registries, fail-closed unknown and changed-tool handling, canonical native
   arguments, async approval, total and per-tool call budgets, and audited
   pre-execution outcomes carrying native tool-call IDs.
+- Added `ChildAgentTool` and `ChildAgentDefinition` for bounded, foreground
+  phone-a-friend consultations using fresh native `AgentSession` instances,
+  canonical child lineage and task evidence, explicit policy narrowing,
+  correlated instrumentation, cancellation propagation, and child, depth,
+  turn, tool-call, timeout, and output limits. Child factories retain explicit
+  ownership of routing, context, governance, checkpoint, and memory scope.
 
 ## 0.4.0 - 2026-07-30
 
