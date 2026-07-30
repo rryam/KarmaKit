@@ -282,9 +282,12 @@ public actor AgentSession {
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(),
     metadata: FoundationModelsAgentRequestMetadata = [:],
-    contextQuery: String? = nil
+    contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil
   ) async throws -> FoundationModelsAgentResponse<String> {
-    try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
+    try await performResponse(
+      prompt: prompt, contextQuery: contextQuery, metadata: metadata, lineage: lineage
+    ) {
       try await $0.respond(
         to: $1,
         options: options,
@@ -300,14 +303,16 @@ public actor AgentSession {
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(),
     metadata: FoundationModelsAgentRequestMetadata = [:],
-    contextQuery: String? = nil
+    contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil
   ) async throws -> FoundationModelsAgentResponse<String> {
     try await respond(
       to: Prompt(prompt),
       options: options,
       contextOptions: contextOptions,
       metadata: metadata,
-      contextQuery: contextQuery ?? prompt
+      contextQuery: contextQuery ?? prompt,
+      lineage: lineage
     )
   }
 
@@ -318,9 +323,12 @@ public actor AgentSession {
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
     metadata: FoundationModelsAgentRequestMetadata = [:],
-    contextQuery: String? = nil
+    contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil
   ) async throws -> FoundationModelsAgentResponse<Content> {
-    try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
+    try await performResponse(
+      prompt: prompt, contextQuery: contextQuery, metadata: metadata, lineage: lineage
+    ) {
       try await $0.respond(
         to: $1,
         generating: type,
@@ -338,7 +346,8 @@ public actor AgentSession {
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
     metadata: FoundationModelsAgentRequestMetadata = [:],
-    contextQuery: String? = nil
+    contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil
   ) async throws -> FoundationModelsAgentResponse<Content> {
     try await respond(
       to: Prompt(prompt),
@@ -346,7 +355,8 @@ public actor AgentSession {
       options: options,
       contextOptions: contextOptions,
       metadata: metadata,
-      contextQuery: contextQuery ?? prompt
+      contextQuery: contextQuery ?? prompt,
+      lineage: lineage
     )
   }
 
@@ -357,9 +367,12 @@ public actor AgentSession {
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
     metadata: FoundationModelsAgentRequestMetadata = [:],
-    contextQuery: String? = nil
+    contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil
   ) async throws -> FoundationModelsAgentResponse<GeneratedContent> {
-    try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
+    try await performResponse(
+      prompt: prompt, contextQuery: contextQuery, metadata: metadata, lineage: lineage
+    ) {
       try await $0.respond(
         to: $1,
         schema: schema,
@@ -377,7 +390,8 @@ public actor AgentSession {
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
     metadata: FoundationModelsAgentRequestMetadata = [:],
-    contextQuery: String? = nil
+    contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil
   ) async throws -> FoundationModelsAgentResponse<GeneratedContent> {
     try await respond(
       to: Prompt(prompt),
@@ -385,7 +399,8 @@ public actor AgentSession {
       options: options,
       contextOptions: contextOptions,
       metadata: metadata,
-      contextQuery: contextQuery ?? prompt
+      contextQuery: contextQuery ?? prompt,
+      lineage: lineage
     )
   }
 
@@ -396,12 +411,14 @@ public actor AgentSession {
     contextOptions: ContextOptions = ContextOptions(),
     metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil,
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> FoundationModelsAgentResponse<String> {
     try await performStream(
       prompt: prompt,
       contextQuery: contextQuery,
-      metadata: metadata
+      metadata: metadata,
+      lineage: lineage
     ) { session, preparedPrompt in
       session.streamResponse(
         to: preparedPrompt,
@@ -421,6 +438,7 @@ public actor AgentSession {
     contextOptions: ContextOptions = ContextOptions(),
     metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil,
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> FoundationModelsAgentResponse<String> {
     try await respondStreaming(
@@ -429,6 +447,7 @@ public actor AgentSession {
       contextOptions: contextOptions,
       metadata: metadata,
       contextQuery: contextQuery ?? prompt,
+      lineage: lineage,
       onPartialResponse: onPartialResponse
     )
   }
@@ -441,13 +460,15 @@ public actor AgentSession {
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
     metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil,
     onPartialResponse: @escaping @Sendable (Content.PartiallyGenerated) async -> Void
   ) async throws -> FoundationModelsAgentResponse<Content>
   where Content.PartiallyGenerated: Sendable {
     try await performStream(
       prompt: prompt,
       contextQuery: contextQuery,
-      metadata: metadata
+      metadata: metadata,
+      lineage: lineage
     ) { session, preparedPrompt in
       session.streamResponse(
         to: preparedPrompt,
@@ -469,6 +490,7 @@ public actor AgentSession {
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
     metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil,
+    lineage: AgentRunLineage? = nil,
     onPartialResponse: @escaping @Sendable (Content.PartiallyGenerated) async -> Void
   ) async throws -> FoundationModelsAgentResponse<Content>
   where Content.PartiallyGenerated: Sendable {
@@ -479,6 +501,7 @@ public actor AgentSession {
       contextOptions: contextOptions,
       metadata: metadata,
       contextQuery: contextQuery ?? prompt,
+      lineage: lineage,
       onPartialResponse: onPartialResponse
     )
   }
@@ -517,6 +540,7 @@ public actor AgentSession {
     prompt: Prompt,
     contextQuery: String?,
     metadata: FoundationModelsAgentRequestMetadata,
+    lineage suppliedLineage: AgentRunLineage?,
     _ operation:
       @escaping @Sendable (LanguageModelSession, Prompt) async throws ->
       LanguageModelSession.Response<Content>
@@ -525,9 +549,10 @@ public actor AgentSession {
     defer { releaseSessionLease() }
     let session = try await resolveSession()
     let transcriptBeforeRun = session.transcript
-    let runID = UUID()
+    let lineage = suppliedLineage ?? .root()
+    let runID = lineage.runID.rawValue
     let startedAt = Date()
-    await recorder.begin(runID: runID, message: "Foundation Models run started.")
+    await recorder.begin(lineage: lineage, message: "Foundation Models run started.")
     await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
     var completedModelResponse = false
@@ -586,7 +611,8 @@ public actor AgentSession {
       )
       await recorder.record(
         runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
-      let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
+      let run = await finishRun(
+        runID: runID, startedAt: startedAt, usage: usage, lineage: lineage)
       await toolRuntime.finish(runID: runID)
       return FoundationModelsAgentResponse(
         content: nativeResponse.content,
@@ -625,7 +651,8 @@ public actor AgentSession {
         message: String(describing: error),
         attributes: ["error_type": String(reflecting: Swift.type(of: error))]
       )
-      _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
+      _ = await finishRun(
+        runID: runID, startedAt: startedAt, usage: nil, lineage: lineage)
       await toolRuntime.finish(runID: runID)
       throw error
     }
@@ -689,6 +716,7 @@ public actor AgentSession {
     prompt: Prompt,
     contextQuery: String?,
     metadata: FoundationModelsAgentRequestMetadata,
+    lineage suppliedLineage: AgentRunLineage?,
     _ makeStream:
       @escaping @Sendable (LanguageModelSession, Prompt) ->
       LanguageModelSession.ResponseStream<Content>,
@@ -700,9 +728,10 @@ public actor AgentSession {
     defer { releaseSessionLease() }
     let session = try await resolveSession()
     let transcriptBeforeRun = session.transcript
-    let runID = UUID()
+    let lineage = suppliedLineage ?? .root()
+    let runID = lineage.runID.rawValue
     let startedAt = Date()
-    await recorder.begin(runID: runID, message: "Foundation Models streaming run started.")
+    await recorder.begin(lineage: lineage, message: "Foundation Models streaming run started.")
     await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
 
@@ -763,7 +792,8 @@ public actor AgentSession {
       )
       await recorder.record(
         runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
-      let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
+      let run = await finishRun(
+        runID: runID, startedAt: startedAt, usage: usage, lineage: lineage)
       await toolRuntime.finish(runID: runID)
       return FoundationModelsAgentResponse(
         content: content,
@@ -802,7 +832,8 @@ public actor AgentSession {
         message: String(describing: error),
         attributes: ["error_type": String(reflecting: Swift.type(of: error))]
       )
-      _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
+      _ = await finishRun(
+        runID: runID, startedAt: startedAt, usage: nil, lineage: lineage)
       await toolRuntime.finish(runID: runID)
       throw error
     }
@@ -1271,7 +1302,8 @@ public actor AgentSession {
   private func finishRun(
     runID: UUID,
     startedAt: Date,
-    usage: FoundationModelsAgentUsage?
+    usage: FoundationModelsAgentUsage?,
+    lineage: AgentRunLineage
   ) async -> FoundationModelsAgentRun {
     let events = await recorder.events(for: runID)
     let run = FoundationModelsAgentRun(
@@ -1279,7 +1311,8 @@ public actor AgentSession {
       startedAt: startedAt,
       endedAt: Date(),
       usage: usage,
-      events: events
+      events: events,
+      lineage: lineage
     )
     mostRecentRun = run
     await recorder.discard(runID: runID)

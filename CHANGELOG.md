@@ -5,6 +5,9 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added stable hierarchical run/task identifiers, parent-child lineage on runs,
+  observer events and tamper-evident receipts, structured terminal
+  `AgentTaskResult` evidence, and receipt-bundle graph verification.
 
 ## 0.4.0 - 2026-07-30
 
