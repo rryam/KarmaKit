@@ -42,7 +42,8 @@ public actor AgentSession {
     plugins: [any AgentSessionPlugin] = [],
     redactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
     observers: [any FoundationModelsAgentObserver] = [],
-    observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default
+    observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default,
+    instrumentation: AgentSessionInstrumentationConfiguration = .disabled
   ) throws {
     try Self.validate(
       configuration: configuration,
@@ -55,7 +56,8 @@ public actor AgentSession {
     let recorder = FoundationModelsAgentEventRecorder(
       observers: observers,
       redactionPolicy: redactionPolicy,
-      deliveryConfiguration: observerDeliveryConfiguration
+      deliveryConfiguration: observerDeliveryConfiguration,
+      instrumentationConfiguration: instrumentation
     )
     let runtime = FoundationModelsAgentToolRuntime(
       maximumCallsPerRun: toolConfiguration.maximumCallsPerRun)
@@ -125,6 +127,7 @@ public actor AgentSession {
     redactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
     observers: [any FoundationModelsAgentObserver] = [],
     observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default,
+    instrumentation: AgentSessionInstrumentationConfiguration = .disabled,
     profile makeProfile: @escaping @Sendable () -> sending Profile
   ) throws {
     try Self.validate(
@@ -147,7 +150,8 @@ public actor AgentSession {
     let recorder = FoundationModelsAgentEventRecorder(
       observers: observers,
       redactionPolicy: redactionPolicy,
-      deliveryConfiguration: observerDeliveryConfiguration
+      deliveryConfiguration: observerDeliveryConfiguration,
+      instrumentationConfiguration: instrumentation
     )
     let runtime = FoundationModelsAgentToolRuntime(maximumCallsPerRun: nil)
     let revision = Self.makeProfileRevision(checkpointCompatibilityID)
@@ -162,6 +166,7 @@ public actor AgentSession {
             message: "Native dynamic profile emitted a tool call.",
             attributes: [
               "native_call_id": call.id,
+              "profile_owned": "true",
               "tool": call.toolName,
             ]
           )
@@ -174,6 +179,7 @@ public actor AgentSession {
             message: "Native dynamic profile emitted tool output.",
             attributes: [
               "native_call_id": call.id,
+              "profile_owned": "true",
               "tool": call.toolName,
             ]
           )
@@ -483,34 +489,64 @@ public actor AgentSession {
     )
   }
 
-  private func resolveSession() async throws -> LanguageModelSession {
+  private func resolveSession(runID: UUID? = nil) async throws -> LanguageModelSession {
     if let nativeSession {
       return nativeSession
     }
 
-    let checkpoint = try await checkpointStore?.loadCheckpoint(for: checkpointKey)
-    let transcript: Transcript?
-    if let checkpoint {
-      guard checkpoint.formatVersion == FoundationModelsAgentCheckpoint.currentFormatVersion else {
-        throw FoundationModelsAgentError.unsupportedCheckpointVersion(checkpoint.formatVersion)
-      }
-      if requiresMatchingCheckpointConfiguration,
-        !acceptedCheckpointCompatibilityRevisions.contains(checkpoint.compatibilityRevision)
-      {
-        throw FoundationModelsAgentError.checkpointCompatibilityMismatch(
-          expected: checkpointCompatibilityRevision,
-          actual: checkpoint.compatibilityRevision
-        )
-      }
-      transcript = checkpoint.transcript
-    } else {
-      transcript = nil
+    if let runID, checkpointStore != nil {
+      await recorder.record(
+        runID: runID,
+        kind: .checkpointRestoreStarted,
+        message: "Native transcript checkpoint restore started."
+      )
     }
 
-    let session = makeSession(transcript)
-    session.transcriptErrorHandlingPolicy = configuration.transcriptErrorHandlingPolicy.nativeValue
-    nativeSession = session
-    return session
+    do {
+      let checkpoint = try await checkpointStore?.loadCheckpoint(for: checkpointKey)
+      let transcript: Transcript?
+      if let checkpoint {
+        guard checkpoint.formatVersion == FoundationModelsAgentCheckpoint.currentFormatVersion
+        else {
+          throw FoundationModelsAgentError.unsupportedCheckpointVersion(checkpoint.formatVersion)
+        }
+        if requiresMatchingCheckpointConfiguration,
+          !acceptedCheckpointCompatibilityRevisions.contains(checkpoint.compatibilityRevision)
+        {
+          throw FoundationModelsAgentError.checkpointCompatibilityMismatch(
+            expected: checkpointCompatibilityRevision,
+            actual: checkpoint.compatibilityRevision
+          )
+        }
+        transcript = checkpoint.transcript
+      } else {
+        transcript = nil
+      }
+
+      let session = makeSession(transcript)
+      session.transcriptErrorHandlingPolicy =
+        configuration.transcriptErrorHandlingPolicy.nativeValue
+      nativeSession = session
+      if let runID, checkpointStore != nil {
+        await recorder.record(
+          runID: runID,
+          kind: .checkpointRestoreCompleted,
+          message: "Native transcript checkpoint restore completed.",
+          attributes: ["checkpoint_found": String(checkpoint != nil)]
+        )
+      }
+      return session
+    } catch {
+      if let runID, checkpointStore != nil {
+        await recorder.record(
+          runID: runID,
+          kind: .checkpointRestoreFailed,
+          message: String(describing: error),
+          attributes: ["error_type": String(reflecting: Swift.type(of: error))]
+        )
+      }
+      throw error
+    }
   }
 
   private func performResponse<Content: Generable & Sendable>(
@@ -523,13 +559,21 @@ public actor AgentSession {
   ) async throws -> FoundationModelsAgentResponse<Content> {
     try acquireSessionLease()
     defer { releaseSessionLease() }
-    let session = try await resolveSession()
-    let transcriptBeforeRun = session.transcript
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models run started.")
-    await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
+    let session: LanguageModelSession
+    do {
+      session = try await resolveSession(runID: runID)
+    } catch {
+      await recordRunFailure(error, runID: runID)
+      _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
+      await toolRuntime.finish(runID: runID)
+      throw error
+    }
+    let transcriptBeforeRun = session.transcript
+    await recordProfileAuditBoundary(runID: runID)
     var completedModelResponse = false
     var pluginContext = PreparedPluginContext.empty
 
@@ -619,12 +663,7 @@ public actor AgentSession {
           mode: sessionMode
         )
       )
-      await recorder.record(
-        runID: runID,
-        kind: .runFailed,
-        message: String(describing: error),
-        attributes: ["error_type": String(reflecting: Swift.type(of: error))]
-      )
+      await recordRunFailure(error, runID: runID)
       _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
       await toolRuntime.finish(runID: runID)
       throw error
@@ -665,6 +704,7 @@ public actor AgentSession {
           message: String(describing: error),
           attributes: [
             "attempt": String(attempt),
+            "cancelled": String(Task.isCancelled || error is CancellationError),
             "error_type": String(reflecting: Swift.type(of: error)),
           ]
         )
@@ -677,6 +717,12 @@ public actor AgentSession {
         else {
           throw error
         }
+        await recorder.record(
+          runID: runID,
+          kind: .modelRetryScheduled,
+          message: "Native model retry scheduled.",
+          attributes: ["next_attempt": String(attempt + 1)]
+        )
         if retryPolicy.delay > .zero {
           try await Task.sleep(for: retryPolicy.delay)
         }
@@ -698,13 +744,21 @@ public actor AgentSession {
   where Content.PartiallyGenerated: Sendable {
     try acquireSessionLease()
     defer { releaseSessionLease() }
-    let session = try await resolveSession()
-    let transcriptBeforeRun = session.transcript
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models streaming run started.")
-    await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
+    let session: LanguageModelSession
+    do {
+      session = try await resolveSession(runID: runID)
+    } catch {
+      await recordRunFailure(error, runID: runID)
+      _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
+      await toolRuntime.finish(runID: runID)
+      throw error
+    }
+    let transcriptBeforeRun = session.transcript
+    await recordProfileAuditBoundary(runID: runID)
 
     var completedModelResponse = false
     var pluginContext = PreparedPluginContext.empty
@@ -796,12 +850,7 @@ public actor AgentSession {
           mode: sessionMode
         )
       )
-      await recorder.record(
-        runID: runID,
-        kind: .runFailed,
-        message: String(describing: error),
-        attributes: ["error_type": String(reflecting: Swift.type(of: error))]
-      )
+      await recordRunFailure(error, runID: runID)
       _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
       await toolRuntime.finish(runID: runID)
       throw error
@@ -859,6 +908,7 @@ public actor AgentSession {
           message: String(describing: error),
           attributes: [
             "attempt": String(attempt),
+            "cancelled": String(Task.isCancelled || error is CancellationError),
             "emitted_partial_response": String(emittedSnapshot),
             "error_type": String(reflecting: Swift.type(of: error)),
           ]
@@ -872,6 +922,12 @@ public actor AgentSession {
         else {
           throw error
         }
+        await recorder.record(
+          runID: runID,
+          kind: .modelRetryScheduled,
+          message: "Native model stream retry scheduled.",
+          attributes: ["next_attempt": String(attempt + 1)]
+        )
         if retryPolicy.delay > .zero {
           try await Task.sleep(for: retryPolicy.delay)
         }
@@ -1171,6 +1227,13 @@ public actor AgentSession {
   private func persist(transcript: Transcript, runID: UUID?) async throws
     -> FoundationModelsAgentCheckpoint
   {
+    if let runID, checkpointStore != nil {
+      await recorder.record(
+        runID: runID,
+        kind: .checkpointWriteStarted,
+        message: "Native transcript checkpoint write started."
+      )
+    }
     let retained = try await retention.prepareForPersistence(transcript)
     let checkpoint = FoundationModelsAgentCheckpoint(
       compatibilityRevision: checkpointCompatibilityRevision,
@@ -1238,6 +1301,7 @@ public actor AgentSession {
             message: "Native transcript recorded a tool call.",
             attributes: [
               "native_call_id": call.id,
+              "profile_owned": "false",
               "tool": call.toolName,
             ]
           )
@@ -1249,6 +1313,7 @@ public actor AgentSession {
           message: "Native transcript recorded tool output.",
           attributes: [
             "native_call_id": output.id,
+            "profile_owned": "false",
             "tool": output.toolName,
           ]
         )
@@ -1265,6 +1330,17 @@ public actor AgentSession {
       kind: .profileToolAuditBestEffort,
       message:
         "Dynamic-profile tool observation is best effort; an earlier failing profile lifecycle hook can preempt FoundationModelsAgent observation."
+    )
+  }
+
+  private func recordRunFailure(_ error: any Error, runID: UUID) async {
+    let kind: FoundationModelsAgentEventKind =
+      Task.isCancelled || error is CancellationError ? .runCancelled : .runFailed
+    await recorder.record(
+      runID: runID,
+      kind: kind,
+      message: String(describing: error),
+      attributes: ["error_type": String(reflecting: Swift.type(of: error))]
     )
   }
 

@@ -5,6 +5,9 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added opt-in OSLog signposts and a deterministic injectable event projection
+  for correlated run, checkpoint, approval, governed-tool, retry, cancellation,
+  and dynamic-profile lifecycle observability.
 
 ## 0.4.0 - 2026-07-30
 

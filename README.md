@@ -350,6 +350,50 @@ into event attributes by default; they remain in the native transcript.
 Receipts are SHA-256 hash chains. They detect mutation but do not prove
 authorship; sign the root hash when cryptographic attribution is required.
 
+## Instruments and signposts
+
+AgentSession can emit lightweight OSLog signposts that complement Apple's
+Foundation Models Instrument without copying its model telemetry:
+
+```swift
+let agent = try AgentSession(
+  model: model,
+  instrumentation: .init(
+    correlationMetadata: [
+      "root_id": rootRunID.uuidString,
+      "parent_id": parentRunID.uuidString,
+      "task_id": taskID.uuidString,
+    ]
+  )
+)
+```
+
+Instrumentation is disabled by default, leaving only a nil check at existing
+event boundaries. Enabled sessions use the stable
+`com.rudrankriyam.FoundationModelsAgent` subsystem and
+`AgentSession.Lifecycle`, `AgentSession.Checkpoint`, `AgentSession.Policy`, and
+`AgentSession.Profile` categories. Run IDs and caller-supplied correlation
+identifiers use private hashed OSLog privacy. The generic metadata keys are
+correlation seams only; AgentSession does not define a task or lineage model.
+
+Use Apple's Foundation Models Instrument for time to first token, tokens per
+second, and native generation latency. Overlay AgentSession's `Model Attempt`
+span with those metrics, then use the outer `AgentSession Run`, checkpoint,
+approval, governed-tool, retry, cancellation, and dynamic-profile signposts to
+explain latency outside the native model. AgentSession does not re-emit Apple's
+token timing or create a separate trace store.
+
+For deterministic tests or a private telemetry adapter, inject an
+`AgentSessionInstrumentationSink`. Sink errors are ignored and cannot change a
+run result. The default content policy projects no diagnostic messages and
+instrumentation never receives prompts, tool arguments, tool outputs, model
+outputs, or reasoning text. Bounded diagnostic messages require the conspicuous
+`.unsafeExplicitlyEnabled(maximumCharacters:)` opt-in and still pass through the
+session redaction policy.
+
+See [AgentSession Instrumentation](Sources/FoundationModelsAgent/Documentation.docc/AgentSession-Instrumentation.md)
+for span nesting, privacy, and Instruments recording guidance.
+
 ## Streaming
 
 ```swift
