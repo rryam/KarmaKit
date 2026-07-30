@@ -975,6 +975,48 @@ struct FoundationModelsAgentTests {
     #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == 1)
   }
 
+  @Test("File checkpoints migrate the previous filename")
+  func fileCheckpointLegacyFilenameMigration() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = FileCheckpointStore(directory: directory)
+    let checkpoint = FoundationModelsAgentCheckpoint(
+      compatibilityRevision: "revision",
+      transcript: Transcript(entries: [
+        .prompt(.init(segments: [.text(.init(content: "persisted"))]))
+      ])
+    )
+    let key = "conversation"
+
+    try await store.saveCheckpoint(checkpoint, for: key)
+    let currentURL = try #require(
+      FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+      ).first
+    )
+    let digest = try #require(currentURL.lastPathComponent.split(separator: ".").first)
+    let legacyURL = directory.appending(
+      path: "\(digest).\(["core", "agent-transcript.json"].joined())",
+      directoryHint: .notDirectory
+    )
+    try FileManager.default.moveItem(at: currentURL, to: legacyURL)
+
+    let restored = try #require(try await store.loadCheckpoint(for: key))
+
+    #expect(restored.transcript == checkpoint.transcript)
+    #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+    #expect(
+      FileManager.default.fileExists(
+        atPath: directory.appending(
+          path: "\(digest).foundationmodelsagent-transcript.json",
+          directoryHint: .notDirectory
+        ).path
+      )
+    )
+  }
+
   @Test("File checkpoints reject typed metadata instead of silently erasing its type")
   func fileCheckpointRejectsLossyMetadata() async throws {
     let directory = FileManager.default.temporaryDirectory

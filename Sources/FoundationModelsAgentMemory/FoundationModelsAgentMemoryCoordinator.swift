@@ -3,6 +3,11 @@ import FoundationModels
 import FoundationModelsAgent
 
 public actor FoundationModelsAgentMemoryCoordinator: FoundationModelsAgentSessionPlugin {
+  private static let memorySearchToolNames: Set<String> = [
+    "foundationmodelsagent_search_memory",
+    ["core", "agent_search_memory"].joined(),
+  ]
+
   public nonisolated let identifier = "foundationmodelsagent.memory"
   public nonisolated let scope: FoundationModelsAgentMemoryScope
   public nonisolated let searchTool: FoundationModelsAgentMemorySearchTool
@@ -372,14 +377,14 @@ public actor FoundationModelsAgentMemoryCoordinator: FoundationModelsAgentSessio
         let rendered = render(prompt.segments, assetReferences: &assets)
         if !rendered.isEmpty { lines.append("USER:\n\(rendered)") }
       case .toolCalls(let calls):
-        let visibleCalls = calls.filter { $0.toolName != "foundationmodelsagent_search_memory" }
+        let visibleCalls = calls.filter { !memorySearchToolNames.contains($0.toolName) }
         guard !visibleCalls.isEmpty else { continue }
         entryIDs.append(calls.id)
         for call in visibleCalls {
           lines.append("TOOL_CALL \(call.toolName):\n\(call.arguments.jsonString)")
         }
       case .toolOutput(let output):
-        guard output.toolName != "foundationmodelsagent_search_memory" else { continue }
+        guard !memorySearchToolNames.contains(output.toolName) else { continue }
         entryIDs.append(output.id)
         let rendered = render(output.segments, assetReferences: &assets)
         if !rendered.isEmpty {

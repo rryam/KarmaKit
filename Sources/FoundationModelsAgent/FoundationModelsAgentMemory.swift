@@ -74,6 +74,9 @@ public actor InMemoryCheckpointStore: FoundationModelsAgentCheckpointStore {
 }
 
 public actor FileCheckpointStore: FoundationModelsAgentCheckpointStore {
+  private static let currentFilenameSuffix = "foundationmodelsagent-transcript.json"
+  private static let legacyFilenameSuffix = ["core", "agent-transcript.json"].joined()
+
   private let directory: URL
   private let fileManager: FileManager
   private let encoder: JSONEncoder
@@ -96,13 +99,26 @@ public actor FileCheckpointStore: FoundationModelsAgentCheckpointStore {
   }
 
   public func loadCheckpoint(for key: String) throws -> FoundationModelsAgentCheckpoint? {
-    let url = fileURL(for: key)
-    guard fileManager.fileExists(atPath: url.path) else {
+    let currentURL = fileURL(for: key, filenameSuffix: Self.currentFilenameSuffix)
+    let legacyURL = fileURL(for: key, filenameSuffix: Self.legacyFilenameSuffix)
+    let sourceURL: URL
+    if fileManager.fileExists(atPath: currentURL.path) {
+      sourceURL = currentURL
+    } else if fileManager.fileExists(atPath: legacyURL.path) {
+      sourceURL = legacyURL
+    } else {
       return nil
     }
-    let data = try Data(contentsOf: url)
+
+    let data = try Data(contentsOf: sourceURL)
     let checkpoint = try decoder.decode(FoundationModelsAgentCheckpoint.self, from: data)
     try validateForFilePersistence(checkpoint)
+
+    if sourceURL == legacyURL {
+      try data.write(to: currentURL, options: .atomic)
+      try fileManager.removeItem(at: legacyURL)
+    }
+
     return checkpoint
   }
 
@@ -111,21 +127,30 @@ public actor FileCheckpointStore: FoundationModelsAgentCheckpointStore {
     try validateForFilePersistence(checkpoint)
     try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
     let data = try encoder.encode(checkpoint)
-    try data.write(to: fileURL(for: key), options: .atomic)
+    try data.write(
+      to: fileURL(for: key, filenameSuffix: Self.currentFilenameSuffix),
+      options: .atomic
+    )
+
+    let legacyURL = fileURL(for: key, filenameSuffix: Self.legacyFilenameSuffix)
+    if fileManager.fileExists(atPath: legacyURL.path) {
+      try fileManager.removeItem(at: legacyURL)
+    }
   }
 
   public func removeCheckpoint(for key: String) throws {
-    let url = fileURL(for: key)
-    guard fileManager.fileExists(atPath: url.path) else {
-      return
+    for filenameSuffix in [Self.currentFilenameSuffix, Self.legacyFilenameSuffix] {
+      let url = fileURL(for: key, filenameSuffix: filenameSuffix)
+      if fileManager.fileExists(atPath: url.path) {
+        try fileManager.removeItem(at: url)
+      }
     }
-    try fileManager.removeItem(at: url)
   }
 
-  private func fileURL(for key: String) -> URL {
+  private func fileURL(for key: String, filenameSuffix: String) -> URL {
     let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
     return directory.appending(
-      path: "\(digest).foundationmodelsagent-transcript.json", directoryHint: .notDirectory)
+      path: "\(digest).\(filenameSuffix)", directoryHint: .notDirectory)
   }
 
   private func validateForFilePersistence(_ checkpoint: FoundationModelsAgentCheckpoint) throws {

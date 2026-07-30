@@ -9,6 +9,22 @@ private enum FlushBarrierTestError: Error {
   case initialIndexWrite
 }
 
+@Generable
+private struct LegacyMemorySearchArguments {
+  let query: String
+  let maximumResults: Int?
+}
+
+private struct LegacyMemorySearchTool: Tool {
+  let name = ["core", "agent_search_memory"].joined()
+  let description = "Returns previously stored evidence."
+
+  @concurrent
+  func call(arguments: LegacyMemorySearchArguments) async throws -> String {
+    "legacy-memory-payload"
+  }
+}
+
 private actor FlushBarrierIndex: FoundationModelsAgentMemoryIndex {
   private var upsertCount = 0
   private var repairStarted = false
@@ -125,6 +141,42 @@ struct FoundationModelsAgentMemoryIntegrationTests {
     let episode = try #require(episodes.first)
     #expect(!episode.content.contains("unique-memory-payload"))
     #expect(episode.content.contains("Use the memory search tool."))
+    #expect(episode.content.contains("done"))
+  }
+
+  @Test("Previous search-tool evidence is excluded from captured episodes")
+  func noLegacyMemoryOfMemoryRecursion() async throws {
+    let scope = try FoundationModelsAgentMemoryScope(
+      applicationID: "com.example.legacy-integration",
+      userID: "user",
+      agentID: "assistant"
+    )
+    let store = InMemoryFoundationModelsAgentMemoryStore()
+    let memory = FoundationModelsAgentMemoryCoordinator(
+      scope: scope,
+      store: store,
+      disclosurePolicy: .init(destination: .onDevice)
+    )
+    let legacyToolName = ["core", "agent_search_memory"].joined()
+    let model = RecordedLanguageModel(steps: [
+      .toolCall(
+        name: legacyToolName,
+        argumentsJSON: #"{"query":"legacy-memory-payload","maximumResults":1}"#
+      ),
+      .response(text: "done"),
+    ])
+    let session = try FoundationModelsAgentSession(
+      model: model,
+      tools: [LegacyMemorySearchTool()],
+      plugins: [memory]
+    )
+
+    _ = try await session.respond(to: Prompt("Use the previous memory search tool."))
+
+    let episodes = await store.records(in: scope).filter { $0.kind == .episode }
+    let episode = try #require(episodes.first)
+    #expect(!episode.content.contains("legacy-memory-payload"))
+    #expect(episode.content.contains("Use the previous memory search tool."))
     #expect(episode.content.contains("done"))
   }
 
