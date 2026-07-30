@@ -231,13 +231,13 @@ private actor BooleanCapture {
 }
 
 private actor SessionReference {
-  private var session: FoundationModelsAgentSession?
+  private var session: AgentSession?
 
-  func set(_ session: FoundationModelsAgentSession) {
+  func set(_ session: AgentSession) {
     self.session = session
   }
 
-  func get() -> FoundationModelsAgentSession? {
+  func get() -> AgentSession? {
     session
   }
 }
@@ -265,7 +265,7 @@ struct FoundationModelsAgentTests {
     let model = RecordedLanguageModel(
       steps: [.response(text: "hello", inputTokens: 4, outputTokens: 2)]
     )
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       instructions: Instructions("Always be concise.")
     )
@@ -296,7 +296,7 @@ struct FoundationModelsAgentTests {
   @Test("Preserves native structured generation")
   func structuredResponse() async throws {
     let model = RecordedLanguageModel(steps: [.response(text: #"{"value":"typed"}"#)])
-    let session = try FoundationModelsAgentSession(model: model)
+    let session = try AgentSession(model: model)
 
     let response = try await session.respond(to: "Return a value", generating: TestAnswer.self)
 
@@ -307,7 +307,7 @@ struct FoundationModelsAgentTests {
   @Test("Passes image attachments through the native prompt")
   func imagePromptIsNotFlattened() async throws {
     let model = RecordedLanguageModel(steps: [.response(text: "seen")], capabilities: [.vision])
-    let session = try FoundationModelsAgentSession(model: model)
+    let session = try AgentSession(model: model)
     let context = try #require(
       CGContext(
         data: nil,
@@ -350,7 +350,7 @@ struct FoundationModelsAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"approved"}"#),
       .response(text: "done"),
     ])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       tools: [EchoTool(counter: counter)],
       toolConfiguration: .init(
@@ -378,7 +378,7 @@ struct FoundationModelsAgentTests {
     let model = RecordedLanguageModel(steps: [
       .toolCall(name: "echo", argumentsJSON: #"{"value":"blocked"}"#)
     ])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       tools: [EchoTool(counter: counter)],
       toolConfiguration: .init(
@@ -409,7 +409,7 @@ struct FoundationModelsAgentTests {
       try? await Task.sleep(for: .seconds(1))
       return .approve
     }
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [
         .toolCall(name: "echo", argumentsJSON: #"{"value":"never"}"#)
       ]),
@@ -441,7 +441,7 @@ struct FoundationModelsAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"blocked"}"#),
       .response(text: "must not retry"),
     ])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       tools: [EchoTool(counter: InvocationCounter())],
       configuration: .init(retryPolicy: retry),
@@ -466,7 +466,7 @@ struct FoundationModelsAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"first"}"#),
       .toolCall(name: "echo", argumentsJSON: #"{"value":"second"}"#),
     ])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       tools: [EchoTool(counter: counter)],
       toolConfiguration: .init(maximumCallsPerRun: 1)
@@ -492,7 +492,7 @@ struct FoundationModelsAgentTests {
     let model = RecordedLanguageModel(steps: [
       .toolCall(name: "slow_echo", argumentsJSON: #"{"value":"late"}"#)
     ])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       tools: [SlowEchoTool()],
       toolConfiguration: .init(executionTimeout: .milliseconds(10))
@@ -515,7 +515,7 @@ struct FoundationModelsAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"trusted"}"#),
       .response(text: "done"),
     ])
-    let trusted = try FoundationModelsAgentSession(
+    let trusted = try AgentSession(
       model: model,
       tools: [tool],
       toolConfiguration: .init(
@@ -526,7 +526,7 @@ struct FoundationModelsAgentTests {
     #expect(try await trusted.respond(to: "Use echo").content == "done")
     #expect(await counter.count == 1)
 
-    let denied = try FoundationModelsAgentSession(
+    let denied = try AgentSession(
       model: RecordedLanguageModel(steps: [
         .toolCall(name: "echo", argumentsJSON: #"{"value":"denied"}"#)
       ]),
@@ -548,7 +548,7 @@ struct FoundationModelsAgentTests {
       .failure("temporary"),
       .response(text: "recovered"),
     ])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       configuration: .init(retryPolicy: retry)
     )
@@ -570,7 +570,7 @@ struct FoundationModelsAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"twice"}"#),
       .response(text: "should not happen"),
     ])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       tools: [EchoTool(counter: counter)],
       configuration: .init(retryPolicy: retry)
@@ -589,7 +589,7 @@ struct FoundationModelsAgentTests {
     let model = RecordedLanguageModel(
       steps: [.delayedResponse(text: "late", delay: .seconds(1))]
     )
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       configuration: .init(responseTimeout: .milliseconds(10))
     )
@@ -604,7 +604,7 @@ struct FoundationModelsAgentTests {
     let model = RecordedLanguageModel(
       steps: [.delayedResponse(text: "first", delay: .milliseconds(50))]
     )
-    let session = try FoundationModelsAgentSession(model: model)
+    let session = try AgentSession(model: model)
     let first = Task { try await session.respond(to: "First") }
     while model.recorder.capturedTranscripts().isEmpty {
       await Task.yield()
@@ -620,7 +620,7 @@ struct FoundationModelsAgentTests {
   @Test("Streams partial native responses and returns the final run")
   func streamingResponse() async throws {
     let model = RecordedLanguageModel(steps: [.response(text: "streamed")])
-    let session = try FoundationModelsAgentSession(model: model)
+    let session = try AgentSession(model: model)
     let capture = StringCapture()
 
     let response = try await session.respondStreaming(to: Prompt("Stream")) {
@@ -634,7 +634,7 @@ struct FoundationModelsAgentTests {
 
   @Test("Applies response timeout to streaming")
   func streamingTimeout() async throws {
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(
         steps: [.delayedResponse(text: "late", delay: .seconds(1))]
       ),
@@ -649,7 +649,7 @@ struct FoundationModelsAgentTests {
   @Test("Retries a stream only before its first partial response")
   func streamingRetryBeforePartial() async throws {
     let retry = try FoundationModelsAgentRetryPolicy(maximumAttempts: 2) { _ in true }
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [
         .failure("temporary"),
         .response(text: "recovered stream"),
@@ -669,7 +669,7 @@ struct FoundationModelsAgentTests {
 
   @Test("Streams typed output across multiple provider fragments")
   func typedStreamingFragments() async throws {
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [
         .responseFragments(["{\"value\":\"", "typed\"}"])
       ])
@@ -691,7 +691,7 @@ struct FoundationModelsAgentTests {
   func checkpointRestore() async throws {
     let store = InMemoryCheckpointStore()
     let firstModel = RecordedLanguageModel(steps: [.response(text: "first")])
-    let first = try FoundationModelsAgentSession(
+    let first = try AgentSession(
       model: firstModel,
       instructions: Instructions("Persist this instruction."),
       checkpointStore: store,
@@ -700,7 +700,7 @@ struct FoundationModelsAgentTests {
     _ = try await first.respond(to: "One")
 
     let secondModel = RecordedLanguageModel(steps: [.response(text: "second")])
-    let second = try FoundationModelsAgentSession(
+    let second = try AgentSession(
       model: secondModel,
       checkpointStore: store,
       checkpointKey: "conversation"
@@ -720,7 +720,7 @@ struct FoundationModelsAgentTests {
   func dynamicProfileRestore() async throws {
     let store = InMemoryCheckpointStore()
     let firstModel = RecordedLanguageModel(steps: [.response(text: "first")])
-    let first = try FoundationModelsAgentSession(
+    let first = try AgentSession(
       checkpointCompatibilityID: "assistant-profile-v1",
       checkpointStore: store,
       checkpointKey: "dynamic-profile"
@@ -730,7 +730,7 @@ struct FoundationModelsAgentTests {
     _ = try await first.respond(to: "One")
 
     let secondModel = RecordedLanguageModel(steps: [.response(text: "second")])
-    let second = try FoundationModelsAgentSession(
+    let second = try AgentSession(
       checkpointCompatibilityID: "assistant-profile-v1",
       checkpointStore: store,
       checkpointKey: "dynamic-profile"
@@ -751,7 +751,7 @@ struct FoundationModelsAgentTests {
     #expect(instructionText.contains("New profile instructions."))
     #expect(!instructionText.contains("Old profile instructions."))
 
-    let incompatible = try FoundationModelsAgentSession(
+    let incompatible = try AgentSession(
       checkpointCompatibilityID: "assistant-profile-v2",
       checkpointStore: store,
       checkpointKey: "dynamic-profile"
@@ -780,7 +780,7 @@ struct FoundationModelsAgentTests {
     )
     let store = InMemoryCheckpointStore(checkpoints: ["previous-profile": checkpoint])
     let model = RecordedLanguageModel(steps: [.response(text: "restored")])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       checkpointCompatibilityID: compatibilityID,
       checkpointStore: store,
       checkpointKey: "previous-profile"
@@ -808,7 +808,7 @@ struct FoundationModelsAgentTests {
   func dynamicProfileSendingFactory() async throws {
     let counter = ProfileFactoryCounter()
     let model = RecordedLanguageModel(steps: [])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       checkpointCompatibilityID: "stateful-profile-v1"
     ) {
       counter.increment()
@@ -829,7 +829,7 @@ struct FoundationModelsAgentTests {
     let retry = try FoundationModelsAgentRetryPolicy(maximumAttempts: 2) { _ in true }
 
     #expect(throws: FoundationModelsAgentError.self) {
-      _ = try FoundationModelsAgentSession(
+      _ = try AgentSession(
         checkpointCompatibilityID: "profile-v1",
         configuration: .init(
           retryPolicy: retry,
@@ -850,7 +850,7 @@ struct FoundationModelsAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"side-effect"}"#),
       .failure("continuation failed"),
     ])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       checkpointCompatibilityID: "tool-profile-v1"
     ) {
       TestToolDynamicProfile(
@@ -873,7 +873,7 @@ struct FoundationModelsAgentTests {
   @Test("Marks profile tool audit as best effort when an inner hook hides its output")
   func dynamicProfileLifecycleAuditBoundary() async throws {
     let counter = InvocationCounter()
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       checkpointCompatibilityID: "throwing-hook-profile-v1"
     ) {
       ThrowingLifecycleDynamicProfile(
@@ -898,7 +898,7 @@ struct FoundationModelsAgentTests {
   @Test("Applies bounded transcript retention only to persisted history")
   func transcriptRetention() async throws {
     let store = InMemoryCheckpointStore()
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [
         .response(text: "one"),
         .response(text: "two"),
@@ -925,7 +925,7 @@ struct FoundationModelsAgentTests {
   @Test("Never truncates persisted history into an orphaned tool turn")
   func transcriptRetentionKeepsTurnBoundaries() async throws {
     let store = InMemoryCheckpointStore()
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [
         .toolCall(name: "echo", argumentsJSON: #"{"value":"turn"}"#),
         .response(text: "done"),
@@ -945,7 +945,7 @@ struct FoundationModelsAgentTests {
   @Test("Replaces restored instructions when current instructions are supplied")
   func instructionRebasing() async throws {
     let store = InMemoryCheckpointStore()
-    let first = try FoundationModelsAgentSession(
+    let first = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "saved")]),
       instructions: Instructions("Old instructions"),
       checkpointStore: store,
@@ -954,7 +954,7 @@ struct FoundationModelsAgentTests {
     _ = try await first.respond(to: "Save")
 
     let model = RecordedLanguageModel(steps: [.response(text: "rebased")])
-    let second = try FoundationModelsAgentSession(
+    let second = try AgentSession(
       model: model,
       instructions: Instructions("New instructions"),
       checkpointStore: store,
@@ -977,14 +977,14 @@ struct FoundationModelsAgentTests {
   @Test("Rejects a checkpoint restored with a different toolset")
   func checkpointConfigurationMismatch() async throws {
     let store = InMemoryCheckpointStore()
-    let first = try FoundationModelsAgentSession(
+    let first = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "saved")]),
       checkpointStore: store,
       checkpointKey: "toolset"
     )
     _ = try await first.respond(to: "Save")
 
-    let second = try FoundationModelsAgentSession(
+    let second = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "unused")]),
       tools: [EchoTool(counter: InvocationCounter())],
       checkpointStore: store,
@@ -1142,7 +1142,7 @@ struct FoundationModelsAgentTests {
 
   @Test("Checkpoint failures are recorded without turning a completed side effect into a retry")
   func checkpointFailureRecordsAndContinues() async throws {
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "completed")]),
       checkpointStore: FailingCheckpointStore()
     )
@@ -1156,7 +1156,7 @@ struct FoundationModelsAgentTests {
 
   @Test("Skips automatic retention work when no checkpoint store is configured")
   func disabledPersistenceSkipsRetention() async throws {
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "completed")]),
       configuration: .init(checkpointFailurePolicy: .failRun),
       transcriptRetention: .custom { _ in
@@ -1175,7 +1175,7 @@ struct FoundationModelsAgentTests {
 
   @Test("Receipt verification detects tampering")
   func receiptTampering() async throws {
-    let response = try await FoundationModelsAgentSession(
+    let response = try await AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "ok")])
     ).respond(to: "Receipt")
     let valid = try FoundationModelsAgentRunReceipt(run: response.run)
@@ -1214,7 +1214,7 @@ struct FoundationModelsAgentTests {
 
   @Test("Exported receipts decode and verify with stable date encoding")
   func receiptExportRoundTrip() async throws {
-    let response = try await FoundationModelsAgentSession(
+    let response = try await AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "ok")])
     ).respond(to: "Export")
     let exporter = FoundationModelsAgentReceiptExporter()
@@ -1228,7 +1228,7 @@ struct FoundationModelsAgentTests {
   func eventRedaction() async throws {
     let capture = EventCapture()
     let model = RecordedLanguageModel(steps: [.failure("Bearer super-secret-token")])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       observers: [ClosureFoundationModelsAgentObserver { await capture.append($0) }]
     )
@@ -1247,7 +1247,7 @@ struct FoundationModelsAgentTests {
   func boundedObserverDelivery() async throws {
     let gate = ObserverGate()
     let capture = EventCapture()
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "done")]),
       observers: [
         ClosureFoundationModelsAgentObserver { event in
@@ -1278,7 +1278,7 @@ struct FoundationModelsAgentTests {
   @Test("Reports a cancelled observer flush separately from a timeout")
   func cancelledObserverFlush() async throws {
     let gate = ObserverGate()
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "done")]),
       observers: [ClosureFoundationModelsAgentObserver { _ in await gate.wait() }]
     )
@@ -1296,7 +1296,7 @@ struct FoundationModelsAgentTests {
   func reentrantObserverFlush() async throws {
     let reference = SessionReference()
     let results = BooleanCapture()
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "done")]),
       observers: [
         ClosureFoundationModelsAgentObserver { _ in

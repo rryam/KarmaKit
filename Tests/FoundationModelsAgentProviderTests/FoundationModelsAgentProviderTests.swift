@@ -13,7 +13,7 @@ import Testing
         baseURL: URL(string: "https://example.invalid")!,
         supportsGuidedGeneration: false
       )
-      _ = try FoundationModelsAgentSession(model: model)
+      _ = try AgentSession(model: model)
       #expect(FoundationModelsAgentProviderFeatures.appleUtilities)
     }
   }
@@ -25,7 +25,7 @@ import Testing
     @Test("Constructs the first-party Claude provider without sending a request")
     func constructionOnly() throws {
       let model = FoundationModelsAgentProviderModels.claude(auth: .apiKey("unused-placeholder"))
-      _ = try FoundationModelsAgentSession(model: model)
+      _ = try AgentSession(model: model)
       #expect(FoundationModelsAgentProviderFeatures.claude)
     }
   }
@@ -46,7 +46,7 @@ import Testing
     private func compileSession(client: FirebaseAIClient) throws {
       let model = FoundationModelsAgentProviderModels.gemini(
         using: client, name: "gemini-placeholder")
-      _ = try FoundationModelsAgentSession(model: model)
+      _ = try AgentSession(model: model)
     }
   }
 #endif

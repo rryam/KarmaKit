@@ -47,7 +47,7 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
     case .emptyCheckpointCompatibilityID:
       "The dynamic profile checkpoint compatibility ID must not be empty."
     case .concurrentOperation:
-      "FoundationModelsAgentSession already has an operation in flight."
+      "AgentSession already has an operation in flight."
     case .unsafeRetryConfiguration(let reason):
       "Unsafe retry configuration: \(reason)"
     case .noActiveRun:

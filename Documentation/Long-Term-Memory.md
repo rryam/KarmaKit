@@ -45,7 +45,7 @@ let memory = FoundationModelsAgentMemoryCoordinator(
   disclosurePolicy: .init(destination: .onDevice)
 )
 
-let session = try FoundationModelsAgentSession(model: model, plugins: [memory])
+let session = try AgentSession(model: model, plugins: [memory])
 ```
 
 `SQLiteFoundationModelsAgentMemoryStore` enables WAL, foreign keys, and an FTS5 index. Its
@@ -172,7 +172,7 @@ mode. Episode capture and consolidation still run. Put the search tool in the
 profile explicitly when recall is required:
 
 ```swift
-let session = try FoundationModelsAgentSession(
+let session = try AgentSession(
   checkpointCompatibilityID: "assistant-profile-v1",
   plugins: [memory]
 ) {

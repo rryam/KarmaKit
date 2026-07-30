@@ -6,7 +6,7 @@ import FoundationModels
 ///
 /// FoundationModelsAgent deliberately accepts Foundation Models types directly. It does not
 /// define another provider, message, tool, schema, or agent-loop abstraction.
-public actor FoundationModelsAgentSession {
+public actor AgentSession {
   private typealias SessionFactory = (Transcript?) -> LanguageModelSession
 
   private let makeSession: SessionFactory
@@ -18,8 +18,8 @@ public actor FoundationModelsAgentSession {
   private let checkpointCompatibilityRevision: String
   private let acceptedCheckpointCompatibilityRevisions: Set<String>
   private let recordsProfileToolLifecycle: Bool
-  private let sessionMode: FoundationModelsAgentSessionMode
-  private let plugins: [any FoundationModelsAgentSessionPlugin]
+  private let sessionMode: AgentSessionMode
+  private let plugins: [any AgentSessionPlugin]
   private let toolRuntime: FoundationModelsAgentToolRuntime
   private let recorder: FoundationModelsAgentEventRecorder
 
@@ -39,7 +39,7 @@ public actor FoundationModelsAgentSession {
     requiresMatchingToolset: Bool = true,
     instructionRestorationPolicy: FoundationModelsAgentInstructionRestorationPolicy =
       .replaceWithCurrent,
-    plugins: [any FoundationModelsAgentSessionPlugin] = [],
+    plugins: [any AgentSessionPlugin] = [],
     redactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
     observers: [any FoundationModelsAgentObserver] = [],
     observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default
@@ -121,7 +121,7 @@ public actor FoundationModelsAgentSession {
     checkpointStore: (any FoundationModelsAgentCheckpointStore)? = nil,
     checkpointKey: String = "default",
     transcriptRetention: FoundationModelsAgentTranscriptRetention = .complete,
-    plugins: [any FoundationModelsAgentSessionPlugin] = [],
+    plugins: [any AgentSessionPlugin] = [],
     redactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
     observers: [any FoundationModelsAgentObserver] = [],
     observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default,
@@ -210,8 +210,8 @@ public actor FoundationModelsAgentSession {
     checkpointCompatibilityRevision: String,
     acceptedCheckpointCompatibilityRevisions: Set<String>,
     recordsProfileToolLifecycle: Bool,
-    sessionMode: FoundationModelsAgentSessionMode,
-    plugins: [any FoundationModelsAgentSessionPlugin],
+    sessionMode: AgentSessionMode,
+    plugins: [any AgentSessionPlugin],
     toolRuntime: FoundationModelsAgentToolRuntime,
     recorder: FoundationModelsAgentEventRecorder
   ) {
@@ -1349,7 +1349,7 @@ public actor FoundationModelsAgentSession {
     try transcriptRetention.validate()
   }
 
-  private static func validate(plugins: [any FoundationModelsAgentSessionPlugin]) throws {
+  private static func validate(plugins: [any AgentSessionPlugin]) throws {
     var identifiers: Set<String> = []
     for plugin in plugins {
       let identifier = plugin.identifier.trimmingCharacters(in: .whitespacesAndNewlines)

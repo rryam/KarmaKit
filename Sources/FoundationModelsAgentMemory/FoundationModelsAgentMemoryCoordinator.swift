@@ -2,7 +2,7 @@ import Foundation
 import FoundationModels
 import FoundationModelsAgent
 
-public actor FoundationModelsAgentMemoryCoordinator: FoundationModelsAgentSessionPlugin {
+public actor FoundationModelsAgentMemoryCoordinator: AgentSessionPlugin {
   private static let memorySearchToolNames: Set<String> = [
     "foundationmodelsagent_search_memory",
     ["core", "agent_search_memory"].joined(),

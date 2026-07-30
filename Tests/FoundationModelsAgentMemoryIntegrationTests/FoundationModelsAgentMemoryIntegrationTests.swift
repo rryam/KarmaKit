@@ -133,7 +133,7 @@ struct FoundationModelsAgentMemoryIntegrationTests {
       ),
       .response(text: "done"),
     ])
-    let session = try FoundationModelsAgentSession(model: model, plugins: [memory])
+    let session = try AgentSession(model: model, plugins: [memory])
 
     _ = try await session.respond(to: Prompt("Use the memory search tool."))
 
@@ -165,7 +165,7 @@ struct FoundationModelsAgentMemoryIntegrationTests {
       ),
       .response(text: "done"),
     ])
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       tools: [LegacyMemorySearchTool()],
       plugins: [memory]
@@ -206,7 +206,7 @@ struct FoundationModelsAgentMemoryIntegrationTests {
     }
     try await Task.sleep(for: .milliseconds(20))
 
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "captured")]),
       plugins: [memory]
     )
