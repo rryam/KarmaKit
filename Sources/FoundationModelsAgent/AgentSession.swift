@@ -155,7 +155,7 @@ public actor AgentSession {
     let makeSession: SessionFactory = { transcript in
       let profile = makeProfile()
         .onToolCall { call in
-          guard let runID = await runtime.activeRunID() else { return }
+          let runID = try await runtime.reserveCall()
           await recorder.record(
             runID: runID,
             kind: .nativeToolCallRecorded,
@@ -291,6 +291,20 @@ public actor AgentSession {
         contextOptions: contextOptions,
         metadata: metadata
       )
+    }
+  }
+
+  func respondForChild(
+    to prompt: String,
+    maximumToolCalls: Int?
+  ) async throws -> FoundationModelsAgentResponse<String> {
+    try await performResponse(
+      prompt: Prompt(prompt),
+      contextQuery: prompt,
+      metadata: [:],
+      maximumToolCallsPerRun: maximumToolCalls
+    ) {
+      try await $0.respond(to: $1)
     }
   }
 
@@ -517,6 +531,7 @@ public actor AgentSession {
     prompt: Prompt,
     contextQuery: String?,
     metadata: FoundationModelsAgentRequestMetadata,
+    maximumToolCallsPerRun: Int? = nil,
     _ operation:
       @escaping @Sendable (LanguageModelSession, Prompt) async throws ->
       LanguageModelSession.Response<Content>
@@ -529,7 +544,10 @@ public actor AgentSession {
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models run started.")
     await recordProfileAuditBoundary(runID: runID)
-    await toolRuntime.begin(runID: runID)
+    await toolRuntime.begin(
+      runID: runID,
+      maximumCallsPerRun: maximumToolCallsPerRun
+    )
     var completedModelResponse = false
     var pluginContext = PreparedPluginContext.empty
 

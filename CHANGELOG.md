@@ -5,6 +5,10 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added `ChildAgentTool` and `ChildAgentDefinition` for bounded, foreground
+  phone-a-friend consultations using fresh native `AgentSession` instances,
+  structured failures, explicit policy narrowing, cancellation propagation,
+  and depth, turn, tool-call, timeout, and output limits.
 
 ## 0.4.0 - 2026-07-30
 

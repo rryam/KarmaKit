@@ -125,6 +125,88 @@ the transcript. An earlier throwing hook inside the supplied profile can
 preempt FoundationModelsAgent's outer observer and erase that evidence; every profile run
 contains `profileToolAuditBestEffort` to make this limit machine-visible.
 
+## Foreground child agents
+
+Use `ChildAgentTool` for Apple's phone-a-friend pattern: the parent pauses,
+creates a fresh child `AgentSession`, gives it one focused task, receives a
+bounded structured result, and then writes the final answer itself.
+
+```swift
+let researcher = try ChildAgentDefinition(
+  identifier: "research_child",
+  description: "Research one focused question, then return findings to the parent.",
+  limits: ChildAgentLimits(
+    maximumDepth: 1,
+    maximumTurns: 1,
+    maximumToolCalls: 3,
+    wallClockTimeout: .seconds(20),
+    maximumOutputBytes: 4_096
+  ),
+  policy: ClosureChildAgentPolicy { invocation in
+    await delegationPolicy.allowsChild(invocation)
+      ? .allow
+      : .deny(reason: "Delegation is outside the current policy scope.")
+  }
+) { invocation in
+  try AgentSession(
+    model: model,
+    tools: narrowlyScopedResearchTools,
+    instructions: Instructions {
+      "Investigate only the delegated task. Return evidence, not a user-facing answer."
+    }
+  )
+}
+
+let parent = try AgentSession(
+  model: model,
+  tools: [ChildAgentTool(definition: researcher)],
+  instructions: Instructions {
+    "Use research_child only when consultation helps. You own the final answer."
+  }
+)
+```
+
+The session factory runs once per tool call and must return a fresh session.
+That makes native transcript, checkpoint, plugin, and memory state isolated by
+default. A factory can deliberately install a child-specific checkpoint or
+memory scope, but it should never return the parent session or reuse a previous
+child. Cancellation of the parent task cancels the foreground child. Child
+denial, cancellation, timeout, tool-budget exhaustion, and failure become
+`ChildAgentResult` statuses rather than opaque thrown text.
+
+No positive permission is inherited. The `ChildAgentPolicy` hook can carry
+parent denials into the delegation boundary, while the session factory installs
+an explicitly narrower child tool policy. This seam is intentionally small so
+an application policy system can adapt to it without FoundationModelsAgent
+duplicating a capability hierarchy.
+
+A native dynamic profile can also be the child recipe:
+
+```swift
+let specialist = try ChildAgentDefinition(
+  identifier: "specialist",
+  description: "Consult the specialist profile."
+) { invocation in
+  SpecialistProfile(task: invocation.task)
+}
+```
+
+This convenience requires a `Sendable` profile value. If a profile creates
+fresh non-`Sendable` state, use the `sessionFactory:` initializer and construct
+its `AgentSession(checkpointCompatibilityID:profile:)` there.
+
+Choose the dynamic-profile initializer on `AgentSession` for baton-pass
+behavior: one native session changes model, instructions, tools, or history
+handling while retaining that session's transcript. Choose `ChildAgentTool`
+for phone-a-friend behavior: a separate session receives an isolated task,
+returns bounded findings, and never replaces the parent as final-answer owner.
+
+Child consultations are foreground-only and exactly one child turn. Depth and
+tool-call limits are enforced before recursive consultation or native tool
+execution. Wall-clock timeouts use Swift cooperative cancellation, so session
+factories and custom model/tool implementations must honor cancellation. This
+API does not create background jobs, durable child handles, or a workflow DSL.
+
 ## Native typed and multimodal input
 
 There is no FoundationModelsAgent-specific message type to flatten rich input.
