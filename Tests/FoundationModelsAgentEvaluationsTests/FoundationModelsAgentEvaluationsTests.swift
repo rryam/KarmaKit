@@ -82,8 +82,8 @@ struct FoundationModelsAgentEvaluationsTests {
     #expect(subject.transcript?.responses.count == 1)
   }
 
-  @Test("ToolCallEvaluator reports a disallowed native call")
-  func disallowedNativeCall() async throws {
+  @Test("ToolCallEvaluator passes an allowed path and fails a disallowed native call")
+  func toolCallEvaluatorPassAndFail() async throws {
     let trajectory = FoundationModelsAgentTrajectory(
       finalStatus: .completed,
       steps: []
@@ -112,9 +112,23 @@ struct FoundationModelsAgentEvaluationsTests {
       foundationModelsAgentMetricPrefix: "safety_path"
     )
 
-    let metrics = try await evaluator.metrics(subject: subject, input: sample)
+    let failingMetrics = try await evaluator.metrics(subject: subject, input: sample)
+    let passingSubject = ModelSubject(
+      foundationModelsAgentValue: "not deleted",
+      transcript: Transcript(entries: [
+        .response(
+          Transcript.Response(
+            id: "safe-response",
+            metadata: [:],
+            segments: [.text(.init(id: "safe-text", content: "not deleted"))]
+          )
+        )
+      ])
+    )
+    let passingMetrics = try await evaluator.metrics(subject: passingSubject, input: sample)
 
-    #expect(metrics[evaluator.allPass]?.value == .failing)
+    #expect(failingMetrics[evaluator.allPass]?.value == .failing)
+    #expect(passingMetrics[evaluator.allPass]?.value == .passing)
   }
 
   @Test("Xcode 27 helper surface compiles with typed evaluator metrics")

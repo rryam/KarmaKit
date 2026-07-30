@@ -4,14 +4,18 @@ Measure destination quality and the path an agent took as separate concerns.
 
 ## Capture a deterministic fixture
 
-Build the trajectory from the authoritative native transcript and the audited
-run returned by `AgentSession`:
+Build the trajectory from authoritative native transcripts and a canonical
+`AgentReceiptBundle`:
 
 ```swift
 let response = try await agent.respond(to: prompt)
-let trajectory = FoundationModelsAgentTrajectory(
-  transcript: try await agent.transcript(),
-  run: response.run
+let receipt = try FoundationModelsAgentRunReceipt(run: response.run)
+let evidence = AgentReceiptBundle(receipts: [receipt])
+let trajectory = try FoundationModelsAgentTrajectory(
+  transcripts: [
+    response.run.lineage!.runID: try await agent.transcript()
+  ],
+  evidenceBundle: evidence
 )
 
 let data = try FoundationModelsAgentTrajectoryFixtureExporter().data(
@@ -21,21 +25,32 @@ let data = try FoundationModelsAgentTrajectoryFixtureExporter().data(
 )
 ```
 
-The default exporter removes the nondeterministic run ID and remaps transcript
-and segment identifiers while retaining parent-child relationships. It sorts
-JSON keys and redacts common credential strings plus sensitive argument names.
-Check the resulting JSON into a fixture directory and review changes like
-ordinary source changes.
+The validating initializer verifies every receipt, lineage, task settlement,
+and evidence reference before conversion. For child-agent evaluation, put all
+root and child receipts plus their `AgentTaskResult` values in the bundle and
+key each available transcript by its canonical `AgentRunID`. The projected
+evidence graph preserves only relationships already present in that bundle,
+including child/task lineage and routing, context, governance, or tool event
+references. Missing child transcripts remain explicit issues.
+If a bundle contains multiple rooted trees, every run is exported but no
+primary trajectory is selected; export one root tree per evaluation fixture.
+
+The default exporter remaps run, task, event, evidence-reference, transcript,
+and segment identifiers while retaining their relationships. It sorts JSON
+keys and redacts common credential strings, sensitive argument names, evidence
+attributes, locations, and terminal reasons. Check the resulting JSON into a
+fixture directory and review changes like ordinary source changes.
 
 Unsupported attachment, custom, and future transcript segments produce
 explicit segment records and issues. Provider-specific code can export those
 values separately; the generic exporter never claims to preserve opaque
 content it cannot inspect.
 
-Audited run events identify terminal outcomes by tool name, not native call ID.
-For repeated tool names, the exporter applies a remaining unsuccessful outcome
-only when exactly one unmatched call remains. Ambiguous calls stay incomplete
-and produce explicit `ambiguousToolOutcome` and `unresolvedToolCall` issues.
+Canonical events carrying `native_call_id` link terminal outcomes to that exact
+native call. Legacy name-only events use a conservative fallback only when one
+remaining call and outcome are unambiguous. A native output stays authoritative
+if event evidence conflicts, and duplicate IDs, missing outputs, or conflicting
+events produce explicit issues instead of guessed linkage.
 
 ## Evaluate the destination
 

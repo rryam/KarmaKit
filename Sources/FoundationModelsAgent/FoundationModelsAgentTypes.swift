@@ -8,12 +8,17 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
   case invalidRetryAttemptCount(Int)
   case invalidDuration(name: String)
   case invalidToolCallLimit(Int)
+  case invalidPerToolCallLimit(toolName: String, limit: Int)
   case invalidHistoryLimit(Int)
   case invalidObserverQueueLimit(Int)
+  case invalidReservedResponseTokens(Int)
+  case invalidMaximumUsableFraction(Double)
+  case invalidMaximumUsableTokens(Int)
   case duplicateToolName(String)
   case duplicatePluginIdentifier(String)
   case emptyPluginIdentifier
   case emptyCheckpointCompatibilityID
+  case invalidRoutingDecision
   case concurrentOperation
   case unsafeRetryConfiguration(String)
   case noActiveRun
@@ -25,6 +30,13 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
   case toolExecutionTimedOut(toolName: String)
   case pluginContextSanitizationFailed
   case pluginContextUnsupportedForDynamicProfile
+  case contextMeasurementRequired
+  case contextBudgetUnsupportedForDynamicProfile
+  case contextBudgetFixedComponentsExceeded(required: Int, limit: Int)
+  case contextBudgetExceeded(required: Int, limit: Int)
+  case contextTransformStillExceedsBudget(required: Int, limit: Int)
+  case invalidContextMeasurement(String)
+  case invalidContextTransform(String)
 
   public var errorDescription: String? {
     switch self {
@@ -34,10 +46,18 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
       "\(name) must not be negative."
     case .invalidToolCallLimit(let limit):
       "The tool call limit must be zero or greater; received \(limit)."
+    case .invalidPerToolCallLimit(let toolName, let limit):
+      "The call limit for tool '\(toolName)' must be zero or greater; received \(limit)."
     case .invalidHistoryLimit(let limit):
       "The transcript history limit must be zero or greater; received \(limit)."
     case .invalidObserverQueueLimit(let limit):
       "The observer queue limit must be at least one; received \(limit)."
+    case .invalidReservedResponseTokens(let count):
+      "Reserved response tokens must be zero or greater; received \(count)."
+    case .invalidMaximumUsableFraction(let fraction):
+      "The maximum usable context fraction must be greater than zero and at most one; received \(fraction)."
+    case .invalidMaximumUsableTokens(let count):
+      "Maximum usable context tokens must be zero or greater; received \(count)."
     case .duplicateToolName(let name):
       "Tool names must be unique; found more than one tool named '\(name)'."
     case .duplicatePluginIdentifier(let identifier):
@@ -46,6 +66,8 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
       "FoundationModelsAgent session plugin identifiers must not be empty."
     case .emptyCheckpointCompatibilityID:
       "The dynamic profile checkpoint compatibility ID must not be empty."
+    case .invalidRoutingDecision:
+      "An AgentSession routing decision must identify one selected candidate."
     case .concurrentOperation:
       "AgentSession already has an operation in flight."
     case .unsafeRetryConfiguration(let reason):
@@ -68,6 +90,20 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
       "FoundationModelsAgent could not remove transient plugin context from the native transcript."
     case .pluginContextUnsupportedForDynamicProfile:
       "Dynamic-profile sessions do not support automatic plugin prompt context. Use a profile-owned tool instead."
+    case .contextMeasurementRequired:
+      "This explicit LanguageModel does not expose native context measurement. Supply an AgentSessionContextMeasurer bound to the selected model."
+    case .contextBudgetUnsupportedForDynamicProfile:
+      "Dynamic-profile context budgeting is unavailable because the active model and modifier-produced history are opaque. Apply model-aware history policy inside the profile."
+    case .contextBudgetFixedComponentsExceeded(let required, let limit):
+      "Instructions, tools, prompt, and schema require \(required) tokens, exceeding the usable input limit of \(limit) before history is included."
+    case .contextBudgetExceeded(let required, let limit):
+      "The request requires \(required) input tokens, exceeding the usable input limit of \(limit)."
+    case .contextTransformStillExceedsBudget(let required, let limit):
+      "The transformed request still requires \(required) input tokens, exceeding the usable input limit of \(limit)."
+    case .invalidContextMeasurement(let reason):
+      "Invalid context measurement: \(reason)"
+    case .invalidContextTransform(let reason):
+      "Invalid context transform: \(reason)"
     }
   }
 }
@@ -132,6 +168,7 @@ public struct FoundationModelsAgentConfiguration: Sendable {
   public var savesTranscriptAfterFailedResponse: Bool
   public var allowsRetryAfterToolInvocation: Bool
   public var checkpointFailurePolicy: FoundationModelsAgentCheckpointFailurePolicy
+  public var contextBudget: AgentSessionContextBudget?
 
   public init(
     responseTimeout: Duration? = nil,
@@ -139,7 +176,8 @@ public struct FoundationModelsAgentConfiguration: Sendable {
     transcriptErrorHandlingPolicy: FoundationModelsAgentTranscriptErrorPolicy = .revert,
     savesTranscriptAfterFailedResponse: Bool = true,
     allowsRetryAfterToolInvocation: Bool = false,
-    checkpointFailurePolicy: FoundationModelsAgentCheckpointFailurePolicy = .recordAndContinue
+    checkpointFailurePolicy: FoundationModelsAgentCheckpointFailurePolicy = .recordAndContinue,
+    contextBudget: AgentSessionContextBudget? = nil
   ) {
     self.responseTimeout = responseTimeout
     self.retryPolicy = retryPolicy
@@ -147,6 +185,7 @@ public struct FoundationModelsAgentConfiguration: Sendable {
     self.savesTranscriptAfterFailedResponse = savesTranscriptAfterFailedResponse
     self.allowsRetryAfterToolInvocation = allowsRetryAfterToolInvocation
     self.checkpointFailurePolicy = checkpointFailurePolicy
+    self.contextBudget = contextBudget
   }
 
   public static let `default` = FoundationModelsAgentConfiguration()

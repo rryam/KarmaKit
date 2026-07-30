@@ -7,10 +7,11 @@ import FoundationModels
 /// making observed tool calls and destination content suitable for deterministic regression
 /// fixtures. It deliberately does not define a second transcript or message API.
 public struct FoundationModelsAgentTrajectory: Codable, Equatable, Sendable {
-  public static let currentFormatVersion = 1
+  public static let currentFormatVersion = 2
 
   public enum FinalStatus: String, Codable, Equatable, Sendable {
     case completed
+    case cancelled
     case failed
     case incomplete
   }
@@ -27,7 +28,7 @@ public struct FoundationModelsAgentTrajectory: Codable, Equatable, Sendable {
       case unsupported
     }
 
-    public enum ToolOutcome: String, Codable, Equatable, Sendable {
+    public enum ToolOutcome: String, Codable, Equatable, Hashable, Sendable {
       case succeeded
       case denied
       case cancelled
@@ -100,11 +101,13 @@ public struct FoundationModelsAgentTrajectory: Codable, Equatable, Sendable {
 
   public struct Issue: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Equatable, Sendable {
+      case ambiguousRootRun
       case ambiguousToolOutputLinkage
       case ambiguousToolOutcome
       case duplicateToolCallID
       case emptyToolCallGroup
       case malformedToolArguments
+      case missingNativeTranscript
       case orphanedToolCall
       case orphanedToolOutput
       case toolNameMismatch
@@ -112,6 +115,7 @@ public struct FoundationModelsAgentTrajectory: Codable, Equatable, Sendable {
       case unsupportedCustomSegment
       case unsupportedTranscriptEntry
       case unsupportedTranscriptSegment
+      case transcriptWithoutEvidence
       case unresolvedToolCall
     }
 
@@ -126,24 +130,183 @@ public struct FoundationModelsAgentTrajectory: Codable, Equatable, Sendable {
     }
   }
 
+  /// A stable projection of the package's canonical, verified execution-evidence graph.
+  ///
+  /// The projection keeps only evaluation-relevant lineage, terminal settlement, event, and
+  /// reference data. It does not replace ``AgentReceiptBundle``: callers construct this value
+  /// through the validating trajectory initializer, and should continue to verify or archive the
+  /// original bundle when tamper evidence matters.
+  public struct EvidenceGraph: Codable, Equatable, Sendable {
+    public struct Lineage: Codable, Equatable, Sendable {
+      public let runID: String
+      public let rootRunID: String
+      public let parentRunID: String?
+      public let taskID: String?
+      public let depth: Int
+      public let relationship: AgentRunRelationshipKind
+
+      public init(
+        runID: String,
+        rootRunID: String,
+        parentRunID: String?,
+        taskID: String?,
+        depth: Int,
+        relationship: AgentRunRelationshipKind
+      ) {
+        self.runID = runID
+        self.rootRunID = rootRunID
+        self.parentRunID = parentRunID
+        self.taskID = taskID
+        self.depth = depth
+        self.relationship = relationship
+      }
+    }
+
+    public struct Event: Codable, Equatable, Sendable {
+      public let id: String
+      public let runID: String
+      public let kind: FoundationModelsAgentEventKind
+      public let attributes: [String: String]
+
+      public init(
+        id: String,
+        runID: String,
+        kind: FoundationModelsAgentEventKind,
+        attributes: [String: String] = [:]
+      ) {
+        self.id = id
+        self.runID = runID
+        self.kind = kind
+        self.attributes = attributes
+      }
+    }
+
+    public struct Reference: Codable, Equatable, Sendable {
+      public let id: String
+      public let kind: String
+      public let runID: String?
+      public let eventID: String?
+      public let location: String?
+      public let attributes: [String: String]
+
+      public init(
+        id: String,
+        kind: String,
+        runID: String? = nil,
+        eventID: String? = nil,
+        location: String? = nil,
+        attributes: [String: String] = [:]
+      ) {
+        self.id = id
+        self.kind = kind
+        self.runID = runID
+        self.eventID = eventID
+        self.location = location
+        self.attributes = attributes
+      }
+    }
+
+    public struct Run: Codable, Equatable, Sendable {
+      public let runID: String
+      public let lineage: Lineage?
+      public let finalStatus: FinalStatus
+      public let steps: [Step]
+      public let events: [Event]
+      public let issues: [Issue]
+
+      public init(
+        runID: String,
+        lineage: Lineage?,
+        finalStatus: FinalStatus,
+        steps: [Step],
+        events: [Event],
+        issues: [Issue] = []
+      ) {
+        self.runID = runID
+        self.lineage = lineage
+        self.finalStatus = finalStatus
+        self.steps = steps
+        self.events = events
+        self.issues = issues
+      }
+    }
+
+    public struct Task: Codable, Equatable, Sendable {
+      public let lineage: Lineage
+      public let status: AgentTaskSettlementStatus
+      public let outputReferences: [Reference]
+      public let evidenceReferences: [Reference]
+      public let failureReason: AgentTaskSettlementReason?
+      public let cancellationReason: AgentTaskSettlementReason?
+
+      public init(
+        lineage: Lineage,
+        status: AgentTaskSettlementStatus,
+        outputReferences: [Reference] = [],
+        evidenceReferences: [Reference] = [],
+        failureReason: AgentTaskSettlementReason? = nil,
+        cancellationReason: AgentTaskSettlementReason? = nil
+      ) {
+        self.lineage = lineage
+        self.status = status
+        self.outputReferences = outputReferences
+        self.evidenceReferences = evidenceReferences
+        self.failureReason = failureReason
+        self.cancellationReason = cancellationReason
+      }
+    }
+
+    public let runs: [Run]
+    public let tasks: [Task]
+
+    public init(runs: [Run], tasks: [Task] = []) {
+      self.runs = runs
+      self.tasks = tasks
+    }
+  }
+
   public let formatVersion: Int
   public let runID: UUID?
   public let finalStatus: FinalStatus
   public let steps: [Step]
   public let issues: [Issue]
+  public let evidenceGraph: EvidenceGraph?
+
+  private enum CodingKeys: String, CodingKey {
+    case formatVersion
+    case runID
+    case finalStatus
+    case steps
+    case issues
+    case evidenceGraph
+  }
 
   public init(
     formatVersion: Int = Self.currentFormatVersion,
     runID: UUID? = nil,
     finalStatus: FinalStatus,
     steps: [Step],
-    issues: [Issue] = []
+    issues: [Issue] = [],
+    evidenceGraph: EvidenceGraph? = nil
   ) {
     self.formatVersion = formatVersion
     self.runID = runID
     self.finalStatus = finalStatus
     self.steps = steps
     self.issues = issues
+    self.evidenceGraph = evidenceGraph
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      formatVersion: try container.decode(Int.self, forKey: .formatVersion),
+      runID: try container.decodeIfPresent(UUID.self, forKey: .runID),
+      finalStatus: try container.decode(FinalStatus.self, forKey: .finalStatus),
+      steps: try container.decode([Step].self, forKey: .steps),
+      issues: try container.decodeIfPresent([Issue].self, forKey: .issues) ?? [],
+      evidenceGraph: try container.decodeIfPresent(EvidenceGraph.self, forKey: .evidenceGraph)
+    )
   }
 
   /// Builds a stable trajectory from Apple's native transcript and optional audited run evidence.
@@ -164,6 +327,27 @@ public struct FoundationModelsAgentTrajectory: Codable, Equatable, Sendable {
     )
     builder.append(transcript: transcript)
     self = builder.trajectory()
+  }
+
+  /// Builds a multi-run trajectory from a verified canonical evidence graph.
+  ///
+  /// Each supplied transcript is associated only through its canonical `AgentRunID`. Descendant
+  /// runs without a supplied transcript remain in `evidenceGraph.runs` with an explicit
+  /// `missingNativeTranscript` issue. Receipt and task linkage is verified before conversion, so
+  /// this initializer never guesses parent, child, routing, context, or evidence relationships.
+  public init(
+    transcripts: [AgentRunID: Transcript],
+    evidenceBundle: AgentReceiptBundle,
+    redactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
+    sensitiveArgumentNames: Set<String> = Self.defaultSensitiveArgumentNames
+  ) throws {
+    try evidenceBundle.verify()
+    self = Self(
+      verifiedTranscripts: transcripts,
+      evidenceBundle: evidenceBundle,
+      redactionPolicy: redactionPolicy,
+      sensitiveArgumentNames: sensitiveArgumentNames
+    )
   }
 
   public static let defaultSensitiveArgumentNames: Set<String> = [
@@ -195,7 +379,7 @@ public struct FoundationModelsAgentTrajectory: Codable, Equatable, Sendable {
 
 /// A versioned, deterministic artifact intended for checked-in regression datasets.
 public struct FoundationModelsAgentTrajectoryFixture: Codable, Equatable, Sendable {
-  public static let currentFormatVersion = 1
+  public static let currentFormatVersion = 2
 
   public let formatVersion: Int
   public let name: String
@@ -274,11 +458,16 @@ public struct FoundationModelsAgentTrajectoryFixtureExporter: Sendable {
   public func decode(_ data: Data) throws -> FoundationModelsAgentTrajectoryFixture {
     try JSONDecoder().decode(FoundationModelsAgentTrajectoryFixture.self, from: data)
   }
+
+  public func decode(contentsOf url: URL) throws -> FoundationModelsAgentTrajectoryFixture {
+    try decode(Data(contentsOf: url))
+  }
 }
 
 extension FoundationModelsAgentTrajectory {
   private struct Builder {
     let run: FoundationModelsAgentRun?
+    let evidenceEvents: [FoundationModelsAgentEvent]
     let redactionPolicy: FoundationModelsAgentRedactionPolicy
     let sensitiveArgumentNames: Set<String>
     var steps: [Step] = []
@@ -286,6 +475,18 @@ extension FoundationModelsAgentTrajectory {
     var callNamesByID: [String: String] = [:]
     var callStepIndicesByID: [String: Int] = [:]
     var duplicateCallIDs: Set<String> = []
+
+    init(
+      run: FoundationModelsAgentRun?,
+      evidenceEvents: [FoundationModelsAgentEvent]? = nil,
+      redactionPolicy: FoundationModelsAgentRedactionPolicy,
+      sensitiveArgumentNames: Set<String>
+    ) {
+      self.run = run
+      self.evidenceEvents = evidenceEvents ?? run?.events ?? []
+      self.redactionPolicy = redactionPolicy
+      self.sensitiveArgumentNames = sensitiveArgumentNames
+    }
 
     mutating func append(transcript: Transcript) {
       for entry in transcript {
@@ -340,7 +541,7 @@ extension FoundationModelsAgentTrajectory {
         }
       }
 
-      applyRunOutcomes()
+      applyEvidenceOutcomes()
       markUnmatchedCalls()
     }
 
@@ -555,7 +756,7 @@ extension FoundationModelsAgentTrajectory {
           continue
         }
         let kind: Issue.Kind =
-          run == nil || ambiguousIDs.contains(call.id)
+          evidenceEvents.isEmpty || ambiguousIDs.contains(call.id)
           ? .unresolvedToolCall
           : .orphanedToolCall
         issues.append(
@@ -571,10 +772,11 @@ extension FoundationModelsAgentTrajectory {
       }
     }
 
-    mutating func applyRunOutcomes() {
-      guard let run else { return }
+    mutating func applyEvidenceOutcomes() {
+      guard !evidenceEvents.isEmpty else { return }
+      var outcomesByCallID: [String: [Step.ToolOutcome]] = [:]
       var outcomesByToolName: [String: [Step.ToolOutcome]] = [:]
-      for event in run.events {
+      for event in evidenceEvents {
         guard let toolName = event.attributes["tool"] else { continue }
         let outcome: Step.ToolOutcome?
         switch event.kind {
@@ -590,7 +792,36 @@ extension FoundationModelsAgentTrajectory {
           outcome = nil
         }
         if let outcome {
-          outcomesByToolName[toolName, default: []].append(outcome)
+          if let callID = event.attributes["native_call_id"] {
+            outcomesByCallID[callID, default: []].append(outcome)
+          } else {
+            outcomesByToolName[toolName, default: []].append(outcome)
+          }
+        }
+      }
+
+      for (callID, outcomes) in outcomesByCallID.sorted(by: { $0.key < $1.key }) {
+        guard !duplicateCallIDs.contains(callID),
+          let index = callStepIndicesByID[callID]
+        else {
+          continue
+        }
+        let distinct = Set(outcomes)
+        guard distinct.count == 1, let outcome = outcomes.last else {
+          appendAmbiguousOutcomeIssue(
+            at: index,
+            detail: "Canonical evidence contains conflicting outcomes for native call '\(callID)'."
+          )
+          continue
+        }
+        if steps[index].toolOutcome == .incomplete {
+          replaceToolOutcome(at: index, with: outcome)
+        } else if steps[index].toolOutcome != outcome {
+          appendAmbiguousOutcomeIssue(
+            at: index,
+            detail:
+              "Canonical evidence conflicts with the native transcript outcome for call '\(callID)'; the native transcript remains authoritative."
+          )
         }
       }
 
@@ -686,38 +917,333 @@ extension FoundationModelsAgentTrajectory {
     }
 
     static func finalStatus(_ run: FoundationModelsAgentRun) -> FinalStatus {
-      if run.events.contains(where: { $0.kind == .runCompleted }) {
-        return .completed
-      }
-      if run.events.contains(where: { $0.kind == .runFailed }) {
-        return .failed
-      }
+      finalStatus(run.events)
+    }
+
+    static func finalStatus(_ events: [FoundationModelsAgentEvent]) -> FinalStatus {
+      if events.contains(where: { $0.kind == .runCompleted }) { return .completed }
+      if events.contains(where: { $0.kind == .runCancelled }) { return .cancelled }
+      if events.contains(where: { $0.kind == .runFailed }) { return .failed }
       return .incomplete
     }
   }
 
-  fileprivate func replacingIdentifiersForFixture() -> Self {
-    let stableStepIDs = steps.indices.map {
-      "step-\(String(format: "%04d", $0))"
+  private init(
+    verifiedTranscripts transcripts: [AgentRunID: Transcript],
+    evidenceBundle: AgentReceiptBundle,
+    redactionPolicy: FoundationModelsAgentRedactionPolicy,
+    sensitiveArgumentNames: Set<String>
+  ) {
+    let orderedReceipts = evidenceBundle.receipts.sorted { lhs, rhs in
+      let lhsDepth = lhs.lineage?.depth.rawValue ?? 0
+      let rhsDepth = rhs.lineage?.depth.rawValue ?? 0
+      if lhsDepth != rhsDepth { return lhsDepth < rhsDepth }
+      return lhs.runID.uuidString < rhs.runID.uuidString
     }
-    var referenceIDs: [String: String] = [:]
-    for (index, step) in steps.enumerated() {
-      if referenceIDs[step.id] == nil {
-        referenceIDs[step.id] = stableStepIDs[index]
+    let evidencedRunIDs = Set(orderedReceipts.map { AgentRunID(rawValue: $0.runID) })
+    var graphRuns: [EvidenceGraph.Run] = []
+    var allIssues: [Issue] = []
+
+    for receipt in orderedReceipts {
+      let runID = AgentRunID(rawValue: receipt.runID)
+      let events = receipt.receipts.map(\.event)
+      var steps: [Step] = []
+      var runIssues: [Issue] = []
+      if let transcript = transcripts[runID] {
+        var builder = Builder(
+          run: nil,
+          evidenceEvents: events,
+          redactionPolicy: redactionPolicy,
+          sensitiveArgumentNames: sensitiveArgumentNames
+        )
+        builder.append(transcript: transcript)
+        steps = builder.steps
+        runIssues = builder.issues
+      } else {
+        runIssues = [
+          Issue(
+            kind: .missingNativeTranscript,
+            entryID: runID.description,
+            detail:
+              "Canonical run evidence exists, but no native transcript was supplied for this run."
+          )
+        ]
       }
-    }
-    var externalParentIndex = 0
-    for parentID in steps.compactMap(\.parentID) where referenceIDs[parentID] == nil {
-      referenceIDs[parentID] =
-        "parent-\(String(format: "%04d", externalParentIndex))"
-      externalParentIndex += 1
+      allIssues.append(contentsOf: runIssues)
+      graphRuns.append(
+        EvidenceGraph.Run(
+          runID: runID.description,
+          lineage: receipt.lineage.map(Self.project),
+          finalStatus: Builder.finalStatus(events),
+          steps: steps,
+          events: events.map {
+            EvidenceGraph.Event(
+              id: $0.id.uuidString.lowercased(),
+              runID: AgentRunID(rawValue: $0.runID).description,
+              kind: $0.kind,
+              attributes: redactionPolicy.redact(attributes: $0.attributes)
+            )
+          },
+          issues: runIssues
+        )
+      )
     }
 
-    let stableSteps = steps.enumerated().map { index, step in
+    for runID in transcripts.keys.sorted(by: { $0.description < $1.description })
+    where !evidencedRunIDs.contains(runID) {
+      allIssues.append(
+        Issue(
+          kind: .transcriptWithoutEvidence,
+          entryID: runID.description,
+          detail:
+            "A native transcript was supplied for a run absent from the canonical evidence graph."
+        )
+      )
+    }
+
+    let runOrder = Dictionary(
+      uniqueKeysWithValues: graphRuns.enumerated().map { ($0.element.runID, $0.offset) }
+    )
+    let tasks = evidenceBundle.taskResults
+      .sorted {
+        let lhsOrder = runOrder[$0.lineage.runID.description] ?? Int.max
+        let rhsOrder = runOrder[$1.lineage.runID.description] ?? Int.max
+        if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+        return ($0.lineage.taskID?.description ?? "") < ($1.lineage.taskID?.description ?? "")
+      }
+      .map { result in
+        EvidenceGraph.Task(
+          lineage: Self.project(result.lineage),
+          status: result.status,
+          outputReferences: result.outputReferences.map {
+            Self.project($0, redactionPolicy: redactionPolicy)
+          },
+          evidenceReferences: result.evidenceReferences.map {
+            Self.project($0, redactionPolicy: redactionPolicy)
+          },
+          failureReason: result.failureReason.map {
+            AgentTaskSettlementReason(
+              code: redactionPolicy.redact($0.code),
+              message: redactionPolicy.redact($0.message)
+            )
+          },
+          cancellationReason: result.cancellationReason.map {
+            AgentTaskSettlementReason(
+              code: redactionPolicy.redact($0.code),
+              message: redactionPolicy.redact($0.message)
+            )
+          }
+        )
+      }
+
+    let roots = graphRuns.filter {
+      $0.lineage?.relationship == .root || $0.lineage == nil
+    }
+    let primary = roots.count == 1 ? roots[0] : nil
+    if primary == nil {
+      allIssues.append(
+        Issue(
+          kind: .ambiguousRootRun,
+          entryID: "evidence-graph",
+          detail:
+            "The canonical evidence bundle does not contain exactly one root run, so no primary trajectory was inferred."
+        )
+      )
+    }
+    self.init(
+      runID: primary.flatMap { UUID(uuidString: $0.runID) },
+      finalStatus: primary?.finalStatus ?? .incomplete,
+      steps: primary?.steps ?? [],
+      issues: allIssues,
+      evidenceGraph: EvidenceGraph(runs: graphRuns, tasks: tasks)
+    )
+  }
+
+  private static func project(_ lineage: AgentRunLineage) -> EvidenceGraph.Lineage {
+    EvidenceGraph.Lineage(
+      runID: lineage.runID.description,
+      rootRunID: lineage.rootRunID.description,
+      parentRunID: lineage.parentRunID?.description,
+      taskID: lineage.taskID?.description,
+      depth: lineage.depth.rawValue,
+      relationship: lineage.relationship
+    )
+  }
+
+  private static func project(
+    _ reference: AgentEvidenceReference,
+    redactionPolicy: FoundationModelsAgentRedactionPolicy
+  ) -> EvidenceGraph.Reference {
+    EvidenceGraph.Reference(
+      id: redactionPolicy.redact(reference.id.rawValue),
+      kind: redactionPolicy.redact(reference.kind.rawValue),
+      runID: reference.runID?.description,
+      eventID: reference.eventID?.uuidString.lowercased(),
+      location: reference.location.map(redactionPolicy.redact),
+      attributes: redactionPolicy.redact(attributes: reference.attributes)
+    )
+  }
+
+  fileprivate func replacingIdentifiersForFixture() -> Self {
+    let (stableSteps, primaryStepIDs) = Self.stableSteps(steps)
+    guard let evidenceGraph else {
+      return Self(
+        runID: nil,
+        finalStatus: finalStatus,
+        steps: stableSteps,
+        issues: issues.map {
+          Issue(
+            kind: $0.kind,
+            entryID: primaryStepIDs[$0.entryID] ?? $0.entryID,
+            detail: Self.replacingIdentifierOccurrences(
+              $0.detail,
+              identifiers: primaryStepIDs
+            )
+          )
+        }
+      )
+    }
+
+    let runIDs = Dictionary(
+      uniqueKeysWithValues: evidenceGraph.runs.enumerated().map {
+        ($0.element.runID, "run-\(String(format: "%04d", $0.offset))")
+      }
+    )
+    let taskIDs = Dictionary(
+      uniqueKeysWithValues: evidenceGraph.tasks.enumerated().compactMap { index, task in
+        task.lineage.taskID.map { ($0, "task-\(String(format: "%04d", index))") }
+      }
+    )
+    var eventIDs: [String: String] = [:]
+    for (runIndex, run) in evidenceGraph.runs.enumerated() {
+      for (eventIndex, event) in run.events.enumerated() {
+        eventIDs[event.id] =
+          "run-\(String(format: "%04d", runIndex))-event-\(String(format: "%04d", eventIndex))"
+      }
+    }
+    let graphIdentifierIDs = runIDs.merging(taskIDs) { current, _ in current }
+      .merging(eventIDs) { current, _ in current }
+    let stableRuns = evidenceGraph.runs.enumerated().map { runIndex, run in
+      let (runSteps, stepIDs) = Self.stableSteps(run.steps)
+      let identifierIDs = graphIdentifierIDs.merging(stepIDs) { current, _ in current }
+      return EvidenceGraph.Run(
+        runID: runIDs[run.runID]!,
+        lineage: run.lineage.map {
+          Self.stableLineage($0, runIDs: runIDs, taskIDs: taskIDs)
+        },
+        finalStatus: run.finalStatus,
+        steps: runSteps,
+        events: run.events.enumerated().map { eventIndex, event in
+          EvidenceGraph.Event(
+            id:
+              "run-\(String(format: "%04d", runIndex))-event-\(String(format: "%04d", eventIndex))",
+            runID: runIDs[event.runID] ?? event.runID,
+            kind: event.kind,
+            attributes: Self.replacingIdentifierAttributeValues(
+              event.attributes,
+              identifiers: identifierIDs
+            )
+          )
+        },
+        issues: run.issues.map {
+          Issue(
+            kind: $0.kind,
+            entryID: identifierIDs[$0.entryID] ?? $0.entryID,
+            detail: Self.replacingIdentifierOccurrences(
+              $0.detail,
+              identifiers: identifierIDs
+            )
+          )
+        }
+      )
+    }
+    var referenceIndex = 0
+    func stableReferences(_ references: [EvidenceGraph.Reference]) -> [EvidenceGraph.Reference] {
+      references.map { reference in
+        defer { referenceIndex += 1 }
+        return EvidenceGraph.Reference(
+          id: "reference-\(String(format: "%04d", referenceIndex))",
+          kind: reference.kind,
+          runID: reference.runID.map { runIDs[$0] ?? $0 },
+          eventID: reference.eventID.map { eventIDs[$0] ?? $0 },
+          location: reference.location.map {
+            Self.replacingIdentifierOccurrences($0, identifiers: graphIdentifierIDs)
+          },
+          attributes: Self.replacingIdentifierAttributeValues(
+            reference.attributes,
+            identifiers: graphIdentifierIDs
+          )
+        )
+      }
+    }
+    let stableTasks = evidenceGraph.tasks.map { task in
+      EvidenceGraph.Task(
+        lineage: Self.stableLineage(task.lineage, runIDs: runIDs, taskIDs: taskIDs),
+        status: task.status,
+        outputReferences: stableReferences(task.outputReferences),
+        evidenceReferences: stableReferences(task.evidenceReferences),
+        failureReason: task.failureReason.map {
+          AgentTaskSettlementReason(
+            code: Self.replacingIdentifierOccurrences(
+              $0.code,
+              identifiers: graphIdentifierIDs
+            ),
+            message: Self.replacingIdentifierOccurrences(
+              $0.message,
+              identifiers: graphIdentifierIDs
+            )
+          )
+        },
+        cancellationReason: task.cancellationReason.map {
+          AgentTaskSettlementReason(
+            code: Self.replacingIdentifierOccurrences(
+              $0.code,
+              identifiers: graphIdentifierIDs
+            ),
+            message: Self.replacingIdentifierOccurrences(
+              $0.message,
+              identifiers: graphIdentifierIDs
+            )
+          )
+        }
+      )
+    }
+    let allIdentifierIDs = graphIdentifierIDs.merging(primaryStepIDs) { current, _ in current }
+    let stableIssues = issues.map { issue in
+      Issue(
+        kind: issue.kind,
+        entryID: allIdentifierIDs[issue.entryID] ?? issue.entryID,
+        detail: Self.replacingIdentifierOccurrences(
+          issue.detail,
+          identifiers: allIdentifierIDs
+        )
+      )
+    }
+    return Self(
+      runID: nil,
+      finalStatus: finalStatus,
+      steps: stableSteps,
+      issues: stableIssues,
+      evidenceGraph: EvidenceGraph(runs: stableRuns, tasks: stableTasks)
+    )
+  }
+
+  private static func stableSteps(_ steps: [Step]) -> ([Step], [String: String]) {
+    let stableStepIDs = steps.indices.map { "step-\(String(format: "%04d", $0))" }
+    var identifiers: [String: String] = [:]
+    for (index, step) in steps.enumerated() where identifiers[step.id] == nil {
+      identifiers[step.id] = stableStepIDs[index]
+    }
+    var externalParentIndex = 0
+    for parentID in steps.compactMap(\.parentID) where identifiers[parentID] == nil {
+      identifiers[parentID] = "parent-\(String(format: "%04d", externalParentIndex))"
+      externalParentIndex += 1
+    }
+    let stable = steps.enumerated().map { index, step in
       Step(
         sequence: step.sequence,
         id: stableStepIDs[index],
-        parentID: step.parentID.map { referenceIDs[$0] ?? $0 },
+        parentID: step.parentID.map { identifiers[$0] ?? $0 },
         kind: step.kind,
         toolName: step.toolName,
         canonicalArgumentsJSON: step.canonicalArgumentsJSON,
@@ -735,19 +1261,43 @@ extension FoundationModelsAgentTrajectory {
         }
       )
     }
-    let stableIssues = issues.map { issue in
-      Issue(
-        kind: issue.kind,
-        entryID: referenceIDs[issue.entryID] ?? issue.entryID,
-        detail: issue.detail
-      )
-    }
-    return Self(
-      runID: nil,
-      finalStatus: finalStatus,
-      steps: stableSteps,
-      issues: stableIssues
+    return (stable, identifiers)
+  }
+
+  private static func stableLineage(
+    _ lineage: EvidenceGraph.Lineage,
+    runIDs: [String: String],
+    taskIDs: [String: String]
+  ) -> EvidenceGraph.Lineage {
+    EvidenceGraph.Lineage(
+      runID: runIDs[lineage.runID] ?? lineage.runID,
+      rootRunID: runIDs[lineage.rootRunID] ?? lineage.rootRunID,
+      parentRunID: lineage.parentRunID.map { runIDs[$0] ?? $0 },
+      taskID: lineage.taskID.map { taskIDs[$0] ?? $0 },
+      depth: lineage.depth,
+      relationship: lineage.relationship
     )
+  }
+
+  private static func replacingIdentifierAttributeValues(
+    _ attributes: [String: String],
+    identifiers: [String: String]
+  ) -> [String: String] {
+    attributes.mapValues {
+      replacingIdentifierOccurrences($0, identifiers: identifiers)
+    }
+  }
+
+  private static func replacingIdentifierOccurrences(
+    _ value: String,
+    identifiers: [String: String]
+  ) -> String {
+    identifiers.keys.sorted {
+      if $0.count != $1.count { return $0.count > $1.count }
+      return $0 < $1
+    }.reduce(value) { result, identifier in
+      result.replacingOccurrences(of: identifier, with: identifiers[identifier]!)
+    }
   }
 }
 
