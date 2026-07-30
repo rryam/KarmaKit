@@ -5,6 +5,10 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added Xcode 27 dynamic-profile tool governance with explicit manifest
+  registries, fail-closed unknown and changed-tool handling, canonical native
+  arguments, async approval, total and per-tool call budgets, and audited
+  pre-execution outcomes carrying native tool-call IDs.
 
 ## 0.4.0 - 2026-07-30
 

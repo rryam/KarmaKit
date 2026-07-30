@@ -112,18 +112,63 @@ Profile history transforms run inside Foundation Models; FoundationModelsAgent's
 retention runs afterward at persistence time, so avoid configuring two
 compactors that discard the same context.
 
-Profile-owned tools are intentionally not advertised as governed: Foundation
-Models keeps those tools opaque to FoundationModelsAgent's `AnyTool` wrappers. Use the
-explicit `model:tools:instructions:` initializer when approval, call budgets,
-trusted manifests, or per-tool execution timeouts are required. Profile mode
-rejects multi-attempt retries because FoundationModelsAgent cannot safely observe
-profile-owned tools, lifecycle hooks, or transcript-policy modifiers before
-they take effect. FoundationModelsAgent attaches best-effort observation-only `onToolCall`
-and `onToolOutput` modifiers. They preserve native call/output IDs when their
-lifecycle chain completes, including when a later model continuation reverts
-the transcript. An earlier throwing hook inside the supplied profile can
-preempt FoundationModelsAgent's outer observer and erase that evidence; every profile run
-contains `profileToolAuditBestEffort` to make this limit machine-visible.
+Xcode 27's `onToolCall` hook runs before a profile-owned tool implementation and
+can throw to stop it. Opt into that native pre-execution boundary with an
+explicit registry and pinned manifest digests:
+
+```swift
+let lookup = LookupTool()
+let registry = try DynamicProfileToolRegistry(tools: [lookup])
+let governance = try DynamicProfileToolGovernanceConfiguration(
+  trusting: registry,
+  authorizer: ClosureDynamicProfileToolAuthorizer { request in
+    // request.arguments is GeneratedContent; this string has sorted JSON keys.
+    audit(request.nativeCallID, request.canonicalArgumentsJSON)
+    return await approvals.allows(request) ? .allow : .deny(reason: "Approval declined")
+  },
+  maximumCallsPerRun: 6,
+  maximumCallsPerToolPerRun: ["lookup": 3]
+)
+
+let agent = try AgentSession(
+  checkpointCompatibilityID: "assistant-profile-v2",
+  toolGovernance: governance
+) {
+  LanguageModelSession.Profile {
+    Instructions("Help the user with the current project.")
+    lookup
+  }
+  .model(model)
+}
+```
+
+Build the registry from the same tool values placed in the profile. Unknown tool
+names fail closed. The `trusting:` initializer pins every current digest; the
+lower-level initializer accepts the registry and trusted digest set separately
+when an application stores approvals independently. A changed description,
+schema, name, or `includesSchemaInInstructions` value produces a different
+digest and must be trusted intentionally.
+
+Registry lookup, exact-manifest trust, total and per-tool budgets, and the
+application authorizer all run before execution against the native
+`GeneratedContent` arguments and canonical JSON. Audited outcomes use
+`profileToolAllowed`, `profileToolDenied`, `profileToolApprovalFailed`, and
+`profileToolBudgetExhausted`; each carries the native tool-call ID. A denial,
+unknown tool, changed manifest, exhausted budget, approval error, or cancellation
+prevents the tool implementation from running.
+
+`profileToolAllowed` records the pre-execution governance decision. Foundation
+Models still performs native schema decoding and tool execution afterward, so
+an allowed call can subsequently fail without entering the tool implementation.
+
+The supplied profile's inner `onToolCall` hooks run before AgentSession's outer
+governance modifier. An inner hook that throws can therefore preempt governance,
+and side effects inside an inner lifecycle callback are outside this boundary.
+`onToolOutput` remains best-effort observation. Profile mode still rejects
+multi-attempt retries because profile-owned state and lifecycle hooks are not
+generically reversible. See
+[Dynamic-profile tool governance](Documentation/Dynamic-Profile-Tool-Governance.md)
+for the complete contract.
 
 ## Native typed and multimodal input
 
@@ -498,10 +543,13 @@ not claim it can generically provide:
   `Prompt` output before the model consumes it;
 - Foundation Models' native tool-call ID before `Tool.call` begins.
 
-Tools owned by a dynamic profile also stay outside FoundationModelsAgent's pre-execution
-policy wrapper. Their lifecycle audit is best effort: a throwing inner profile
-hook can prevent FoundationModelsAgent's observer from seeing a completed effect. Use the
-explicit tools initializer for governance and audit guarantees.
+Profile-owned tools stay opaque and are not wrapped. On Xcode 27, the optional
+dynamic-profile governance modifier can authorize or deny their native
+pre-execution calls and enforce call-count budgets. It cannot time out opaque
+execution, inspect or filter output before the model consumes it, undo a side
+effect after output, or govern work performed by an earlier inner lifecycle
+hook. Use the explicit tools initializer when execution timeouts or an
+inspectable wrapper-owned output contract are required.
 
 FoundationModelsAgent can deny calls, enforce a total budget, time out execution, apply
 policy decisions, and audit the authoritative transcript afterward. Strong

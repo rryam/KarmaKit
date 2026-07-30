@@ -93,6 +93,108 @@ private struct TestToolDynamicProfile: LanguageModelSession.DynamicProfile {
   }
 }
 
+private struct ChangedEchoTool: Tool {
+  let counter: InvocationCounter
+  let name = "echo"
+  let description = "A changed echo contract that must be trusted independently."
+
+  @concurrent
+  func call(arguments: EchoArguments) async throws -> String {
+    await counter.record(arguments.value)
+    return arguments.value
+  }
+}
+
+@Generable
+private struct PairArguments: Sendable {
+  let zebra: String
+  let alpha: String
+}
+
+private struct PairTool: Tool {
+  let counter: InvocationCounter
+  let name = "pair"
+  let description = "Returns two supplied values."
+
+  @concurrent
+  func call(arguments: PairArguments) async throws -> String {
+    let value = "\(arguments.alpha):\(arguments.zebra)"
+    await counter.record(value)
+    return value
+  }
+}
+
+private struct PairToolDynamicProfile: LanguageModelSession.DynamicProfile {
+  let model: RecordedLanguageModel
+  let tool: PairTool
+
+  var body: some LanguageModelSession.DynamicProfile {
+    LanguageModelSession.Profile {
+      Instructions("Use the pair tool.")
+      tool
+    }
+    .model(model)
+  }
+}
+
+private struct ChangedToolDynamicProfile: LanguageModelSession.DynamicProfile {
+  let model: RecordedLanguageModel
+  let tool: ChangedEchoTool
+
+  var body: some LanguageModelSession.DynamicProfile {
+    LanguageModelSession.Profile {
+      Instructions("Use the changed echo tool.")
+      tool
+    }
+    .model(model)
+  }
+}
+
+private actor ProfileAuthorizationCapture {
+  private(set) var requests: [DynamicProfileToolAuthorizationRequest] = []
+
+  func append(_ request: DynamicProfileToolAuthorizationRequest) {
+    requests.append(request)
+  }
+}
+
+private actor LifecycleOrderCapture {
+  private(set) var values: [String] = []
+
+  func append(_ value: String) {
+    values.append(value)
+  }
+}
+
+private struct OrderedEchoTool: Tool {
+  let order: LifecycleOrderCapture
+  let name = "ordered_echo"
+  let description = "Records native lifecycle ordering."
+
+  @concurrent
+  func call(arguments: EchoArguments) async throws -> String {
+    await order.append("tool")
+    return arguments.value
+  }
+}
+
+private struct OrderedToolDynamicProfile: LanguageModelSession.DynamicProfile {
+  let model: RecordedLanguageModel
+  let tool: OrderedEchoTool
+  let order: LifecycleOrderCapture
+
+  var body: some LanguageModelSession.DynamicProfile {
+    LanguageModelSession.Profile {
+      Instructions("Use the ordered echo tool.")
+      tool
+    }
+    .model(model)
+    .onToolCall { _ in
+      await order.append("inner")
+    }
+  }
+}
+
 private enum ProfileLifecycleError: Error {
   case intentional
 }
@@ -893,6 +995,380 @@ struct FoundationModelsAgentTests {
     #expect(run.events.contains { $0.kind == .profileToolAuditBestEffort })
     #expect(run.events.contains { $0.kind == .nativeToolCallRecorded })
     #expect(!run.events.contains { $0.kind == .nativeToolOutputRecorded })
+  }
+
+  @Test("Allows a trusted profile tool using canonical native arguments")
+  func governedDynamicProfileAllowsTrustedTool() async throws {
+    let counter = InvocationCounter()
+    let capture = ProfileAuthorizationCapture()
+    let tool = PairTool(counter: counter)
+    let registry = try DynamicProfileToolRegistry(tools: [tool])
+    let configuration = try DynamicProfileToolGovernanceConfiguration(
+      trusting: registry,
+      authorizer: ClosureDynamicProfileToolAuthorizer { request in
+        await capture.append(request)
+        return .allow
+      },
+      maximumCallsPerRun: 1,
+      maximumCallsPerToolPerRun: ["pair": 1]
+    )
+    let session = try AgentSession(
+      checkpointCompatibilityID: "governed-pair-profile-v1",
+      toolGovernance: configuration
+    ) {
+      PairToolDynamicProfile(
+        model: RecordedLanguageModel(steps: [
+          .toolCall(
+            id: "native-allow",
+            name: "pair",
+            argumentsJSON: #"{"zebra":"last","alpha":"first"}"#
+          ),
+          .response(text: "done"),
+        ]),
+        tool: tool
+      )
+    }
+
+    let response = try await session.respond(to: "Use pair")
+
+    #expect(response.content == "done")
+    #expect(await counter.values == ["first:last"])
+    #expect(await capture.requests.first?.nativeCallID == "native-allow")
+    #expect(
+      await capture.requests.first?.canonicalArgumentsJSON
+        == #"{"alpha":"first","zebra":"last"}"#
+    )
+    #expect(
+      response.run.events.contains {
+        $0.kind == .profileToolAllowed
+          && $0.attributes["native_call_id"] == "native-allow"
+      }
+    )
+  }
+
+  @Test("Denial in profile governance prevents the native tool implementation")
+  func governedDynamicProfileDenial() async throws {
+    let counter = InvocationCounter()
+    let tool = EchoTool(counter: counter)
+    let registry = try DynamicProfileToolRegistry(tools: [tool])
+    let configuration = try DynamicProfileToolGovernanceConfiguration(
+      trusting: registry,
+      authorizer: ClosureDynamicProfileToolAuthorizer { _ in
+        .deny(reason: "User declined")
+      }
+    )
+    let session = try AgentSession(
+      checkpointCompatibilityID: "governed-denial-profile-v1",
+      toolGovernance: configuration
+    ) {
+      TestToolDynamicProfile(
+        model: RecordedLanguageModel(steps: [
+          .toolCall(
+            id: "native-denied",
+            name: "echo",
+            argumentsJSON: #"{"value":"blocked"}"#
+          )
+        ]),
+        tool: tool
+      )
+    }
+
+    await #expect(throws: (any Error).self) {
+      _ = try await session.respond(to: "Use echo")
+    }
+
+    #expect(await counter.count == 0)
+    let run = try #require(await session.lastRun())
+    #expect(
+      run.events.contains {
+        $0.kind == .profileToolDenied
+          && $0.attributes["native_call_id"] == "native-denied"
+      }
+    )
+  }
+
+  @Test("Approval failure is distinct from a policy denial")
+  func governedDynamicProfileApprovalFailure() async throws {
+    let counter = InvocationCounter()
+    let tool = EchoTool(counter: counter)
+    let registry = try DynamicProfileToolRegistry(tools: [tool])
+    let configuration = try DynamicProfileToolGovernanceConfiguration(
+      trusting: registry,
+      authorizer: ClosureDynamicProfileToolAuthorizer { _ in
+        throw AuthorizationServiceError.unavailable
+      }
+    )
+    let session = try AgentSession(
+      checkpointCompatibilityID: "governed-approval-failure-profile-v1",
+      toolGovernance: configuration
+    ) {
+      TestToolDynamicProfile(
+        model: RecordedLanguageModel(steps: [
+          .toolCall(
+            id: "native-approval-failed",
+            name: "echo",
+            argumentsJSON: #"{"value":"blocked"}"#
+          )
+        ]),
+        tool: tool
+      )
+    }
+
+    await #expect(throws: (any Error).self) {
+      _ = try await session.respond(to: "Use echo")
+    }
+
+    #expect(await counter.count == 0)
+    let run = try #require(await session.lastRun())
+    #expect(
+      run.events.contains {
+        $0.kind == .profileToolApprovalFailed
+          && $0.attributes["native_call_id"] == "native-approval-failed"
+      }
+    )
+    #expect(!run.events.contains { $0.kind == .profileToolDenied })
+  }
+
+  @Test("An unknown profile tool fails closed")
+  func governedDynamicProfileUnknownTool() async throws {
+    let counter = InvocationCounter()
+    let registry = try DynamicProfileToolRegistry(manifests: [])
+    let configuration = try DynamicProfileToolGovernanceConfiguration(trusting: registry)
+    let session = try AgentSession(
+      checkpointCompatibilityID: "governed-unknown-profile-v1",
+      toolGovernance: configuration
+    ) {
+      TestToolDynamicProfile(
+        model: RecordedLanguageModel(steps: [
+          .toolCall(
+            id: "native-unknown",
+            name: "echo",
+            argumentsJSON: #"{"value":"blocked"}"#
+          )
+        ]),
+        tool: EchoTool(counter: counter)
+      )
+    }
+
+    await #expect(throws: (any Error).self) {
+      _ = try await session.respond(to: "Use echo")
+    }
+
+    #expect(await counter.count == 0)
+    let run = try #require(await session.lastRun())
+    #expect(
+      run.events.contains {
+        $0.kind == .profileToolDenied
+          && $0.attributes["native_call_id"] == "native-unknown"
+      }
+    )
+  }
+
+  @Test("A changed profile manifest does not inherit prior trust")
+  func governedDynamicProfileChangedManifest() async throws {
+    let counter = InvocationCounter()
+    let priorManifest = try FoundationModelsAgentToolManifest(
+      tool: EchoTool(counter: counter)
+    )
+    let changedTool = ChangedEchoTool(counter: counter)
+    let changedRegistry = try DynamicProfileToolRegistry(tools: [changedTool])
+    let configuration = try DynamicProfileToolGovernanceConfiguration(
+      registry: changedRegistry,
+      trustedManifestDigests: [priorManifest.digest]
+    )
+    let session = try AgentSession(
+      checkpointCompatibilityID: "governed-changed-manifest-profile-v1",
+      toolGovernance: configuration
+    ) {
+      ChangedToolDynamicProfile(
+        model: RecordedLanguageModel(steps: [
+          .toolCall(
+            id: "native-changed",
+            name: "echo",
+            argumentsJSON: #"{"value":"blocked"}"#
+          )
+        ]),
+        tool: changedTool
+      )
+    }
+
+    await #expect(throws: (any Error).self) {
+      _ = try await session.respond(to: "Use echo")
+    }
+
+    #expect(await counter.count == 0)
+    let run = try #require(await session.lastRun())
+    #expect(
+      run.events.contains {
+        $0.kind == .profileToolDenied
+          && $0.attributes["manifest_digest"] == changedRegistry.manifests.first?.digest
+      }
+    )
+  }
+
+  @Test("Profile governance enforces the total call budget before execution")
+  func governedDynamicProfileTotalBudget() async throws {
+    let counter = InvocationCounter()
+    let tool = EchoTool(counter: counter)
+    let registry = try DynamicProfileToolRegistry(tools: [tool])
+    let configuration = try DynamicProfileToolGovernanceConfiguration(
+      trusting: registry,
+      maximumCallsPerRun: 1,
+      maximumCallsPerToolPerRun: ["echo": 2]
+    )
+    let session = try AgentSession(
+      checkpointCompatibilityID: "governed-total-budget-profile-v1",
+      toolGovernance: configuration
+    ) {
+      TestToolDynamicProfile(
+        model: RecordedLanguageModel(steps: [
+          .toolCall(name: "echo", argumentsJSON: #"{"value":"first"}"#),
+          .toolCall(
+            id: "native-total-exhausted",
+            name: "echo",
+            argumentsJSON: #"{"value":"second"}"#
+          ),
+        ]),
+        tool: tool
+      )
+    }
+
+    await #expect(throws: (any Error).self) {
+      _ = try await session.respond(to: "Use echo twice")
+    }
+
+    #expect(await counter.values == ["first"])
+    let run = try #require(await session.lastRun())
+    #expect(
+      run.events.contains {
+        $0.kind == .profileToolBudgetExhausted
+          && $0.attributes["native_call_id"] == "native-total-exhausted"
+      }
+    )
+  }
+
+  @Test("Profile governance enforces a per-tool call budget before execution")
+  func governedDynamicProfilePerToolBudget() async throws {
+    let counter = InvocationCounter()
+    let tool = EchoTool(counter: counter)
+    let registry = try DynamicProfileToolRegistry(tools: [tool])
+    let configuration = try DynamicProfileToolGovernanceConfiguration(
+      trusting: registry,
+      maximumCallsPerRun: 2,
+      maximumCallsPerToolPerRun: ["echo": 1]
+    )
+    let session = try AgentSession(
+      checkpointCompatibilityID: "governed-per-tool-budget-profile-v1",
+      toolGovernance: configuration
+    ) {
+      TestToolDynamicProfile(
+        model: RecordedLanguageModel(steps: [
+          .toolCall(name: "echo", argumentsJSON: #"{"value":"first"}"#),
+          .toolCall(
+            id: "native-tool-exhausted",
+            name: "echo",
+            argumentsJSON: #"{"value":"second"}"#
+          ),
+        ]),
+        tool: tool
+      )
+    }
+
+    await #expect(throws: (any Error).self) {
+      _ = try await session.respond(to: "Use echo twice")
+    }
+
+    #expect(await counter.values == ["first"])
+    let run = try #require(await session.lastRun())
+    #expect(
+      run.events.contains {
+        $0.kind == .profileToolBudgetExhausted
+          && $0.attributes["native_call_id"] == "native-tool-exhausted"
+      }
+    )
+  }
+
+  @Test("Cancellation during profile approval prevents execution")
+  func governedDynamicProfileCancellationDuringApproval() async throws {
+    let counter = InvocationCounter()
+    let signal = AuthorizationSignal()
+    let tool = EchoTool(counter: counter)
+    let registry = try DynamicProfileToolRegistry(tools: [tool])
+    let configuration = try DynamicProfileToolGovernanceConfiguration(
+      trusting: registry,
+      authorizer: ClosureDynamicProfileToolAuthorizer { _ in
+        await signal.markStarted()
+        try await Task.sleep(for: .seconds(1))
+        return .allow
+      }
+    )
+    let session = try AgentSession(
+      checkpointCompatibilityID: "governed-cancellation-profile-v1",
+      toolGovernance: configuration
+    ) {
+      TestToolDynamicProfile(
+        model: RecordedLanguageModel(steps: [
+          .toolCall(
+            id: "native-cancelled",
+            name: "echo",
+            argumentsJSON: #"{"value":"never"}"#
+          )
+        ]),
+        tool: tool
+      )
+    }
+    let task = Task { try await session.respond(to: "Use echo") }
+    while !(await signal.started) {
+      await Task.yield()
+    }
+
+    task.cancel()
+
+    await #expect(throws: (any Error).self) {
+      _ = try await task.value
+    }
+    #expect(await counter.count == 0)
+    let run = try #require(await session.lastRun())
+    #expect(
+      run.events.contains {
+        $0.kind == .profileToolApprovalFailed
+          && $0.attributes["native_call_id"] == "native-cancelled"
+      }
+    )
+  }
+
+  @Test("Supplied inner tool-call hooks run before outer governance and execution")
+  func governedDynamicProfileLifecycleOrdering() async throws {
+    let order = LifecycleOrderCapture()
+    let tool = OrderedEchoTool(order: order)
+    let registry = try DynamicProfileToolRegistry(tools: [tool])
+    let configuration = try DynamicProfileToolGovernanceConfiguration(
+      trusting: registry,
+      authorizer: ClosureDynamicProfileToolAuthorizer { _ in
+        await order.append("governance")
+        return .allow
+      }
+    )
+    let session = try AgentSession(
+      checkpointCompatibilityID: "governed-ordering-profile-v1",
+      toolGovernance: configuration
+    ) {
+      OrderedToolDynamicProfile(
+        model: RecordedLanguageModel(steps: [
+          .toolCall(
+            name: "ordered_echo",
+            argumentsJSON: #"{"value":"ordered"}"#
+          ),
+          .response(text: "done"),
+        ]),
+        tool: tool,
+        order: order
+      )
+    }
+
+    _ = try await session.respond(to: "Use ordered echo")
+
+    #expect(await order.values == ["inner", "governance", "tool"])
   }
 
   @Test("Applies bounded transcript retention only to persisted history")
