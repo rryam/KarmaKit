@@ -11,6 +11,8 @@
 - Added crash recovery that replays only read-only or explicitly idempotent
   work and marks a possibly completed non-idempotent mutation as
   `ambiguousAfterCrash`.
+- Serialized coordinator snapshot writes so concurrent submission, execution,
+  cancellation, and settlement cannot overwrite newer durable state.
 
 ## 0.4.0 - 2026-07-30
 

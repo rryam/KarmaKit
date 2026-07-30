@@ -31,9 +31,10 @@ stored record never moves to a different terminal state.
 
 A terminal record becomes visible to settlement waiters only after the store
 accepts its snapshot. If that write fails after factory success, the task stays
-nonterminal and recovery applies the same replay rules described below. The
-coordinator does not report successful work as failed or completed without a
-durable terminal record.
+nonterminal, and `waitForSettlement(of:)` throws a `persistenceFailed` error
+instead of waiting indefinitely. Recovery applies the same replay rules
+described below. The coordinator does not report successful work as failed or
+completed without a durable terminal record.
 
 `shutdown()` settles every open record as cancelled. `cancel(_:includingDescendants:)`
 does the same for one subtree. Active Swift tasks receive cooperative
@@ -65,6 +66,12 @@ new complete snapshot survives a process stop.
 
 Use one coordinator for a file. The store has no distributed claim protocol,
 cross-device consensus, or server lease authority.
+
+The coordinator serializes snapshot updates through one persistence lane. A
+submit, execution update, cancellation, or settlement derives its next
+snapshot only after the prior write finishes. In-memory state changes only
+after the store accepts that snapshot, so a suspended older write cannot
+replace newer cancellation or settlement state.
 
 The in-memory store is intended for tests. Its `snapshots()` history also makes
 settlement races inspectable.

@@ -543,10 +543,154 @@ struct FoundationModelsAgentBackgroundTaskTests {
     let record = try #require(await coordinator.record(for: id))
     let durable = try #require(await store.loadSnapshot())
 
-    #expect(record.state == .settling)
+    let expectedState: BackgroundAgentTaskState = failingSave == 4 ? .generating : .settling
+    #expect(record.state == expectedState)
     #expect(!record.state.isTerminal)
     #expect(record.terminalReason == nil)
     #expect(durable.records.first?.state != .completed)
+  }
+
+  @Test("Persistence lane prevents concurrent state from overwriting newer snapshots")
+  func persistenceLaneSerializesConcurrentStateChanges() async throws {
+    let executionGate = ExecutionGate()
+    let store = SuspendingSaveBackgroundAgentTaskStore(suspendingSaveNumbers: [3])
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: store,
+      configuration: .init(maximumConcurrentTasks: 1)
+    ) { task, _ in
+      if task.prompt == "first" {
+        await executionGate.run(task)
+      }
+      return BackgroundAgentTaskOutcome()
+    }
+    let firstRequest = BackgroundAgentTaskRequest(
+      prompt: "first",
+      ownerID: "owner",
+      recoveryPolicy: .readOnly
+    )
+    let first = try await coordinator.submit(firstRequest)
+    await store.waitForSaveCount(3)
+
+    let secondSubmission = Task {
+      try await coordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "second",
+          ownerID: "owner",
+          recoveryPolicy: .readOnly
+        )
+      )
+    }
+    let cancellation = Task {
+      try await coordinator.cancel(first, reason: "cancel while update is persisting")
+    }
+    for _ in 0..<10 { await Task.yield() }
+    await store.release(saveNumber: 3)
+
+    let second = try await secondSubmission.value
+    try await cancellation.value
+    await executionGate.releaseAll()
+    let firstResult = try await coordinator.waitForSettlement(of: first)
+    let secondResult = try await coordinator.waitForSettlement(of: second)
+
+    #expect(firstResult.state == .cancelled)
+    #expect(secondResult.state == .completed)
+    let snapshots = await store.snapshots()
+    let firstTerminalStates = snapshots.compactMap { snapshot in
+      snapshot.records.first(where: { $0.id == first }).flatMap {
+        $0.state.isTerminal ? $0.state : nil
+      }
+    }
+    #expect(!firstTerminalStates.isEmpty)
+    #expect(firstTerminalStates.allSatisfy { $0 == .cancelled })
+  }
+
+  @Test("Settlement waiters resume only after cancellation is durable")
+  func settlementWaiterRequiresDurableCancellation() async throws {
+    let executionGate = ExecutionGate()
+    let store = SuspendingSaveBackgroundAgentTaskStore(suspendingSaveNumbers: [4])
+    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+      await executionGate.run(task)
+      return BackgroundAgentTaskOutcome()
+    }
+    let id = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "cancel durably",
+        ownerID: "owner",
+        recoveryPolicy: .readOnly
+      )
+    )
+    await executionGate.waitForStartedCount(1)
+
+    let cancellation = Task {
+      try await coordinator.cancel(id)
+    }
+    await store.waitForSaveCount(4)
+    let observer = SettlementObserver()
+    let waiter = Task {
+      let record = try await coordinator.waitForSettlement(of: id)
+      await observer.recordSettlement()
+      return record
+    }
+    for _ in 0..<100 { await Task.yield() }
+
+    #expect(!(await observer.hasSettled))
+    await store.release(saveNumber: 4)
+    try await cancellation.value
+    let settled = try await waiter.value
+    await executionGate.releaseAll()
+
+    #expect(settled.state == .cancelled)
+    #expect(await observer.hasSettled)
+  }
+
+  @Test("A failed settlement write throws to an existing waiter")
+  func failedSettlementWriteNotifiesWaiter() async throws {
+    let executionGate = ExecutionGate()
+    let store = FailingSaveBackgroundAgentTaskStore(failingSaveNumbers: [5])
+    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+      await executionGate.run(task)
+      return BackgroundAgentTaskOutcome()
+    }
+    let id = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "fail settlement",
+        ownerID: "owner",
+        recoveryPolicy: .readOnly
+      )
+    )
+    await executionGate.waitForStartedCount(1)
+    let waiter = Task {
+      try await coordinator.waitForSettlement(of: id)
+    }
+
+    await executionGate.releaseAll()
+    await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
+      _ = try await waiter.value
+    }
+    #expect(await coordinator.record(for: id)?.state == .settling)
+  }
+
+  @Test("A failed preparing write leaves accepted work queued for resume")
+  func preparingPersistenceFailureRestoresQueue() async throws {
+    let store = FailingSaveBackgroundAgentTaskStore(failingSaveNumbers: [2])
+    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { _, _ in
+      BackgroundAgentTaskOutcome()
+    }
+    let request = BackgroundAgentTaskRequest(
+      prompt: "retry preparing",
+      ownerID: "owner",
+      recoveryPolicy: .readOnly
+    )
+
+    await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
+      _ = try await coordinator.submit(request)
+    }
+    #expect(await coordinator.record(for: request.id)?.state == .queued)
+
+    try await coordinator.resume()
+    let settled = try await coordinator.waitForSettlement(of: request.id)
+    #expect(settled.state == .completed)
+    #expect(settled.attemptCount == 1)
   }
 
   @Test("Start can be retried after recovery persistence fails")
@@ -641,6 +785,14 @@ private actor ExecutionCapture {
   }
 }
 
+private actor SettlementObserver {
+  private(set) var hasSettled = false
+
+  func recordSettlement() {
+    hasSettled = true
+  }
+}
+
 private actor ExecutionGate {
   private var startedCount = 0
   private var activeCount = 0
@@ -692,6 +844,57 @@ private actor ExecutionGate {
     for waiter in waiters {
       waiter.resume()
     }
+  }
+}
+
+private actor SuspendingSaveBackgroundAgentTaskStore: BackgroundAgentTaskStore {
+  private var snapshot: BackgroundAgentTaskStoreSnapshot?
+  private var savedSnapshots: [BackgroundAgentTaskStoreSnapshot] = []
+  private var suspendingSaveNumbers: Set<Int>
+  private var saveCount = 0
+  private var saveWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+  private var releaseWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+
+  init(suspendingSaveNumbers: Set<Int>) {
+    self.suspendingSaveNumbers = suspendingSaveNumbers
+  }
+
+  func loadSnapshot() -> BackgroundAgentTaskStoreSnapshot? {
+    snapshot
+  }
+
+  func saveSnapshot(_ snapshot: BackgroundAgentTaskStoreSnapshot) async {
+    saveCount += 1
+    let currentSave = saveCount
+    let ready = saveWaiters.filter { currentSave >= $0.count }
+    saveWaiters.removeAll { currentSave >= $0.count }
+    for waiter in ready {
+      waiter.continuation.resume()
+    }
+    if suspendingSaveNumbers.remove(currentSave) != nil {
+      await withCheckedContinuation { continuation in
+        releaseWaiters[currentSave] = continuation
+      }
+    }
+    self.snapshot = snapshot
+    savedSnapshots.append(snapshot)
+  }
+
+  func waitForSaveCount(_ count: Int) async {
+    if saveCount >= count {
+      return
+    }
+    await withCheckedContinuation { continuation in
+      saveWaiters.append((count, continuation))
+    }
+  }
+
+  func release(saveNumber: Int) {
+    releaseWaiters.removeValue(forKey: saveNumber)?.resume()
+  }
+
+  func snapshots() -> [BackgroundAgentTaskStoreSnapshot] {
+    savedSnapshots
   }
 }
 

@@ -15,7 +15,10 @@ public actor BackgroundAgentTaskCoordinator {
   private var nextSequence: UInt64 = 0
   private var running: [BackgroundAgentTaskID: Task<Void, Never>] = [:]
   private var settlementWaiters:
-    [BackgroundAgentTaskID: [CheckedContinuation<BackgroundAgentTaskRecord, Never>]] = [:]
+    [BackgroundAgentTaskID: [CheckedContinuation<BackgroundAgentTaskRecord, any Error>]] = [:]
+  private var settlementFailures: [BackgroundAgentTaskID: BackgroundAgentTaskCoordinatorError] = [:]
+  private var isPersisting = false
+  private var persistenceWaiters: [CheckedContinuation<Void, Never>] = []
   private var hasStarted = false
 
   public init(
@@ -35,13 +38,22 @@ public actor BackgroundAgentTaskCoordinator {
 
   /// Loads durable state, classifies interrupted work, and starts eligible tasks.
   public func start() async throws {
+    await acquirePersistenceAccess()
+    var holdsPersistenceAccess = true
+    defer {
+      if holdsPersistenceAccess {
+        releasePersistenceAccess()
+      }
+    }
     guard !hasStarted else {
+      releasePersistenceAccess()
+      holdsPersistenceAccess = false
       try await resume()
       return
     }
 
-    records.removeAll(keepingCapacity: true)
-    nextSequence = 0
+    var loadedRecords: [BackgroundAgentTaskID: BackgroundAgentTaskRecord] = [:]
+    var loadedNextSequence: UInt64 = 0
     if let snapshot = try await store.loadSnapshot() {
       guard snapshot.formatVersion == BackgroundAgentTaskStoreSnapshot.currentFormatVersion else {
         throw BackgroundAgentTaskStoreError.unsupportedFormatVersion(snapshot.formatVersion)
@@ -50,18 +62,31 @@ public actor BackgroundAgentTaskCoordinator {
         guard record.recordVersion == BackgroundAgentTaskRecord.currentRecordVersion else {
           throw BackgroundAgentTaskCoordinatorError.unsupportedRecordVersion(record.recordVersion)
         }
-        guard records.updateValue(record, forKey: record.id) == nil else {
+        guard loadedRecords.updateValue(record, forKey: record.id) == nil else {
           throw BackgroundAgentTaskCoordinatorError.duplicateTaskID(record.id)
         }
       }
-      nextSequence = snapshot.nextSequence
-      let changed = recoverInterruptedTasks(force: true)
-      if changed {
-        try await persist()
+      loadedNextSequence = snapshot.nextSequence
+      let recovery = recoverInterruptedTasks(force: true, in: loadedRecords)
+      loadedRecords = recovery.records
+      if recovery.changed {
+        holdsPersistenceAccess = false
+        try await commit(records: loadedRecords, nextSequence: loadedNextSequence)
+      } else {
+        records = loadedRecords
+        nextSequence = loadedNextSequence
       }
+      recovery.settled.forEach(notifySettlement)
+    } else {
+      records = [:]
+      nextSequence = 0
     }
 
     hasStarted = true
+    if holdsPersistenceAccess {
+      releasePersistenceAccess()
+      holdsPersistenceAccess = false
+    }
     try await scheduleEligibleTasks()
   }
 
@@ -71,8 +96,22 @@ public actor BackgroundAgentTaskCoordinator {
       try await start()
       return
     }
-    if recoverInterruptedTasks(force: false) {
-      try await persist()
+    await acquirePersistenceAccess()
+    var holdsPersistenceAccess = true
+    defer {
+      if holdsPersistenceAccess {
+        releasePersistenceAccess()
+      }
+    }
+    let recovery = recoverInterruptedTasks(force: false, in: records)
+    if recovery.changed {
+      holdsPersistenceAccess = false
+      try await commit(records: recovery.records, nextSequence: nextSequence)
+      recovery.settled.forEach(notifySettlement)
+    }
+    if holdsPersistenceAccess {
+      releasePersistenceAccess()
+      holdsPersistenceAccess = false
     }
     try await scheduleEligibleTasks()
   }
@@ -80,6 +119,13 @@ public actor BackgroundAgentTaskCoordinator {
   @discardableResult
   public func submit(_ request: BackgroundAgentTaskRequest) async throws -> BackgroundAgentTaskID {
     try await ensureStarted()
+    await acquirePersistenceAccess()
+    var holdsPersistenceAccess = true
+    defer {
+      if holdsPersistenceAccess {
+        releasePersistenceAccess()
+      }
+    }
     try validate(request: request)
     guard records[request.id] == nil else {
       throw BackgroundAgentTaskCoordinatorError.duplicateTaskID(request.id)
@@ -126,9 +172,10 @@ public actor BackgroundAgentTaskCoordinator {
       submittedAt: timestamp,
       updatedAt: timestamp
     )
-    nextSequence += 1
-    records[record.id] = record
-    try await persist()
+    var updatedRecords = records
+    updatedRecords[record.id] = record
+    holdsPersistenceAccess = false
+    try await commit(records: updatedRecords, nextSequence: nextSequence + 1)
     try await scheduleEligibleTasks()
     return record.id
   }
@@ -144,13 +191,18 @@ public actor BackgroundAgentTaskCoordinator {
   public func waitForSettlement(of id: BackgroundAgentTaskID) async throws
     -> BackgroundAgentTaskRecord
   {
+    await acquirePersistenceAccess()
+    releasePersistenceAccess()
     guard let record = records[id] else {
       throw BackgroundAgentTaskCoordinatorError.taskNotFound(id)
+    }
+    if let failure = settlementFailures[id] {
+      throw failure
     }
     if record.state.isTerminal {
       return record
     }
-    return await withCheckedContinuation { continuation in
+    return try await withCheckedThrowingContinuation { continuation in
       settlementWaiters[id, default: []].append(continuation)
     }
   }
@@ -162,6 +214,13 @@ public actor BackgroundAgentTaskCoordinator {
     reason: String? = nil
   ) async throws {
     try await ensureStarted()
+    await acquirePersistenceAccess()
+    var holdsPersistenceAccess = true
+    defer {
+      if holdsPersistenceAccess {
+        releasePersistenceAccess()
+      }
+    }
     guard records[id] != nil else {
       throw BackgroundAgentTaskCoordinatorError.taskNotFound(id)
     }
@@ -173,8 +232,10 @@ public actor BackgroundAgentTaskCoordinator {
       targets = [id]
     }
     let timestamp = now()
+    var updatedRecords = records
+    var settled: [BackgroundAgentTaskRecord] = []
     for target in targets {
-      guard var record = records[target], !record.state.isTerminal else {
+      guard var record = updatedRecords[target], !record.state.isTerminal else {
         continue
       }
       record.state = .cancelled
@@ -186,32 +247,59 @@ public actor BackgroundAgentTaskCoordinator {
         code: .cancelled,
         detail: reason
       )
-      records[target] = record
+      updatedRecords[target] = record
+      settled.append(record)
       running[target]?.cancel()
-      notifySettlement(record)
     }
-    try await persist()
+    do {
+      holdsPersistenceAccess = false
+      try await commit(records: updatedRecords, nextSequence: nextSequence)
+    } catch {
+      for record in settled {
+        notifySettlementFailure(for: record.id, error: error)
+      }
+      throw error
+    }
+    settled.forEach(notifySettlement)
     try await scheduleEligibleTasks()
   }
 
   /// Cooperatively cancels and settles every open task.
   public func shutdown(reason: String? = "Coordinator shut down.") async throws {
     try await ensureStarted()
+    await acquirePersistenceAccess()
+    var holdsPersistenceAccess = true
+    defer {
+      if holdsPersistenceAccess {
+        releasePersistenceAccess()
+      }
+    }
     let openIDs = records.values.filter { !$0.state.isTerminal }.map(\.id)
     let timestamp = now()
+    var updatedRecords = records
+    var settled: [BackgroundAgentTaskRecord] = []
     for id in openIDs {
-      guard var record = records[id] else { continue }
+      guard var record = updatedRecords[id] else { continue }
       record.state = .cancelled
       record.updatedAt = timestamp
       record.settledAt = timestamp
       record.lease = nil
       record.currentToolExecution = nil
       record.terminalReason = BackgroundAgentTaskTerminalReason(code: .cancelled, detail: reason)
-      records[id] = record
+      updatedRecords[id] = record
+      settled.append(record)
       running[id]?.cancel()
-      notifySettlement(record)
     }
-    try await persist()
+    do {
+      holdsPersistenceAccess = false
+      try await commit(records: updatedRecords, nextSequence: nextSequence)
+    } catch {
+      for record in settled {
+        notifySettlementFailure(for: record.id, error: error)
+      }
+      throw error
+    }
+    settled.forEach(notifySettlement)
   }
 
   private func ensureStarted() async throws {
@@ -221,18 +309,35 @@ public actor BackgroundAgentTaskCoordinator {
   }
 
   private func scheduleEligibleTasks() async throws {
-    while running.count < configuration.maximumConcurrentTasks,
-      let id = nextEligibleTaskID()
-    {
-      guard var record = records[id] else { continue }
+    while true {
+      await acquirePersistenceAccess()
+      guard running.count < configuration.maximumConcurrentTasks,
+        let id = nextEligibleTaskID(),
+        var record = records[id]
+      else {
+        releasePersistenceAccess()
+        return
+      }
       let timestamp = now()
       if let reason = budgetViolation(for: record, at: timestamp) {
-        try await persistSettlement(
-          id,
-          state: .failed,
-          reason: BackgroundAgentTaskTerminalReason(code: .budgetExceeded, detail: reason),
-          at: timestamp
+        record.state = .failed
+        record.updatedAt = timestamp
+        record.settledAt = timestamp
+        record.lease = nil
+        record.currentToolExecution = nil
+        record.terminalReason = BackgroundAgentTaskTerminalReason(
+          code: .budgetExceeded,
+          detail: reason
         )
+        var updatedRecords = records
+        updatedRecords[id] = record
+        do {
+          try await commit(records: updatedRecords, nextSequence: nextSequence)
+        } catch {
+          notifySettlementFailure(for: id, error: error)
+          throw error
+        }
+        notifySettlement(record)
         continue
       }
 
@@ -245,8 +350,9 @@ public actor BackgroundAgentTaskCoordinator {
         acquiredAt: timestamp,
         expiresAt: timestamp.addingTimeInterval(configuration.leaseDuration)
       )
-      records[id] = record
-      try await persist()
+      var updatedRecords = records
+      updatedRecords[id] = record
+      try await commit(records: updatedRecords, nextSequence: nextSequence)
       running[id] = Task { [weak self] in
         await self?.execute(id)
       }
@@ -312,16 +418,20 @@ public actor BackgroundAgentTaskCoordinator {
     } catch is CancellationError {
       if let current = records[id], !current.state.isTerminal {
         let timestamp = now()
-        try? await persistSettlement(
-          id,
-          state: .cancelled,
-          reason: BackgroundAgentTaskTerminalReason(code: .cancelled),
-          at: timestamp
-        )
+        do {
+          try await persistSettlement(
+            id,
+            state: .cancelled,
+            reason: BackgroundAgentTaskTerminalReason(code: .cancelled),
+            at: timestamp
+          )
+        } catch {
+          notifySettlementFailure(for: id, error: error)
+        }
       }
     } catch let error as BackgroundAgentTaskCoordinatorError {
       if case .persistenceFailed = error {
-        // Leave the task nonterminal. Recovery can retry only after durable state is available.
+        notifySettlementFailure(for: id, error: error)
       } else if let current = records[id], !current.state.isTerminal {
         let timestamp = now()
         let code: BackgroundAgentTaskTerminalCode
@@ -330,28 +440,36 @@ public actor BackgroundAgentTaskCoordinator {
         } else {
           code = .executionFailed
         }
-        try? await persistSettlement(
-          id,
-          state: .failed,
-          reason: BackgroundAgentTaskTerminalReason(
-            code: code,
-            detail: error.localizedDescription
-          ),
-          at: timestamp
-        )
+        do {
+          try await persistSettlement(
+            id,
+            state: .failed,
+            reason: BackgroundAgentTaskTerminalReason(
+              code: code,
+              detail: error.localizedDescription
+            ),
+            at: timestamp
+          )
+        } catch {
+          notifySettlementFailure(for: id, error: error)
+        }
       }
     } catch {
       if let current = records[id], !current.state.isTerminal {
         let timestamp = now()
-        try? await persistSettlement(
-          id,
-          state: .failed,
-          reason: BackgroundAgentTaskTerminalReason(
-            code: .executionFailed,
-            detail: String(describing: error)
-          ),
-          at: timestamp
-        )
+        do {
+          try await persistSettlement(
+            id,
+            state: .failed,
+            reason: BackgroundAgentTaskTerminalReason(
+              code: .executionFailed,
+              detail: String(describing: error)
+            ),
+            at: timestamp
+          )
+        } catch {
+          notifySettlementFailure(for: id, error: error)
+        }
       }
     }
 
@@ -404,6 +522,13 @@ public actor BackgroundAgentTaskCoordinator {
   private func apply(_ update: BackgroundAgentTaskExecutionUpdate, to id: BackgroundAgentTaskID)
     async throws
   {
+    await acquirePersistenceAccess()
+    var holdsPersistenceAccess = true
+    defer {
+      if holdsPersistenceAccess {
+        releasePersistenceAccess()
+      }
+    }
     guard var record = records[id] else {
       throw BackgroundAgentTaskCoordinatorError.taskNotFound(id)
     }
@@ -481,8 +606,11 @@ public actor BackgroundAgentTaskCoordinator {
       acquiredAt: record.lease?.acquiredAt ?? timestamp,
       expiresAt: timestamp.addingTimeInterval(configuration.leaseDuration)
     )
-    records[id] = record
-    try await persist()
+    var updatedRecords = records
+    updatedRecords[id] = record
+    holdsPersistenceAccess = false
+    try await commit(records: updatedRecords, nextSequence: nextSequence)
+    settlementFailures[id] = nil
   }
 
   private func consume(
@@ -521,10 +649,16 @@ public actor BackgroundAgentTaskCoordinator {
     reason: BackgroundAgentTaskTerminalReason,
     at timestamp: Date
   ) async throws {
+    await acquirePersistenceAccess()
+    var holdsPersistenceAccess = true
+    defer {
+      if holdsPersistenceAccess {
+        releasePersistenceAccess()
+      }
+    }
     guard var record = records[id], !record.state.isTerminal else {
       return
     }
-    let previous = record
     record.state = state
     record.updatedAt = timestamp
     record.settledAt = timestamp
@@ -533,26 +667,47 @@ public actor BackgroundAgentTaskCoordinator {
     record.terminalReason = reason
     var updatedRecords = records
     updatedRecords[id] = record
-    try await persist(records: updatedRecords)
-    guard records[id] == previous else {
-      return
+    do {
+      holdsPersistenceAccess = false
+      try await commit(records: updatedRecords, nextSequence: nextSequence)
+    } catch {
+      notifySettlementFailure(for: id, error: error)
+      throw error
     }
-    records[id] = record
     notifySettlement(record)
   }
 
   private func notifySettlement(_ record: BackgroundAgentTaskRecord) {
+    settlementFailures[record.id] = nil
     let waiters = settlementWaiters.removeValue(forKey: record.id) ?? []
     for waiter in waiters {
       waiter.resume(returning: record)
     }
   }
 
-  private func recoverInterruptedTasks(force: Bool) -> Bool {
+  private func notifySettlementFailure(for id: BackgroundAgentTaskID, error: any Error) {
+    let failure = persistenceError(from: error)
+    settlementFailures[id] = failure
+    let waiters = settlementWaiters.removeValue(forKey: id) ?? []
+    for waiter in waiters {
+      waiter.resume(throwing: failure)
+    }
+  }
+
+  private func recoverInterruptedTasks(
+    force: Bool,
+    in sourceRecords: [BackgroundAgentTaskID: BackgroundAgentTaskRecord]
+  ) -> (
+    records: [BackgroundAgentTaskID: BackgroundAgentTaskRecord],
+    settled: [BackgroundAgentTaskRecord],
+    changed: Bool
+  ) {
     let timestamp = now()
+    var recoveredRecords = sourceRecords
+    var settled: [BackgroundAgentTaskRecord] = []
     var changed = false
-    for id in records.keys {
-      guard var record = records[id], !record.state.isTerminal else {
+    for id in recoveredRecords.keys {
+      guard var record = recoveredRecords[id], !record.state.isTerminal else {
         continue
       }
       let hasUncertainNonReplayableMutation =
@@ -586,12 +741,12 @@ public actor BackgroundAgentTaskCoordinator {
       record.updatedAt = timestamp
       record.lease = nil
       record.currentToolExecution = nil
-      records[id] = record
+      recoveredRecords[id] = record
       if record.state.isTerminal {
-        notifySettlement(record)
+        settled.append(record)
       }
     }
-    return changed
+    return (recoveredRecords, settled, changed)
   }
 
   private func budgetViolation(for record: BackgroundAgentTaskRecord, at timestamp: Date) -> String?
@@ -619,22 +774,54 @@ public actor BackgroundAgentTaskCoordinator {
     return result
   }
 
-  private func persist() async throws {
-    try await persist(records: records)
+  private func acquirePersistenceAccess() async {
+    guard isPersisting else {
+      isPersisting = true
+      return
+    }
+    await withCheckedContinuation { continuation in
+      persistenceWaiters.append(continuation)
+    }
   }
 
-  private func persist(records: [BackgroundAgentTaskID: BackgroundAgentTaskRecord]) async throws {
+  private func commit(
+    records updatedRecords: [BackgroundAgentTaskID: BackgroundAgentTaskRecord],
+    nextSequence updatedNextSequence: UInt64
+  ) async throws {
+    precondition(isPersisting)
     do {
       try await store.saveSnapshot(
         BackgroundAgentTaskStoreSnapshot(
           savedAt: now(),
-          nextSequence: nextSequence,
-          records: records.values.sorted { $0.sequence < $1.sequence }
+          nextSequence: updatedNextSequence,
+          records: updatedRecords.values.sorted { $0.sequence < $1.sequence }
         )
       )
+      records = updatedRecords
+      nextSequence = updatedNextSequence
+      releasePersistenceAccess()
     } catch {
-      throw BackgroundAgentTaskCoordinatorError.persistenceFailed(String(describing: error))
+      let failure = persistenceError(from: error)
+      releasePersistenceAccess()
+      throw failure
     }
+  }
+
+  private func releasePersistenceAccess() {
+    if persistenceWaiters.isEmpty {
+      isPersisting = false
+    } else {
+      persistenceWaiters.removeFirst().resume()
+    }
+  }
+
+  private func persistenceError(from error: any Error) -> BackgroundAgentTaskCoordinatorError {
+    if let error = error as? BackgroundAgentTaskCoordinatorError,
+      case .persistenceFailed = error
+    {
+      return error
+    }
+    return .persistenceFailed(String(describing: error))
   }
 
   private func validate(request: BackgroundAgentTaskRequest) throws {
