@@ -350,6 +350,103 @@ into event attributes by default; they remain in the native transcript.
 Receipts are SHA-256 hash chains. They detect mutation but do not prove
 authorship; sign the root hash when cryptographic attribution is required.
 
+## Xcode 27 Evaluations
+
+`FoundationModelsAgentEvaluations` is an optional test-support product for
+Apple's Xcode 27 `Evaluations` framework. The core target does not import or
+link `Evaluations`, so adding FoundationModelsAgent to an app does not add a
+production runtime dependency.
+
+Build a stable trajectory from the native transcript and audited run:
+
+```swift
+let response = try await agent.respond(to: "Find the newest report.")
+let transcript = try await agent.transcript()
+let trajectory = FoundationModelsAgentTrajectory(
+  transcript: transcript,
+  run: response.run
+)
+
+try FoundationModelsAgentTrajectoryFixtureExporter().write(
+  trajectory,
+  named: "newest report",
+  expectedDestination: "The newest report is Q4.",
+  to: fixturesDirectory.appending(path: "newest-report.json")
+)
+```
+
+The versioned fixture preserves native tool ordering, canonical JSON arguments,
+call-group and call-output linkage, run status, and unsupported segments.
+Sensitive argument names and common credential strings are redacted by
+default. Native UUIDs are deterministically remapped unless
+`preservesNativeIdentifiers` is enabled.
+
+When repeated calls share a tool name, audited outcomes are applied only when
+the remaining call and outcome are unambiguous. Otherwise the calls remain
+incomplete and the trajectory records an `ambiguousToolOutcome` issue instead
+of guessing.
+
+In an Xcode 27 evaluation target, add the optional product and import
+`FoundationModelsAgentEvaluations`:
+
+```swift
+import Evaluations
+import FoundationModelsAgentEvaluations
+
+struct ReportEvaluation: Evaluation {
+  let agent: AgentSession
+  let dataset: ArrayLoader<ModelSample<String>>
+  let destination = Metric("destination_exact")
+  let path = ToolCallEvaluator<ModelSample<String>>(
+    foundationModelsAgentMetricPrefix: "report_path"
+  )
+
+  init(agent: AgentSession, fixture: FoundationModelsAgentTrajectoryFixture) throws {
+    self.agent = agent
+    dataset = ArrayLoader(samples: [
+      try fixture.modelSample(
+        prompt: "Find the newest report.",
+        disallowedToolNames: ["delete_report"],
+        allowsAdditionalToolCalls: false
+      )
+    ])
+  }
+
+  func subject(from sample: ModelSample<String>) async throws -> ModelSubject<String> {
+    let response = try await agent.respond(to: sample.prompt)
+    return ModelSubject(
+      foundationModelsAgentValue: response.content,
+      transcript: try await agent.transcript()
+    )
+  }
+
+  var evaluators: Evaluators {
+    Evaluator { _, subject in
+      subject.value == "The newest report is Q4."
+        ? destination.passing()
+        : destination.failing()
+    }
+    path
+  }
+
+  func aggregateMetrics(using aggregator: inout MetricsAggregator) {
+    aggregator.computeMean(of: destination)
+    aggregator.computeMean(of: path.allPass)
+    aggregator.computeMean(of: path.percentagePass)
+  }
+}
+```
+
+Evaluate the destination with a deterministic content metric (or another Apple
+evaluator appropriate to the task), and evaluate the path separately with
+`ToolCallEvaluator`. `TrajectoryExpectation` helpers use exact matchers for
+scalar arguments and throw for nested objects, arrays, or null because Xcode 27
+Beta 4's `ArgumentValue` cannot represent those exactly. Custom and attachment
+segments remain explicit unsupported records rather than disappearing.
+
+The `FoundationModelsAgentEvaluations` DocC catalog includes more fixture and
+safety guidance in “Evaluating Agent Paths.”
+
 ## Streaming
 
 ```swift
@@ -481,6 +578,7 @@ Run the matrix:
 
 ```bash
 swift test
+swift test --filter FoundationModelsAgentEvaluationsTests
 swift test --traits AppleUtilities
 swift test --traits Claude
 swift test --traits Gemini

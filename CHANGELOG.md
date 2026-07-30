@@ -5,6 +5,10 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added stable native-transcript trajectories, deterministic redacted fixture
+  export, and an optional Xcode 27 `FoundationModelsAgentEvaluations` product
+  with `ToolCallEvaluator`, `TrajectoryExpectation`, `ModelSample`, and
+  `ModelSubject` helpers.
 
 ## 0.4.0 - 2026-07-30
 

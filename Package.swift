@@ -112,3 +112,27 @@ let package = Package(
     ),
   ]
 )
+
+#if compiler(>=6.4) && canImport(Evaluations)
+  package.products.append(
+    .library(
+      name: "FoundationModelsAgentEvaluations",
+      targets: ["FoundationModelsAgentEvaluations"]
+    )
+  )
+  package.targets.append(
+    .target(
+      name: "FoundationModelsAgentEvaluations",
+      dependencies: ["FoundationModelsAgent"]
+    )
+  )
+  package.targets.append(
+    .testTarget(
+      name: "FoundationModelsAgentEvaluationsTests",
+      dependencies: [
+        "FoundationModelsAgent",
+        "FoundationModelsAgentEvaluations",
+      ]
+    )
+  )
+#endif
