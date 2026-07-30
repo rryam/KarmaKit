@@ -5,6 +5,12 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added stable native-transcript trajectories projected from verified
+  `AgentReceiptBundle` graphs, including child/task lineage, terminal
+  settlements, and routing/context/tool evidence links; deterministic redacted
+  fixture export; and an optional Xcode 27 `FoundationModelsAgentEvaluations`
+  product with `ToolCallEvaluator`, `TrajectoryExpectation`, `ModelSample`, and
+  `ModelSubject` helpers.
 - Added opt-in OSLog signposts and a deterministic injectable event projection
   for canonically correlated run, routing, context, checkpoint, approval,
   governed-tool, retry, cancellation, and dynamic-profile observability.
