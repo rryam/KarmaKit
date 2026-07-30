@@ -51,11 +51,7 @@ let package = Package(
     ),
   ],
   targets: [
-    .target(
-      name: "FoundationModelsAgent",
-      // SwiftPM otherwise reports the DocC catalog as an unhandled source file.
-      exclude: ["Documentation.docc"]
-    ),
+    .target(name: "FoundationModelsAgent"),
     .target(
       name: "FoundationModelsAgentMemory",
       dependencies: ["FoundationModelsAgent"],
@@ -93,6 +89,10 @@ let package = Package(
     ),
     .testTarget(
       name: "FoundationModelsAgentTests",
+      dependencies: ["FoundationModelsAgent", "FoundationModelsAgentTestSupport"]
+    ),
+    .testTarget(
+      name: "FoundationModelsAgentPublicAPITests",
       dependencies: ["FoundationModelsAgent", "FoundationModelsAgentTestSupport"]
     ),
     .testTarget(

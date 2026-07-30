@@ -8,6 +8,8 @@ public enum AgentSessionInstrumentationNames {
   public static let checkpointCategory = "AgentSession.Checkpoint"
   public static let policyCategory = "AgentSession.Policy"
   public static let profileCategory = "AgentSession.Profile"
+  public static let routingCategory = "AgentSession.Routing"
+  public static let contextCategory = "AgentSession.Context"
 }
 
 /// Controls diagnostic-message capture. Prompt, tool arguments, tool outputs,
@@ -31,6 +33,8 @@ public enum AgentSessionInstrumentationSpanKind: String, Equatable, Sendable {
   case toolExecution
   case profileLifecycle
   case profileTransition
+  case routingDecision
+  case contextBudget
   case retry
   case cancellation
 }
@@ -58,11 +62,14 @@ public struct AgentSessionInstrumentationEvent: Equatable, Sendable {
   public let runID: UUID
   public let spanID: UUID
   public let parentSpanID: UUID?
-  /// Generic caller-supplied correlation metadata.
+  /// Canonical lineage identifiers plus application-owned correlation metadata.
   ///
-  /// Future lineage APIs can pass UUID strings under keys such as `root_id`,
-  /// `parent_id`, or `task_id` without instrumentation defining that hierarchy.
+  /// `run_id`, `root_run_id`, `parent_run_id`, and `task_id` are projected from
+  /// the source event's `AgentRunLineage`; instrumentation does not define a
+  /// second hierarchy.
   public let correlationMetadata: [String: String]
+  /// The canonical observer event that caused this projection.
+  public let sourceEventKind: FoundationModelsAgentEventKind
   public let kind: AgentSessionInstrumentationSpanKind
   public let phase: AgentSessionInstrumentationPhase
   public let outcome: AgentSessionInstrumentationOutcome?
@@ -76,6 +83,7 @@ public struct AgentSessionInstrumentationEvent: Equatable, Sendable {
     spanID: UUID,
     parentSpanID: UUID?,
     correlationMetadata: [String: String],
+    sourceEventKind: FoundationModelsAgentEventKind,
     kind: AgentSessionInstrumentationSpanKind,
     phase: AgentSessionInstrumentationPhase,
     outcome: AgentSessionInstrumentationOutcome? = nil,
@@ -88,6 +96,7 @@ public struct AgentSessionInstrumentationEvent: Equatable, Sendable {
     self.spanID = spanID
     self.parentSpanID = parentSpanID
     self.correlationMetadata = correlationMetadata
+    self.sourceEventKind = sourceEventKind
     self.kind = kind
     self.phase = phase
     self.outcome = outcome
@@ -123,7 +132,10 @@ public struct NoOpAgentSessionInstrumentationSink: AgentSessionInstrumentationSi
 /// Opt-in OSLog/signpost configuration for one AgentSession.
 public struct AgentSessionInstrumentationConfiguration: Sendable {
   public var isEnabled: Bool
-  /// Generic UUID/string metadata for optional root, parent, task, or child correlation.
+  /// Application-owned correlation metadata, such as a request or deployment identifier.
+  ///
+  /// Canonical run, root, parent, and task identifiers come from `AgentRunLineage`
+  /// and override reserved lineage keys in this dictionary.
   public var correlationMetadata: [String: String]
   public var contentPolicy: AgentSessionInstrumentationContentPolicy
   public var sink: (any AgentSessionInstrumentationSink)?
@@ -158,6 +170,8 @@ actor AgentSessionInstrumentationRuntime {
   private let checkpointLog: OSLog
   private let policyLog: OSLog
   private let profileLog: OSLog
+  private let routingLog: OSLog
+  private let contextLog: OSLog
   private var sequence = 0
   private var activeByRun: [UUID: [AgentSessionActiveInstrumentationSpan]] = [:]
 
@@ -179,6 +193,14 @@ actor AgentSessionInstrumentationRuntime {
       subsystem: AgentSessionInstrumentationNames.subsystem,
       category: AgentSessionInstrumentationNames.profileCategory
     )
+    self.routingLog = OSLog(
+      subsystem: AgentSessionInstrumentationNames.subsystem,
+      category: AgentSessionInstrumentationNames.routingCategory
+    )
+    self.contextLog = OSLog(
+      subsystem: AgentSessionInstrumentationNames.subsystem,
+      category: AgentSessionInstrumentationNames.contextCategory
+    )
   }
 
   func record(_ source: FoundationModelsAgentEvent) {
@@ -197,6 +219,36 @@ actor AgentSessionInstrumentationRuntime {
       endLatest(.modelAttempt, source: source, outcome: outcome(for: source))
     case .modelResponseCompleted:
       endLatest(.modelAttempt, source: source, outcome: .succeeded)
+
+    case .routeSelected:
+      emit(
+        .routingDecision,
+        source: source,
+        outcome: .succeeded,
+        parent: activeID(for: .run, runID: source.runID)
+      )
+    case .routeCandidateRejected:
+      emit(
+        .routingDecision,
+        source: source,
+        outcome: .denied,
+        parent: activeID(for: .run, runID: source.runID)
+      )
+
+    case .contextBudgetEvaluated, .contextBudgetTransformed:
+      emit(
+        .contextBudget,
+        source: source,
+        outcome: .succeeded,
+        parent: activeID(for: .run, runID: source.runID)
+      )
+    case .contextBudgetFailed:
+      emit(
+        .contextBudget,
+        source: source,
+        outcome: outcome(for: source),
+        parent: activeID(for: .run, runID: source.runID)
+      )
 
     case .checkpointRestoreStarted:
       begin(
@@ -297,6 +349,30 @@ actor AgentSessionInstrumentationRuntime {
         key: "profile",
         source: source,
         parent: activeID(for: .run, runID: source.runID)
+      )
+    case .profileToolAllowed:
+      emit(
+        .profileTransition,
+        source: source,
+        outcome: .succeeded,
+        parent: activeID(for: .profileLifecycle, runID: source.runID)
+          ?? activeID(for: .run, runID: source.runID)
+      )
+    case .profileToolDenied, .profileToolBudgetExhausted:
+      emit(
+        .profileTransition,
+        source: source,
+        outcome: .denied,
+        parent: activeID(for: .profileLifecycle, runID: source.runID)
+          ?? activeID(for: .run, runID: source.runID)
+      )
+    case .profileToolApprovalFailed:
+      emit(
+        .profileTransition,
+        source: source,
+        outcome: outcome(for: source),
+        parent: activeID(for: .profileLifecycle, runID: source.runID)
+          ?? activeID(for: .run, runID: source.runID)
       )
     case .nativeToolCallRecorded, .nativeToolOutputRecorded:
       if source.attributes["profile_owned"] == "true" {
@@ -436,7 +512,8 @@ actor AgentSessionInstrumentationRuntime {
       runID: source.runID,
       spanID: active.id,
       parentSpanID: active.parentID,
-      correlationMetadata: configuration.correlationMetadata,
+      correlationMetadata: correlationMetadata(for: source),
+      sourceEventKind: source.kind,
       kind: active.kind,
       phase: phase,
       outcome: outcome,
@@ -463,17 +540,70 @@ actor AgentSessionInstrumentationRuntime {
   private func safeAttributes(from attributes: [String: String]) -> [String: String] {
     let allowed = [
       "attempt",
+      "after_context_size",
+      "after_instructions_tokens",
+      "after_prompt_tokens",
+      "after_schema_tokens",
+      "after_tools_tokens",
+      "after_total_input_tokens",
+      "after_transcript_tokens",
+      "after_usable_input_tokens",
+      "authoritative_transcript_policy",
+      "before_context_size",
+      "before_instructions_tokens",
+      "before_prompt_tokens",
+      "before_schema_tokens",
+      "before_tools_tokens",
+      "before_total_input_tokens",
+      "before_transcript_tokens",
+      "before_usable_input_tokens",
+      "cache_invalidated",
       "cancelled",
+      "fallback",
       "emitted_partial_response",
       "history_entries",
       "input_tokens",
+      "network_class",
       "output_tokens",
+      "privacy_class",
+      "reason_codes",
       "transcript_entries",
       "checkpoint_found",
       "next_attempt",
       "restored_before_run",
     ]
     return attributes.filter { allowed.contains($0.key) }
+  }
+
+  private func correlationMetadata(
+    for source: FoundationModelsAgentEvent
+  ) -> [String: String] {
+    let reserved = [
+      "run_id",
+      "root_run_id",
+      "parent_run_id",
+      "task_id",
+      "lineage_depth",
+      "lineage_relationship",
+      "root_id",
+      "parent_id",
+      "child_id",
+    ]
+    var metadata = configuration.correlationMetadata
+    for key in reserved {
+      metadata.removeValue(forKey: key)
+    }
+    metadata["run_id"] = source.runID.uuidString.lowercased()
+    if let lineage = source.lineage {
+      metadata["root_run_id"] = lineage.rootRunID.description
+      metadata["parent_run_id"] = lineage.parentRunID?.description
+      metadata["task_id"] = lineage.taskID?.description
+      metadata["lineage_depth"] = String(lineage.depth.rawValue)
+      metadata["lineage_relationship"] = lineage.relationship.rawValue
+    } else {
+      metadata["root_run_id"] = source.runID.uuidString.lowercased()
+    }
+    return metadata
   }
 
   private func outcome(for source: FoundationModelsAgentEvent)
@@ -495,6 +625,10 @@ actor AgentSessionInstrumentationRuntime {
       policyLog
     case .profileLifecycle, .profileTransition:
       profileLog
+    case .routingDecision:
+      routingLog
+    case .contextBudget:
+      contextLog
     case .run, .modelAttempt, .retry, .cancellation:
       lifecycleLog
     }
@@ -509,11 +643,10 @@ actor AgentSessionInstrumentationRuntime {
     let run = source.runID.uuidString.lowercased() as NSString
     let span = active.id.uuidString.lowercased() as NSString
     let parent = (active.parentID?.uuidString.lowercased() ?? "none") as NSString
-    let root = (configuration.correlationMetadata["root_id"] ?? "none") as NSString
-    let correlationParent =
-      (configuration.correlationMetadata["parent_id"] ?? "none") as NSString
-    let task = (configuration.correlationMetadata["task_id"] ?? "none") as NSString
-    let child = (configuration.correlationMetadata["child_id"] ?? "none") as NSString
+    let correlation = correlationMetadata(for: source)
+    let root = (correlation["root_run_id"] ?? "none") as NSString
+    let correlationParent = (correlation["parent_run_id"] ?? "none") as NSString
+    let task = (correlation["task_id"] ?? "none") as NSString
     let result = (outcome?.rawValue ?? "none") as NSString
     let log = log(for: active.kind)
     let name: StaticString
@@ -536,6 +669,10 @@ actor AgentSessionInstrumentationRuntime {
       name = "Profile Lifecycle"
     case .profileTransition:
       name = "Profile Transition"
+    case .routingDecision:
+      name = "Routing Decision"
+    case .contextBudget:
+      name = "Context Budget"
     case .retry:
       name = "Retry"
     case .cancellation:
@@ -543,7 +680,7 @@ actor AgentSessionInstrumentationRuntime {
     }
     os_signpost(
       type, log: log, name: name, signpostID: active.signpostID,
-      "run_id=%{private,mask.hash}@ span_id=%{private,mask.hash}@ parent_span_id=%{private,mask.hash}@ root_id=%{private,mask.hash}@ parent_id=%{private,mask.hash}@ task_id=%{private,mask.hash}@ child_id=%{private,mask.hash}@ outcome=%{public}@",
-      run, span, parent, root, correlationParent, task, child, result)
+      "run_id=%{private,mask.hash}@ span_id=%{private,mask.hash}@ parent_span_id=%{private,mask.hash}@ root_run_id=%{private,mask.hash}@ parent_run_id=%{private,mask.hash}@ task_id=%{private,mask.hash}@ outcome=%{public}@",
+      run, span, parent, root, correlationParent, task, result)
   }
 }

@@ -71,6 +71,8 @@ struct AgentSessionInstrumentationTests {
   func nestedSpans() async throws {
     let capture = InstrumentationEventCapture()
     let store = InMemoryCheckpointStore()
+    let root = AgentRunLineage.root()
+    let lineage = try root.descendant(taskID: AgentTaskID())
     let session = try AgentSession(
       model: RecordedLanguageModel(steps: [
         .toolCall(
@@ -87,20 +89,27 @@ struct AgentSessionInstrumentationTests {
       ),
       checkpointStore: store,
       instrumentation: .init(
-        correlationMetadata: [
-          "root_id": UUID().uuidString,
-          "parent_id": UUID().uuidString,
-          "task_id": "tool-task",
-        ],
+        correlationMetadata: ["request_id": "tool-request"],
         sink: capture
       )
     )
 
-    let response = try await session.respond(to: "PROMPT_MUST_NOT_BE_LOGGED")
+    let response = try await session.respond(
+      to: "PROMPT_MUST_NOT_BE_LOGGED",
+      lineage: lineage
+    )
     let events = capture.events
     let runID = response.run.id
     #expect(!events.isEmpty)
     #expect(events.allSatisfy { $0.runID == runID })
+    #expect(
+      events.allSatisfy {
+        $0.correlationMetadata["run_id"] == lineage.runID.description
+          && $0.correlationMetadata["root_run_id"] == lineage.rootRunID.description
+          && $0.correlationMetadata["parent_run_id"] == lineage.parentRunID?.description
+          && $0.correlationMetadata["task_id"] == lineage.taskID?.description
+          && $0.correlationMetadata["request_id"] == "tool-request"
+      })
     #expect(events.map(\.sequence) == Array(events.indices))
     #expect(events.allSatisfy { $0.diagnosticMessage == nil })
     #expect(events.allSatisfy { !$0.attributes.values.contains("approved") })
@@ -273,31 +282,42 @@ struct AgentSessionInstrumentationTests {
   @Test("Concurrent independent sessions retain separate run and task correlation")
   func independentSessions() async throws {
     let capture = InstrumentationEventCapture()
+    let root = AgentRunLineage.root()
+    let firstLineage = try root.descendant(taskID: AgentTaskID())
+    let secondLineage = try root.descendant(taskID: AgentTaskID())
     let first = try AgentSession(
       model: RecordedLanguageModel(steps: [
         .delayedResponse(text: "one", delay: .milliseconds(10))
       ]),
       instrumentation: .init(
-        correlationMetadata: ["task_id": "one"],
+        correlationMetadata: ["request_id": "one"],
         sink: capture
       )
     )
     let second = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "two")]),
       instrumentation: .init(
-        correlationMetadata: ["task_id": "two"],
+        correlationMetadata: ["request_id": "two"],
         sink: capture
       )
     )
 
-    async let firstResponse = first.respond(to: "First")
-    async let secondResponse = second.respond(to: "Second")
+    async let firstResponse = first.respond(to: "First", lineage: firstLineage)
+    async let secondResponse = second.respond(to: "Second", lineage: secondLineage)
     let responses = try await [firstResponse, secondResponse]
     let runIDs = Set(responses.map(\.run.id))
     #expect(runIDs.count == 2)
 
     let events = capture.events.filter { runIDs.contains($0.runID) }
-    #expect(Set(events.map { $0.correlationMetadata["task_id"] ?? "" }) == ["one", "two"])
+    #expect(
+      Set(events.compactMap { $0.correlationMetadata["task_id"] })
+        == Set([
+          firstLineage.taskID!.description,
+          secondLineage.taskID!.description,
+        ])
+    )
+    #expect(
+      Set(events.compactMap { $0.correlationMetadata["request_id"] }) == ["one", "two"])
     for runID in runIDs {
       let runEvents = events.filter { $0.runID == runID }
       #expect(runEvents.first?.kind == .run)
