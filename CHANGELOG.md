@@ -5,6 +5,9 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added opt-in OSLog signposts and a deterministic injectable event projection
+  for canonically correlated run, routing, context, checkpoint, approval,
+  governed-tool, retry, cancellation, and dynamic-profile observability.
 - Added stable hierarchical run/task identifiers, parent-child lineage on runs,
   observer events and tamper-evident receipts, structured terminal
   `AgentTaskResult` evidence, canonical run/event evidence references,

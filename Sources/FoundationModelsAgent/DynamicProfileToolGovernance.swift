@@ -304,7 +304,8 @@
           call: call,
           manifest: manifest,
           kind: .profileToolApprovalFailed,
-          message: "Dynamic-profile tool approval was cancelled."
+          message: "Dynamic-profile tool approval was cancelled.",
+          error: CancellationError()
         )
         throw CancellationError()
       } catch {

@@ -33,9 +33,15 @@ public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable
   case toolExecutionFailed
   case nativeToolCallRecorded
   case nativeToolOutputRecorded
+  case checkpointRestoreStarted
+  case checkpointRestoreCompleted
+  case checkpointRestoreFailed
+  case checkpointWriteStarted
   case transcriptCheckpointed
   case transcriptCheckpointFailed
+  case modelRetryScheduled
   case runCompleted
+  case runCancelled
   case runFailed
 }
 
@@ -533,19 +539,25 @@ actor FoundationModelsAgentEventRecorder {
   private let deliveries: [FoundationModelsAgentObserverDelivery]
   private let deliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration
   private let redactionPolicy: FoundationModelsAgentRedactionPolicy
+  private let instrumentation: AgentSessionInstrumentationRuntime?
   private var eventsByRun: [UUID: [FoundationModelsAgentEvent]] = [:]
   private var lineageByRun: [UUID: AgentRunLineage] = [:]
 
   init(
     observers: [any FoundationModelsAgentObserver],
     redactionPolicy: FoundationModelsAgentRedactionPolicy,
-    deliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration
+    deliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration,
+    instrumentationConfiguration: AgentSessionInstrumentationConfiguration
   ) {
     self.deliveries = observers.map {
       FoundationModelsAgentObserverDelivery(observer: $0, configuration: deliveryConfiguration)
     }
     self.deliveryConfiguration = deliveryConfiguration
     self.redactionPolicy = redactionPolicy
+    self.instrumentation =
+      instrumentationConfiguration.isEnabled
+      ? AgentSessionInstrumentationRuntime(configuration: instrumentationConfiguration)
+      : nil
   }
 
   func begin(lineage: AgentRunLineage, message: String) async {
@@ -569,6 +581,7 @@ actor FoundationModelsAgentEventRecorder {
       lineage: lineageByRun[runID]
     )
     eventsByRun[runID, default: []].append(event)
+    await instrumentation?.record(event)
     for delivery in deliveries {
       await delivery.enqueue(event)
     }

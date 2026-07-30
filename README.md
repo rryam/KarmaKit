@@ -639,6 +639,59 @@ types as their public evidence boundary while retaining native
 [Hierarchical Execution Evidence](Sources/FoundationModelsAgent/FoundationModelsAgent.docc/HierarchicalExecutionEvidence.md)
 for the full contract.
 
+## Instruments and signposts
+
+AgentSession can emit lightweight OSLog signposts that complement Apple's
+Foundation Models Instrument without copying its model telemetry:
+
+```swift
+let agent = try AgentSession(
+  model: model,
+  instrumentation: .init(
+    correlationMetadata: ["request_id": requestID.uuidString]
+  )
+)
+
+let response = try await agent.respond(
+  to: prompt,
+  lineage: childLineage
+)
+```
+
+Instrumentation is disabled by default, leaving only a nil check at existing
+event boundaries. Enabled sessions use the stable
+`com.rudrankriyam.FoundationModelsAgent` subsystem and stable AgentSession
+categories for lifecycle, checkpoints, policy, profiles, routing, and context.
+Every projection carries the canonical lineage identifiers from
+`AgentRunLineage`: `run_id`, `root_run_id`, and, for descendants,
+`parent_run_id` and `task_id`. Caller metadata can add application correlation
+such as a request ID, but cannot override those canonical keys.
+
+Use Apple's Foundation Models Instrument for time to first token, tokens per
+second, and native generation latency. Overlay AgentSession's `Model Attempt`
+span with those metrics, then use the outer `AgentSession Run`, routing,
+context-budget, checkpoint, approval, governed-tool, retry, cancellation, and
+dynamic-profile signposts to explain latency outside the native model.
+AgentSession does not re-emit Apple's token timing or create a separate trace
+store. Apple's instrument does not carry the AgentSession run ID, so this is a
+same-trace timeline correlation rather than an automatic identifier join.
+
+If `prewarm()`, `transcript()`, or `checkpoint()` performs lazy restoration
+before a response run exists, the next run receives a `Checkpoint Restore`
+point event marked `restored_before_run`. This preserves correlation without
+inventing a duration for work that already completed.
+
+For deterministic tests or a private telemetry adapter, inject an
+`AgentSessionInstrumentationSink`. Sink errors are ignored and cannot change a
+run result. The default content policy projects no diagnostic messages and
+instrumentation never receives prompts, tool arguments, tool outputs, model
+outputs, or reasoning text. Bounded diagnostic messages require the conspicuous
+`.unsafeExplicitlyEnabled(maximumCharacters:)` opt-in and still pass through the
+session redaction policy.
+
+See [AgentSession Instrumentation](Sources/FoundationModelsAgent/FoundationModelsAgent.docc/AgentSession-Instrumentation.md)
+for span nesting, privacy, and Instruments recording guidance.
+
 ## Streaming
 
 ```swift

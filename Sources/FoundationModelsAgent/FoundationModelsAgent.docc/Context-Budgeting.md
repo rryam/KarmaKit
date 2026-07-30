@@ -75,7 +75,7 @@ placeholders: use the selected model's real token-counting API. Do not estimate
 tokens from characters or introduce a second tokenizer.
 
 When using ``FoundationModelsAgentRouter``, pass its complete selection to
-``AgentSession/init(selection:tools:instructions:configuration:contextMeasurer:toolConfiguration:checkpointStore:checkpointKey:transcriptRetention:requiresMatchingToolset:instructionRestorationPolicy:plugins:redactionPolicy:observers:observerDeliveryConfiguration:)``.
+``AgentSession/init(selection:tools:instructions:configuration:contextMeasurer:toolConfiguration:checkpointStore:checkpointKey:transcriptRetention:requiresMatchingToolset:instructionRestorationPolicy:plugins:redactionPolicy:observers:observerDeliveryConfiguration:instrumentation:)``.
 The measurer receives that selection's actual native model. The route
 descriptor's declared context size is decision evidence only; it is never used
 as token accounting. An unsupported selected route fails before inference and

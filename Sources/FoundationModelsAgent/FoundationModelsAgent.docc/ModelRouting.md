@@ -18,7 +18,7 @@ and a serializable ``FoundationModelsAgentRouteDescriptor`` covering:
 
 The router does not invoke the model and does not define a response, message, transcript,
 or provider protocol. Pass the complete selection to
-``AgentSession/init(selection:tools:instructions:configuration:contextMeasurer:toolConfiguration:checkpointStore:checkpointKey:transcriptRetention:requiresMatchingToolset:instructionRestorationPolicy:plugins:redactionPolicy:observers:observerDeliveryConfiguration:)``
+``AgentSession/init(selection:tools:instructions:configuration:contextMeasurer:toolConfiguration:checkpointStore:checkpointKey:transcriptRetention:requiresMatchingToolset:instructionRestorationPolicy:plugins:redactionPolicy:observers:observerDeliveryConfiguration:instrumentation:)``
 so its native model and routing evidence cannot diverge.
 
 ## Supply deterministic application policy
