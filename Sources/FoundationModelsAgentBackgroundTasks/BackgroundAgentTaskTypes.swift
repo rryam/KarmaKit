@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModelsAgent
 
 public struct BackgroundAgentTaskID: RawRepresentable, Codable, Hashable, Sendable,
   CustomStringConvertible
@@ -11,6 +12,11 @@ public struct BackgroundAgentTaskID: RawRepresentable, Codable, Hashable, Sendab
 
   public init() {
     self.init(rawValue: UUID())
+  }
+
+  /// The canonical task identifier used by run lineage, evidence, and receipts.
+  public var agentTaskID: AgentTaskID {
+    AgentTaskID(rawValue: rawValue)
   }
 
   public var description: String {
@@ -51,13 +57,13 @@ public enum BackgroundAgentTaskPriority: Int, Codable, CaseIterable, Comparable,
   }
 }
 
-/// Declares what the coordinator may replay after a process crash.
+/// Declares what the coordinator may replay after an interrupted attempt.
 public enum BackgroundAgentTaskRecoveryPolicy: Codable, Equatable, Sendable {
   /// The execution performs no mutations and can start again.
   case readOnly
   /// A mutation may have happened and must never be replayed automatically.
   case nonReplayableMutation
-  /// Every mutation uses this key at its external idempotency boundary.
+  /// The task's single mutation uses this key at its external idempotency boundary.
   case idempotentMutation(idempotencyKey: String)
 }
 
@@ -134,8 +140,10 @@ public struct BackgroundAgentTaskToolExecution: Codable, Equatable, Sendable {
 
 public enum BackgroundAgentTaskTerminalCode: String, Codable, Sendable {
   case completed
+  case denied
   case executionFailed
   case cancelled
+  case timedOut
   case budgetExceeded
   case ambiguousAfterCrash
 }
@@ -150,12 +158,47 @@ public struct BackgroundAgentTaskTerminalReason: Codable, Equatable, Sendable {
   }
 }
 
+/// Scheduler evidence for one distinct native run attempt.
+public struct BackgroundAgentTaskAttempt: Codable, Equatable, Sendable {
+  public let lineage: AgentRunLineage
+  public let startedAt: Date
+  public internal(set) var endedAt: Date?
+  public internal(set) var terminalCode: BackgroundAgentTaskTerminalCode?
+  public internal(set) var terminalDetail: String?
+  public internal(set) var taskResult: AgentTaskResult?
+  public internal(set) var mutationName: String?
+  public internal(set) var mutationIdempotencyKey: String?
+
+  public init(
+    lineage: AgentRunLineage,
+    startedAt: Date,
+    endedAt: Date? = nil,
+    terminalCode: BackgroundAgentTaskTerminalCode? = nil,
+    terminalDetail: String? = nil,
+    taskResult: AgentTaskResult? = nil,
+    mutationName: String? = nil,
+    mutationIdempotencyKey: String? = nil
+  ) {
+    self.lineage = lineage
+    self.startedAt = startedAt
+    self.endedAt = endedAt
+    self.terminalCode = terminalCode
+    self.terminalDetail = terminalDetail
+    self.taskResult = taskResult
+    self.mutationName = mutationName
+    self.mutationIdempotencyKey = mutationIdempotencyKey
+  }
+}
+
 /// A durable task description. `prompt` remains a native `String` prompt; the execution
-/// factory decides how to pass it to `AgentSession`.
+/// factory decides how to pass it to `AgentSession`. `parentLineage` identifies the
+/// canonical run that scheduled the task.
 public struct BackgroundAgentTaskRequest: Codable, Equatable, Sendable {
   public let id: BackgroundAgentTaskID
   public let prompt: String
   public let ownerID: String
+  /// The canonical run that scheduled this work.
+  public let parentLineage: AgentRunLineage
   public let parentTaskID: BackgroundAgentTaskID?
   /// Scheduler-owned values that a future lineage adapter can populate without changing IDs.
   public let metadata: [String: String]
@@ -167,6 +210,7 @@ public struct BackgroundAgentTaskRequest: Codable, Equatable, Sendable {
     id: BackgroundAgentTaskID = BackgroundAgentTaskID(),
     prompt: String,
     ownerID: String,
+    parentLineage: AgentRunLineage,
     parentTaskID: BackgroundAgentTaskID? = nil,
     metadata: [String: String] = [:],
     priority: BackgroundAgentTaskPriority = .normal,
@@ -176,6 +220,7 @@ public struct BackgroundAgentTaskRequest: Codable, Equatable, Sendable {
     self.id = id
     self.prompt = prompt
     self.ownerID = ownerID
+    self.parentLineage = parentLineage
     self.parentTaskID = parentTaskID
     self.metadata = metadata
     self.priority = priority
@@ -185,12 +230,14 @@ public struct BackgroundAgentTaskRequest: Codable, Equatable, Sendable {
 }
 
 public struct BackgroundAgentTaskRecord: Codable, Equatable, Sendable {
-  public static let currentRecordVersion = 1
+  public static let currentRecordVersion = 2
 
   public let recordVersion: Int
   public let id: BackgroundAgentTaskID
   public let prompt: String
   public let ownerID: String
+  /// The canonical run that scheduled this task.
+  public let parentLineage: AgentRunLineage
   public let rootTaskID: BackgroundAgentTaskID
   public let parentTaskID: BackgroundAgentTaskID?
   public let metadata: [String: String]
@@ -207,15 +254,19 @@ public struct BackgroundAgentTaskRecord: Codable, Equatable, Sendable {
   public internal(set) var attemptCount: Int
   public internal(set) var lease: BackgroundAgentTaskLease?
   public internal(set) var usage: BackgroundAgentTaskUsage
+  public internal(set) var usageOverflowed: Bool
   public internal(set) var hasBegunMutation: Bool
   public internal(set) var currentToolExecution: BackgroundAgentTaskToolExecution?
   public internal(set) var terminalReason: BackgroundAgentTaskTerminalReason?
+  /// One distinct canonical run plus its scheduler settlement for every execution attempt.
+  public internal(set) var attempts: [BackgroundAgentTaskAttempt]
 
   public init(
     recordVersion: Int = Self.currentRecordVersion,
     id: BackgroundAgentTaskID,
     prompt: String,
     ownerID: String,
+    parentLineage: AgentRunLineage,
     rootTaskID: BackgroundAgentTaskID,
     parentTaskID: BackgroundAgentTaskID?,
     metadata: [String: String] = [:],
@@ -232,14 +283,17 @@ public struct BackgroundAgentTaskRecord: Codable, Equatable, Sendable {
     attemptCount: Int = 0,
     lease: BackgroundAgentTaskLease? = nil,
     usage: BackgroundAgentTaskUsage = BackgroundAgentTaskUsage(),
+    usageOverflowed: Bool = false,
     hasBegunMutation: Bool = false,
     currentToolExecution: BackgroundAgentTaskToolExecution? = nil,
-    terminalReason: BackgroundAgentTaskTerminalReason? = nil
+    terminalReason: BackgroundAgentTaskTerminalReason? = nil,
+    attempts: [BackgroundAgentTaskAttempt] = []
   ) {
     self.recordVersion = recordVersion
     self.id = id
     self.prompt = prompt
     self.ownerID = ownerID
+    self.parentLineage = parentLineage
     self.rootTaskID = rootTaskID
     self.parentTaskID = parentTaskID
     self.metadata = metadata
@@ -256,17 +310,30 @@ public struct BackgroundAgentTaskRecord: Codable, Equatable, Sendable {
     self.attemptCount = attemptCount
     self.lease = lease
     self.usage = usage
+    self.usageOverflowed = usageOverflowed
     self.hasBegunMutation = hasBegunMutation
     self.currentToolExecution = currentToolExecution
     self.terminalReason = terminalReason
+    self.attempts = attempts
+  }
+
+  /// The canonical lineage the execution factory must pass into `AgentSession`.
+  public var currentAttemptLineage: AgentRunLineage? {
+    attempts.last?.lineage
+  }
+
+  /// Canonical evidence returned by the most recent settled native run.
+  public var taskResult: AgentTaskResult? {
+    attempts.last?.taskResult
   }
 }
 
 public struct BackgroundAgentTaskOutcome: Sendable {
-  public let terminalDetail: String?
+  /// The canonical terminal evidence for the native `AgentSession` run.
+  public let taskResult: AgentTaskResult
 
-  public init(terminalDetail: String? = nil) {
-    self.terminalDetail = terminalDetail
+  public init(taskResult: AgentTaskResult) {
+    self.taskResult = taskResult
   }
 }
 
@@ -303,6 +370,8 @@ public enum BackgroundAgentTaskCoordinatorError: Error, LocalizedError, Equatabl
   case duplicateTaskID(BackgroundAgentTaskID)
   case taskNotFound(BackgroundAgentTaskID)
   case parentNotFound(BackgroundAgentTaskID)
+  case parentNotAcceptingChildren(BackgroundAgentTaskID)
+  case parentLineageMismatch
   case ownerMismatch
   case depthLimitExceeded(maximum: Int)
   case fanOutLimitExceeded(parent: BackgroundAgentTaskID, maximum: Int)
@@ -310,6 +379,8 @@ public enum BackgroundAgentTaskCoordinatorError: Error, LocalizedError, Equatabl
   case invalidStateTransition(from: BackgroundAgentTaskState, to: BackgroundAgentTaskState)
   case mutationDeclarationRequired
   case idempotencyKeyMismatch
+  case multipleMutationsUnsupported
+  case taskResultMismatch
   case persistenceFailed(String)
   case unsupportedRecordVersion(Int)
 
@@ -325,6 +396,10 @@ public enum BackgroundAgentTaskCoordinatorError: Error, LocalizedError, Equatabl
       "Task \(id) does not exist."
     case .parentNotFound(let id):
       "Parent task \(id) does not exist."
+    case .parentNotAcceptingChildren(let id):
+      "Parent task \(id) no longer accepts child work."
+    case .parentLineageMismatch:
+      "The canonical parent run does not match the scheduler parent task."
     case .ownerMismatch:
       "A child task must have the same owner as its parent."
     case .depthLimitExceeded(let maximum):
@@ -339,6 +414,10 @@ public enum BackgroundAgentTaskCoordinatorError: Error, LocalizedError, Equatabl
       "The task must declare a mutation recovery policy before executing a mutation."
     case .idempotencyKeyMismatch:
       "The mutation idempotency key does not match the task recovery declaration."
+    case .multipleMutationsUnsupported:
+      "A durable background task may cross at most one mutation boundary."
+    case .taskResultMismatch:
+      "The canonical task result does not match this background task or its terminal state."
     case .persistenceFailed(let detail):
       "Task state could not be persisted: \(detail)"
     case .unsupportedRecordVersion(let version):

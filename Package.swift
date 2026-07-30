@@ -63,6 +63,7 @@ let package = Package(
     ),
     .target(
       name: "FoundationModelsAgentBackgroundTasks",
+      dependencies: ["FoundationModelsAgent"],
       exclude: ["FoundationModelsAgentBackgroundTasks.docc"]
     ),
     .target(
@@ -100,6 +101,14 @@ let package = Package(
       dependencies: ["FoundationModelsAgent", "FoundationModelsAgentTestSupport"]
     ),
     .testTarget(
+      name: "FoundationModelsAgentPublicAPITests",
+      dependencies: [
+        "FoundationModelsAgent",
+        "FoundationModelsAgentBackgroundTasks",
+        "FoundationModelsAgentTestSupport",
+      ]
+    ),
+    .testTarget(
       name: "FoundationModelsAgentProviderTests",
       dependencies: ["FoundationModelsAgent", "FoundationModelsAgentProviders"],
       swiftSettings: [
@@ -120,7 +129,31 @@ let package = Package(
     ),
     .testTarget(
       name: "FoundationModelsAgentBackgroundTaskTests",
-      dependencies: ["FoundationModelsAgentBackgroundTasks"]
+      dependencies: ["FoundationModelsAgent", "FoundationModelsAgentBackgroundTasks"]
     ),
   ]
 )
+
+#if compiler(>=6.4) && canImport(Evaluations)
+  package.products.append(
+    .library(
+      name: "FoundationModelsAgentEvaluations",
+      targets: ["FoundationModelsAgentEvaluations"]
+    )
+  )
+  package.targets.append(
+    .target(
+      name: "FoundationModelsAgentEvaluations",
+      dependencies: ["FoundationModelsAgent"]
+    )
+  )
+  package.targets.append(
+    .testTarget(
+      name: "FoundationModelsAgentEvaluationsTests",
+      dependencies: [
+        "FoundationModelsAgent",
+        "FoundationModelsAgentEvaluations",
+      ]
+    )
+  )
+#endif

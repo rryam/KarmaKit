@@ -227,16 +227,21 @@ actor FoundationModelsAgentToolRuntime {
   private var currentRunID: UUID?
   private var callCount = 0
   private var beganToolInvocation = false
-  private let maximumCallsPerRun: Int?
+  private let configuredMaximumCallsPerRun: Int?
+  private var currentMaximumCallsPerRun: Int?
 
   init(maximumCallsPerRun: Int?) {
-    self.maximumCallsPerRun = maximumCallsPerRun
+    self.configuredMaximumCallsPerRun = maximumCallsPerRun
   }
 
-  func begin(runID: UUID) {
+  func begin(runID: UUID, maximumCallsPerRun: Int? = nil) {
     currentRunID = runID
     callCount = 0
     beganToolInvocation = false
+    currentMaximumCallsPerRun = Self.minimum(
+      configuredMaximumCallsPerRun,
+      maximumCallsPerRun
+    )
   }
 
   func finish(runID: UUID) {
@@ -244,14 +249,15 @@ actor FoundationModelsAgentToolRuntime {
     currentRunID = nil
     callCount = 0
     beganToolInvocation = false
+    currentMaximumCallsPerRun = nil
   }
 
   func reserveCall() throws -> UUID {
     guard let currentRunID else {
       throw FoundationModelsAgentError.noActiveRun
     }
-    if let maximumCallsPerRun, callCount >= maximumCallsPerRun {
-      throw FoundationModelsAgentError.toolCallBudgetExceeded(maximum: maximumCallsPerRun)
+    if let currentMaximumCallsPerRun, callCount >= currentMaximumCallsPerRun {
+      throw FoundationModelsAgentError.toolCallBudgetExceeded(maximum: currentMaximumCallsPerRun)
     }
     callCount += 1
     beganToolInvocation = true
@@ -264,6 +270,19 @@ actor FoundationModelsAgentToolRuntime {
 
   func activeRunID() -> UUID? {
     currentRunID
+  }
+
+  private static func minimum(_ first: Int?, _ second: Int?) -> Int? {
+    switch (first, second) {
+    case (.some(let first), .some(let second)):
+      Swift.min(first, second)
+    case (.some(let first), .none):
+      first
+    case (.none, .some(let second)):
+      second
+    case (.none, .none):
+      nil
+    }
   }
 }
 
@@ -377,7 +396,10 @@ struct FoundationModelsAgentGovernedTool: Tool {
         runID: runID,
         kind: .toolExecutionFailed,
         message: String(describing: error),
-        attributes: attributes.merging(["duration": String(describing: duration)]) { _, new in new }
+        attributes: attributes.merging([
+          "duration": String(describing: duration),
+          "error_type": String(reflecting: Swift.type(of: error)),
+        ]) { _, new in new }
       )
       throw error
     }

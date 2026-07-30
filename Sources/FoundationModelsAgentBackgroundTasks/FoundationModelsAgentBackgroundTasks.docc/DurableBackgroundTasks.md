@@ -22,7 +22,7 @@ through states reported by the execution factory:
 | `completed` | Execution and settlement finished |
 | `failed` | Execution or a budget failed |
 | `cancelled` | User, ancestor, or shutdown cancellation won |
-| `ambiguousAfterCrash` | A non-idempotent mutation may have completed |
+| `ambiguousAfterCrash` | The task lost control after a non-idempotent mutation began |
 
 `completed`, `failed`, `cancelled`, and `ambiguousAfterCrash` are terminal.
 Settlement ignores a late second result. This matters when cancellation and a
@@ -36,25 +36,32 @@ instead of waiting indefinitely. Recovery applies the same replay rules
 described below. The coordinator does not report successful work as failed or
 completed without a durable terminal record.
 
-`shutdown()` settles every open record as cancelled. `cancel(_:includingDescendants:)`
-does the same for one subtree. Active Swift tasks receive cooperative
-cancellation; an external API that ignores cancellation can still finish its
-request, which is why mutation recovery must not depend on cancellation alone.
+`shutdown()` and `cancel(_:includingDescendants:)` settle work that has not
+crossed a mutation boundary as cancelled. Once a non-idempotent mutation has
+started, either operation records `ambiguousAfterCrash` because the external
+API may ignore Swift cancellation and finish the request. The canonical status
+name mentions a crash; the scheduler also uses it for cancellation or timeout
+after control of an external effect has been lost.
 
 ## Stored identity
 
-`BackgroundAgentTaskID` wraps a caller-supplied or generated UUID. Each record
-also stores:
+`BackgroundAgentTaskID` wraps a caller-supplied or generated UUID and maps to
+the canonical `AgentTaskID` through `agentTaskID`. The request carries the
+`AgentRunLineage` that scheduled the work. Each retry gets a fresh background
+run lineage under that parent while the task ID stays fixed.
+
+Each record also stores:
 
 - `ownerID`, `rootTaskID`, `parentTaskID`, and `depth`;
-- caller metadata for future lineage adapters;
+- caller metadata and canonical attempt records;
 - a monotonic FIFO sequence and priority;
 - submission, update, first-start, and settlement dates;
 - attempt count, executor lease, usage, and terminal reason.
 
-These fields are scheduling data. They do not define an agent-run lineage or a
-receipt hierarchy. A separate adapter can map the raw UUID and metadata to a
-canonical lineage API later.
+Each `BackgroundAgentTaskAttempt` records its lineage, times, mutation
+boundary, scheduler stop reason, and optional canonical `AgentTaskResult`.
+Outputs and receipts stay in `AgentTaskResult`; the scheduler does not define a
+second evidence format.
 
 ## Persistence
 
@@ -62,10 +69,12 @@ canonical lineage API later.
 `BackgroundAgentTaskStoreSnapshot`. Both the snapshot and every record have
 format versions. The production `FileBackgroundAgentTaskStore` encodes sorted
 JSON and uses an atomic file replacement, so the old complete snapshot or the
-new complete snapshot survives a process stop.
+new complete snapshot survives a process stop. Its throwing initializer takes
+a nonblocking advisory lock. Another process or store instance cannot open the
+same queue file while that lock remains held.
 
-Use one coordinator for a file. The store has no distributed claim protocol,
-cross-device consensus, or server lease authority.
+Use one coordinator for a file. Exclusive local ownership is not a distributed
+claim protocol or server lease.
 
 The coordinator serializes snapshot updates through one persistence lane. A
 submit, execution update, cancellation, or settlement derives its next
@@ -76,11 +85,18 @@ replace newer cancellation or settlement state.
 The in-memory store is intended for tests. Its `snapshots()` history also makes
 settlement races inspectable.
 
+The file is plaintext. Prompts, metadata, tool names, idempotency keys, evidence
+references, and error details may be sensitive. Put it in an app-protected
+container, choose the required Foundation file-protection class, and encrypt it
+at the app boundary when needed. `ownerID` is stored tenancy metadata; it is not
+an authorization check.
+
 ## Recovery rules
 
 On a new coordinator start, every nonterminal leased record is treated as work
 interrupted by the prior process. A running coordinator reclaims an in-flight
-record only after its lease expires.
+record only after its lease expires, and never reclaims an ID still present in
+its own running table.
 
 | Interrupted state | Recovery |
 | --- | --- |
@@ -95,6 +111,9 @@ The coordinator never turns `ambiguousAfterCrash` back into queued work.
 Inspect the external system, then submit a new task only after the app knows
 whether the effect happened.
 
+Recovery runs only when the app calls `start()` or `resume()`. The package does
+not install a timer that wakes expired leases.
+
 ## Side-effect protocol
 
 The execution factory must durably mark a mutation before making its external
@@ -106,6 +125,7 @@ let key = "invoice:\(invoiceID):capture"
 let request = BackgroundAgentTaskRequest(
   prompt: "Capture the approved invoice.",
   ownerID: userID,
+  parentLineage: parentRun.lineage,
   recoveryPolicy: .idempotentMutation(idempotencyKey: key)
 )
 
@@ -122,13 +142,18 @@ let coordinator = try BackgroundAgentTaskCoordinator(store: store) {
   try await billing.capture(invoiceID, idempotencyKey: key)
   try await context.markToolFinished()
 
-  return BackgroundAgentTaskOutcome()
+  return BackgroundAgentTaskOutcome(
+    taskResult: try makeCanonicalTaskResult(for: record)
+  )
 }
 ```
 
 `.readOnly` rejects `markExecutingMutation`. A
 `.nonReplayableMutation` must omit the key and will become ambiguous if the
 process stops at or after the recorded boundary.
+
+One background task may cross one mutation boundary. Split independent writes
+into separate tasks, each with its own idempotency key and canonical evidence.
 
 Opaque profile-owned tools and ordinary `AgentSession` tools do not
 automatically notify this separate scheduler. The app must wrap a mutating tool
@@ -149,7 +174,9 @@ Each task carries maximum elapsed time, attempts, turns, tool calls, and tokens.
 The coordinator cancels cooperative execution when elapsed time expires.
 `markExecutingTool` consumes one tool-call unit. The factory must report native
 session usage with `recordUsage`; the scheduler cannot infer usage from an
-opaque caller-owned session.
+opaque caller-owned session. Turn and token limits are cooperative accounting:
+the model may spend them before the factory reports usage. The scheduler saves
+the observed overage, then fails the task.
 
 ## Process runtime is not OS runtime
 
@@ -164,8 +191,8 @@ subject to Apple's scheduling decisions and entitlement rules.
 
 ## Deliberate scope
 
-This product stops at a single-process, file-backed scheduler. It does not
-implement `ChildAgentTool`, a general distributed queue, server coordination,
+This product stops at an exclusively owned, file-backed scheduler. It does not
+implement `ChildAgentTool`, a distributed queue, server coordination,
 `BGTaskScheduler` registration, or arbitrary rich-prompt serialization.
 Callers that need image or custom-segment input should persist an app-owned
 asset reference in metadata and rebuild the native `Prompt` inside the

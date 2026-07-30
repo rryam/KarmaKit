@@ -5,9 +5,11 @@ native Foundation Models loop.
 
 ## Overview
 
-The module provides a single-process coordinator, a versioned store protocol,
-and an atomic file store. Each task keeps its own prompt, UUID, ownership
-metadata, hierarchy, priority, budgets, lease, and terminal reason.
+The module provides an app-owned coordinator, a versioned store protocol, and
+an atomically replaced file store with exclusive local locking. Each task keeps
+its prompt, scheduler hierarchy, priority, budgets, lease, and terminal reason.
+Its stable ID maps to `AgentTaskID`, and every attempt records a distinct
+`AgentRunLineage` plus an optional canonical `AgentTaskResult`.
 
 Execution stays with the app. Supply a `@Sendable` factory that creates or
 restores `AgentSession`, calls its native response APIs, and reports scheduler
@@ -31,6 +33,7 @@ For the full state and recovery contract, see <doc:DurableBackgroundTasks>.
 - ``BackgroundAgentTaskRecord``
 - ``BackgroundAgentTaskOutcome``
 - ``BackgroundAgentTaskExecutionContext``
+- ``BackgroundAgentTaskAttempt``
 
 ### Persistence
 

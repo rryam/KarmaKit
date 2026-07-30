@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct BackgroundAgentTaskStoreSnapshot: Codable, Equatable, Sendable {
@@ -29,6 +30,8 @@ public protocol BackgroundAgentTaskStore: Sendable {
 public enum BackgroundAgentTaskStoreError: Error, LocalizedError, Equatable, Sendable {
   case unsupportedFormatVersion(Int)
   case corruptedStore(String)
+  case storeAlreadyInUse(String)
+  case fileLockFailed(String)
 
   public var errorDescription: String? {
     switch self {
@@ -36,6 +39,10 @@ public enum BackgroundAgentTaskStoreError: Error, LocalizedError, Equatable, Sen
       "Task store format version \(version) is unsupported."
     case .corruptedStore(let detail):
       "The task store is corrupted: \(detail)"
+    case .storeAlreadyInUse(let path):
+      "Another coordinator already owns the task store at \(path)."
+    case .fileLockFailed(let detail):
+      "The task store lock could not be created: \(detail)"
     }
   }
 }
@@ -63,24 +70,50 @@ public actor InMemoryBackgroundAgentTaskStore: BackgroundAgentTaskStore {
   }
 }
 
-/// A single-process file store for app-owned durable tasks.
+/// An exclusively owned file store for app-managed durable tasks.
 ///
 /// Each save encodes the complete versioned snapshot and atomically replaces the file.
-/// Coordinate access through one `BackgroundAgentTaskCoordinator`; this is not a distributed queue.
+/// The initializer takes an advisory lock so another process or store instance fails cleanly.
+/// The JSON remains plaintext; encryption and file protection belong to the application.
 public actor FileBackgroundAgentTaskStore: BackgroundAgentTaskStore {
   private let fileURL: URL
+  private let lockFileDescriptor: Int32
   private let fileManager: FileManager
   private let encoder: JSONEncoder
   private let decoder: JSONDecoder
 
-  public init(fileURL: URL, fileManager: FileManager = .default) {
+  public init(fileURL: URL, fileManager: FileManager = .default) throws {
+    let directory = fileURL.deletingLastPathComponent()
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    let lockURL = fileURL.appendingPathExtension("lock")
+    let descriptor = open(
+      lockURL.path,
+      O_CREAT | O_RDWR | O_CLOEXEC,
+      S_IRUSR | S_IWUSR
+    )
+    guard descriptor >= 0 else {
+      throw BackgroundAgentTaskStoreError.fileLockFailed(
+        String(cString: strerror(errno))
+      )
+    }
+    guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+      close(descriptor)
+      throw BackgroundAgentTaskStoreError.storeAlreadyInUse(fileURL.path)
+    }
+
     self.fileURL = fileURL
+    self.lockFileDescriptor = descriptor
     self.fileManager = fileManager
     self.encoder = JSONEncoder()
     self.decoder = JSONDecoder()
     encoder.outputFormatting = [.sortedKeys]
     encoder.dateEncodingStrategy = .iso8601
     decoder.dateDecodingStrategy = .iso8601
+  }
+
+  deinit {
+    flock(lockFileDescriptor, LOCK_UN)
+    close(lockFileDescriptor)
   }
 
   public func loadSnapshot() throws -> BackgroundAgentTaskStoreSnapshot? {

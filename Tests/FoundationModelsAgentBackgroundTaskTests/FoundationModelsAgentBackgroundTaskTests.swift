@@ -1,4 +1,6 @@
 import Foundation
+import FoundationModelsAgent
+import Synchronization
 import Testing
 
 @testable import FoundationModelsAgentBackgroundTasks
@@ -23,7 +25,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
       now: { now },
       executionFactory: { task, _ in
         await calls.append(task.prompt)
-        return BackgroundAgentTaskOutcome()
+        return try successfulOutcome(for: task)
       }
     )
 
@@ -99,7 +101,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
       now: { now },
       executionFactory: { task, _ in
         await calls.append(task.prompt)
-        return BackgroundAgentTaskOutcome()
+        return try successfulOutcome(for: task)
       }
     )
 
@@ -131,7 +133,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
     let coordinator = try BackgroundAgentTaskCoordinator(
       store: InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record])),
       now: { now },
-      executionFactory: { _, _ in BackgroundAgentTaskOutcome() }
+      executionFactory: { task, _ in try successfulOutcome(for: task) }
     )
 
     try await coordinator.start()
@@ -147,12 +149,13 @@ struct FoundationModelsAgentBackgroundTaskTests {
     let store = InMemoryBackgroundAgentTaskStore()
     let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
       await gate.run(task)
-      return BackgroundAgentTaskOutcome(terminalDetail: "late success")
+      return try successfulOutcome(for: task)
     }
     let id = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "hold",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -187,12 +190,13 @@ struct FoundationModelsAgentBackgroundTaskTests {
       if task.prompt == "first" {
         await gate.run(task)
       }
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let first = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "first",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -200,6 +204,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
       BackgroundAgentTaskRequest(
         prompt: "second",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -234,12 +239,13 @@ struct FoundationModelsAgentBackgroundTaskTests {
       if task.parentTaskID != nil {
         await gate.run(task)
       }
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let root1 = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "root-1",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -247,16 +253,20 @@ struct FoundationModelsAgentBackgroundTaskTests {
       BackgroundAgentTaskRequest(
         prompt: "root-2",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
     _ = try await coordinator.waitForSettlement(of: root1)
     _ = try await coordinator.waitForSettlement(of: root2)
+    let root1Lineage = try #require(await coordinator.record(for: root1)?.taskResult?.lineage)
+    let root2Lineage = try #require(await coordinator.record(for: root2)?.taskResult?.lineage)
 
     let child1 = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "child-1",
         ownerID: "owner",
+        parentLineage: root1Lineage,
         parentTaskID: root1,
         recoveryPolicy: .readOnly
       )
@@ -265,6 +275,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
       BackgroundAgentTaskRequest(
         prompt: "child-2",
         ownerID: "owner",
+        parentLineage: root1Lineage,
         parentTaskID: root1,
         recoveryPolicy: .readOnly
       )
@@ -273,11 +284,15 @@ struct FoundationModelsAgentBackgroundTaskTests {
       BackgroundAgentTaskRequest(
         prompt: "child-3",
         ownerID: "owner",
+        parentLineage: root2Lineage,
         parentTaskID: root2,
         recoveryPolicy: .readOnly
       )
     )
     await gate.waitForStartedCount(2)
+    let child1Lineage = try #require(
+      await coordinator.record(for: child1)?.currentAttemptLineage
+    )
 
     #expect(await gate.maximumConcurrent == 2)
     #expect(await gate.maximumConcurrentForOneParent == 1)
@@ -286,6 +301,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
         BackgroundAgentTaskRequest(
           prompt: "fan-out-overflow",
           ownerID: "owner",
+          parentLineage: root1Lineage,
           parentTaskID: root1,
           recoveryPolicy: .readOnly
         )
@@ -296,6 +312,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
         BackgroundAgentTaskRequest(
           prompt: "too-deep",
           ownerID: "owner",
+          parentLineage: child1Lineage,
           parentTaskID: child1,
           recoveryPolicy: .readOnly
         )
@@ -308,6 +325,123 @@ struct FoundationModelsAgentBackgroundTaskTests {
     _ = try await coordinator.waitForSettlement(of: child1)
     _ = try await coordinator.waitForSettlement(of: child2)
     _ = try await coordinator.waitForSettlement(of: child3)
+  }
+
+  @Test("Durable lease commit reserves the global execution slot")
+  func durableLeaseReservesGlobalSlot() async throws {
+    let store = SuspendingSaveBackgroundAgentTaskStore(suspendingSaveNumbers: [2])
+    let gate = ExecutionGate()
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: store,
+      configuration: .init(maximumConcurrentTasks: 1)
+    ) { task, _ in
+      await gate.run(task)
+      return try successfulOutcome(for: task)
+    }
+
+    let firstSubmission = Task {
+      try await coordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "first",
+          ownerID: "owner",
+          parentLineage: testParentLineage,
+          recoveryPolicy: .readOnly
+        )
+      )
+    }
+    await store.waitForSaveCount(2)
+    let secondSubmission = Task {
+      try await coordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "second",
+          ownerID: "owner",
+          parentLineage: testParentLineage,
+          recoveryPolicy: .readOnly
+        )
+      )
+    }
+
+    await store.release(saveNumber: 2)
+    let first = try await firstSubmission.value
+    let second = try await secondSubmission.value
+    await gate.waitForStartedCount(1)
+    for _ in 0..<100 { await Task.yield() }
+
+    #expect(await gate.maximumConcurrent == 1)
+    #expect(await gate.totalStarted == 1)
+
+    await gate.releaseAll()
+    _ = try await coordinator.waitForSettlement(of: first)
+    await gate.waitForStartedCount(2)
+    await gate.releaseAll()
+    _ = try await coordinator.waitForSettlement(of: second)
+    #expect(await gate.maximumConcurrent == 1)
+  }
+
+  @Test("Durable lease commit reserves the per-parent execution slot")
+  func durableLeaseReservesParentSlot() async throws {
+    let store = SuspendingSaveBackgroundAgentTaskStore(suspendingSaveNumbers: [4])
+    let gate = ExecutionGate()
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: store,
+      configuration: .init(
+        maximumConcurrentTasks: 3,
+        maximumConcurrentTasksPerParent: 1
+      )
+    ) { task, _ in
+      await gate.run(task)
+      return try successfulOutcome(for: task)
+    }
+    let parent = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "parent",
+        ownerID: "owner",
+        parentLineage: testParentLineage,
+        recoveryPolicy: .readOnly
+      )
+    )
+    await gate.waitForStartedCount(1)
+    let parentLineage = try #require(await coordinator.record(for: parent)?.currentAttemptLineage)
+
+    let firstChildSubmission = Task {
+      try await coordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "first child",
+          ownerID: "owner",
+          parentLineage: parentLineage,
+          parentTaskID: parent,
+          recoveryPolicy: .readOnly
+        )
+      )
+    }
+    await store.waitForSaveCount(4)
+    let secondChildSubmission = Task {
+      try await coordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "second child",
+          ownerID: "owner",
+          parentLineage: parentLineage,
+          parentTaskID: parent,
+          recoveryPolicy: .readOnly
+        )
+      )
+    }
+
+    await store.release(saveNumber: 4)
+    let firstChild = try await firstChildSubmission.value
+    let secondChild = try await secondChildSubmission.value
+    await gate.waitForStartedCount(2)
+    for _ in 0..<100 { await Task.yield() }
+
+    #expect(await gate.maximumConcurrentForOneParent == 1)
+
+    await gate.releaseAll()
+    _ = try await coordinator.waitForSettlement(of: parent)
+    _ = try await coordinator.waitForSettlement(of: firstChild)
+    await gate.waitForStartedCount(3)
+    await gate.releaseAll()
+    _ = try await coordinator.waitForSettlement(of: secondChild)
+    #expect(await gate.maximumConcurrentForOneParent == 1)
   }
 
   @Test("Aged work prevents starvation while FIFO keeps distinct prompts")
@@ -348,7 +482,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
       now: { now },
       executionFactory: { task, _ in
         await capture.append(task.prompt)
-        return BackgroundAgentTaskOutcome()
+        return try successfulOutcome(for: task)
       }
     )
 
@@ -369,12 +503,13 @@ struct FoundationModelsAgentBackgroundTaskTests {
       configuration: .init(maximumConcurrentTasks: 1)
     ) { task, _ in
       await calls.append(task.prompt)
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let first = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "same prompt",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -382,6 +517,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
       BackgroundAgentTaskRequest(
         prompt: "same prompt",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -397,14 +533,15 @@ struct FoundationModelsAgentBackgroundTaskTests {
   func usageBudget() async throws {
     let coordinator = try BackgroundAgentTaskCoordinator(
       store: InMemoryBackgroundAgentTaskStore()
-    ) { _, context in
+    ) { task, context in
       try await context.recordUsage(turns: 2, tokens: 11)
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let id = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "bounded",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly,
         budget: BackgroundAgentTaskBudget(
           maximumTurns: 1,
@@ -424,14 +561,15 @@ struct FoundationModelsAgentBackgroundTaskTests {
   func wallClockBudget() async throws {
     let coordinator = try BackgroundAgentTaskCoordinator(
       store: InMemoryBackgroundAgentTaskStore()
-    ) { _, _ in
+    ) { task, _ in
       try await Task.sleep(for: .seconds(1))
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let id = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "slow",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly,
         budget: BackgroundAgentTaskBudget(maximumWallClock: 0.02)
       )
@@ -447,14 +585,15 @@ struct FoundationModelsAgentBackgroundTaskTests {
   func mutationRecoveryDeclaration() async throws {
     let coordinator = try BackgroundAgentTaskCoordinator(
       store: InMemoryBackgroundAgentTaskStore()
-    ) { _, context in
+    ) { task, context in
       try await context.markExecutingMutation(named: "charge", idempotencyKey: "wrong")
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let id = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "charge",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .idempotentMutation(idempotencyKey: "stable-key")
       )
     )
@@ -473,20 +612,23 @@ struct FoundationModelsAgentBackgroundTaskTests {
       configuration: .init(maximumConcurrentTasks: 1)
     ) { task, _ in
       await gate.run(task)
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let root = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "root",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
     await gate.waitForStartedCount(1)
+    let rootLineage = try #require(await coordinator.record(for: root)?.currentAttemptLineage)
     let child = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "child",
         ownerID: "owner",
+        parentLineage: rootLineage,
         parentTaskID: root,
         recoveryPolicy: .readOnly
       )
@@ -505,7 +647,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
       .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: directory) }
     let fileURL = directory.appending(path: "background-tasks.json")
-    let store = FileBackgroundAgentTaskStore(fileURL: fileURL)
+    let store = try FileBackgroundAgentTaskStore(fileURL: fileURL)
     let record = makeRecord(state: .queued, recoveryPolicy: .readOnly)
     let saved = snapshot(records: [record])
 
@@ -527,13 +669,14 @@ struct FoundationModelsAgentBackgroundTaskTests {
   )
   func successfulExecutionPersistenceFailure(failingSave: Int) async throws {
     let store = FailingSaveBackgroundAgentTaskStore(failingSaveNumbers: [failingSave])
-    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { _, _ in
-      BackgroundAgentTaskOutcome()
+    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+      try successfulOutcome(for: task)
     }
     let id = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "complete once",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -548,6 +691,11 @@ struct FoundationModelsAgentBackgroundTaskTests {
     #expect(!record.state.isTerminal)
     #expect(record.terminalReason == nil)
     #expect(durable.records.first?.state != .completed)
+
+    try await coordinator.resume()
+    let recovered = try await coordinator.waitForSettlement(of: id)
+    #expect(recovered.state == .completed)
+    #expect(recovered.attempts.count == 2)
   }
 
   @Test("Persistence lane prevents concurrent state from overwriting newer snapshots")
@@ -561,11 +709,12 @@ struct FoundationModelsAgentBackgroundTaskTests {
       if task.prompt == "first" {
         await executionGate.run(task)
       }
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let firstRequest = BackgroundAgentTaskRequest(
       prompt: "first",
       ownerID: "owner",
+      parentLineage: testParentLineage,
       recoveryPolicy: .readOnly
     )
     let first = try await coordinator.submit(firstRequest)
@@ -576,6 +725,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
         BackgroundAgentTaskRequest(
           prompt: "second",
           ownerID: "owner",
+          parentLineage: testParentLineage,
           recoveryPolicy: .readOnly
         )
       )
@@ -610,12 +760,13 @@ struct FoundationModelsAgentBackgroundTaskTests {
     let store = SuspendingSaveBackgroundAgentTaskStore(suspendingSaveNumbers: [4])
     let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
       await executionGate.run(task)
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let id = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "cancel durably",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -649,12 +800,13 @@ struct FoundationModelsAgentBackgroundTaskTests {
     let store = FailingSaveBackgroundAgentTaskStore(failingSaveNumbers: [5])
     let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
       await executionGate.run(task)
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let id = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "fail settlement",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -673,19 +825,22 @@ struct FoundationModelsAgentBackgroundTaskTests {
   @Test("A failed preparing write leaves accepted work queued for resume")
   func preparingPersistenceFailureRestoresQueue() async throws {
     let store = FailingSaveBackgroundAgentTaskStore(failingSaveNumbers: [2])
-    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { _, _ in
-      BackgroundAgentTaskOutcome()
+    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+      try successfulOutcome(for: task)
     }
     let request = BackgroundAgentTaskRequest(
       prompt: "retry preparing",
       ownerID: "owner",
+      parentLineage: testParentLineage,
       recoveryPolicy: .readOnly
     )
 
-    await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
-      _ = try await coordinator.submit(request)
-    }
+    let acceptedID = try await coordinator.submit(request)
+    #expect(acceptedID == request.id)
     #expect(await coordinator.record(for: request.id)?.state == .queued)
+    await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
+      _ = try await coordinator.waitForSettlement(of: request.id)
+    }
 
     try await coordinator.resume()
     let settled = try await coordinator.waitForSettlement(of: request.id)
@@ -704,12 +859,13 @@ struct FoundationModelsAgentBackgroundTaskTests {
       if task.prompt == "first" {
         await executionGate.run(task)
       }
-      return BackgroundAgentTaskOutcome()
+      return try successfulOutcome(for: task)
     }
     let first = try await coordinator.submit(
       BackgroundAgentTaskRequest(
         prompt: "first",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -718,6 +874,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
       BackgroundAgentTaskRequest(
         prompt: "second",
         ownerID: "owner",
+        parentLineage: testParentLineage,
         recoveryPolicy: .readOnly
       )
     )
@@ -751,7 +908,7 @@ struct FoundationModelsAgentBackgroundTaskTests {
     let coordinator = try BackgroundAgentTaskCoordinator(
       store: store,
       now: { now },
-      executionFactory: { _, _ in BackgroundAgentTaskOutcome() }
+      executionFactory: { task, _ in try successfulOutcome(for: task) }
     )
 
     await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
@@ -763,6 +920,687 @@ struct FoundationModelsAgentBackgroundTaskTests {
     #expect(settled.state == .completed)
     #expect(settled.attemptCount == 2)
   }
+
+  @Test("An expired local lease never starts a second execution")
+  func expiredLocalLeaseDoesNotDuplicateRunningWork() async throws {
+    let clock = Mutex(Date(timeIntervalSince1970: 30_000))
+    let gate = ExecutionGate()
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(),
+      configuration: .init(maximumConcurrentTasks: 2, leaseDuration: 1),
+      now: { clock.withLock { $0 } },
+      executionFactory: { task, _ in
+        await gate.run(task)
+        return try successfulOutcome(for: task)
+      }
+    )
+    let id = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "one execution",
+        ownerID: "owner",
+        parentLineage: testParentLineage,
+        recoveryPolicy: .readOnly
+      )
+    )
+    await gate.waitForStartedCount(1)
+    clock.withLock { $0 = $0.addingTimeInterval(2) }
+
+    try await coordinator.resume()
+    for _ in 0..<100 { await Task.yield() }
+
+    #expect(await gate.totalStarted == 1)
+    try await coordinator.cancel(id)
+    await gate.releaseAll()
+    #expect(try await coordinator.waitForSettlement(of: id).state == .cancelled)
+  }
+
+  @Test("Cancelling after a non-idempotent boundary remains ambiguous")
+  func cancellationAfterMutationIsAmbiguous() async throws {
+    let gate = ExecutionGate()
+    let store = InMemoryBackgroundAgentTaskStore()
+    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, context in
+      try await context.markExecutingMutation(named: "send_payment")
+      await gate.run(task)
+      return try successfulOutcome(for: task)
+    }
+    let id = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "send once",
+        ownerID: "owner",
+        parentLineage: testParentLineage,
+        recoveryPolicy: .nonReplayableMutation
+      )
+    )
+    await gate.waitForStartedCount(1)
+
+    try await coordinator.cancel(id)
+    let settled = try await coordinator.waitForSettlement(of: id)
+    await gate.releaseAll()
+
+    #expect(settled.state == .ambiguousAfterCrash)
+    #expect(settled.terminalReason?.code == .ambiguousAfterCrash)
+    #expect(settled.attempts.last?.terminalCode == .ambiguousAfterCrash)
+    #expect((await store.loadSnapshot())?.records.first?.state == .ambiguousAfterCrash)
+  }
+
+  @Test("An idempotent mutation replays with the same key on a new attempt")
+  func idempotentMutationReplaysAcrossAttempts() async throws {
+    let now = Date(timeIntervalSince1970: 31_000)
+    let record = makeRecord(
+      submittedAt: now.addingTimeInterval(-5),
+      state: .executingTool,
+      recoveryPolicy: .idempotentMutation(idempotencyKey: "payment:42"),
+      attemptCount: 1,
+      lease: lease(expiresAt: now.addingTimeInterval(-1)),
+      hasBegunMutation: true,
+      currentToolExecution: BackgroundAgentTaskToolExecution(
+        name: "send_payment",
+        isMutation: true,
+        idempotencyKey: "payment:42",
+        beganAt: now.addingTimeInterval(-2)
+      )
+    )
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record])),
+      now: { now },
+      executionFactory: { task, context in
+        try await context.markExecutingMutation(
+          named: "send_payment",
+          idempotencyKey: "payment:42"
+        )
+        try await context.markToolFinished()
+        return try successfulOutcome(for: task)
+      }
+    )
+
+    try await coordinator.start()
+    let settled = try await coordinator.waitForSettlement(of: record.id)
+
+    #expect(settled.state == .completed)
+    #expect(settled.attempts.count == 2)
+    #expect(settled.attempts.allSatisfy { $0.mutationIdempotencyKey == "payment:42" })
+    #expect(Set(settled.attempts.map(\.lineage.runID)).count == 2)
+  }
+
+  @Test("Timeout after a non-idempotent boundary is ambiguous")
+  func timeoutAfterMutationIsAmbiguous() async throws {
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore()
+    ) { task, context in
+      try await context.markExecutingMutation(named: "send_payment")
+      try await Task.sleep(for: .seconds(1))
+      return try successfulOutcome(for: task)
+    }
+    let id = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "timeout after payment",
+        ownerID: "owner",
+        parentLineage: testParentLineage,
+        recoveryPolicy: .nonReplayableMutation,
+        budget: BackgroundAgentTaskBudget(maximumWallClock: 0.02)
+      )
+    )
+
+    let settled = try await coordinator.waitForSettlement(of: id)
+
+    #expect(settled.state == .ambiguousAfterCrash)
+    #expect(settled.terminalReason?.code == .ambiguousAfterCrash)
+  }
+
+  @Test("A cancelled settlement waiter does not wait for persistence")
+  func cancelledWaiterReturnsWhileStoreIsBlocked() async throws {
+    let store = SuspendingSaveBackgroundAgentTaskStore(suspendingSaveNumbers: [3])
+    let gate = ExecutionGate()
+    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+      await gate.run(task)
+      return try successfulOutcome(for: task)
+    }
+    let id = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "blocked persistence",
+        ownerID: "owner",
+        parentLineage: testParentLineage,
+        recoveryPolicy: .readOnly
+      )
+    )
+    await store.waitForSaveCount(3)
+    let waiter = Task {
+      try await coordinator.waitForSettlement(of: id)
+    }
+    waiter.cancel()
+
+    await #expect(throws: CancellationError.self) {
+      _ = try await waiter.value
+    }
+    await store.release(saveNumber: 3)
+    try await coordinator.cancel(id)
+    await gate.releaseAll()
+  }
+
+  @Test("Usage overflow is persisted truthfully and fails without trapping")
+  func usageOverflowIsSaturated() async throws {
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore()
+    ) { task, context in
+      try await context.recordUsage(tokens: Int.max)
+      try await context.recordUsage(tokens: 1)
+      return try successfulOutcome(for: task)
+    }
+    let id = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "overflow",
+        ownerID: "owner",
+        parentLineage: testParentLineage,
+        recoveryPolicy: .readOnly,
+        budget: BackgroundAgentTaskBudget(maximumTokens: Int.max)
+      )
+    )
+
+    let settled = try await coordinator.waitForSettlement(of: id)
+
+    #expect(settled.state == .failed)
+    #expect(settled.usage.tokens == Int.max)
+    #expect(settled.terminalReason?.detail?.contains("overflow") == true)
+  }
+
+  @Test("Malformed snapshots fail before scheduling")
+  func malformedSnapshotsFailClosed() async throws {
+    let first = makeRecord(
+      sequence: 0,
+      state: .queued,
+      recoveryPolicy: .readOnly
+    )
+    let second = makeRecord(
+      sequence: 0,
+      state: .queued,
+      recoveryPolicy: .readOnly
+    )
+    let store = InMemoryBackgroundAgentTaskStore(
+      snapshot: BackgroundAgentTaskStoreSnapshot(
+        nextSequence: 2,
+        records: [first, second]
+      )
+    )
+    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+      try successfulOutcome(for: task)
+    }
+
+    await #expect(throws: BackgroundAgentTaskStoreError.self) {
+      try await coordinator.start()
+    }
+  }
+
+  @Test("Open attempt mutation evidence cannot be hidden from recovery")
+  func hiddenMutationEvidenceFailsClosed() async throws {
+    let now = Date(timeIntervalSince1970: 10_000)
+    var record = makeRecord(
+      submittedAt: now.addingTimeInterval(-5),
+      state: .generating,
+      recoveryPolicy: .nonReplayableMutation,
+      attemptCount: 1,
+      lease: lease(expiresAt: now.addingTimeInterval(-1))
+    )
+    record.attempts[0].mutationName = "charge"
+    let calls = ExecutionCapture()
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record])),
+      now: { now },
+      executionFactory: { task, _ in
+        await calls.append(task.prompt)
+        return try successfulOutcome(for: task)
+      }
+    )
+
+    await #expect(throws: BackgroundAgentTaskStoreError.self) {
+      try await coordinator.start()
+    }
+    #expect(await calls.values.isEmpty)
+  }
+
+  @Test("Historical mutation evidence must match the durable recovery policy")
+  func historicalMutationEvidenceFailsClosed() async throws {
+    var record = makeRecord(
+      state: .queued,
+      recoveryPolicy: .readOnly,
+      attemptCount: 1
+    )
+    record.attempts[0].endedAt = record.submittedAt
+    record.attempts[0].terminalCode = .executionFailed
+    record.attempts[0].mutationName = "unexpected-write"
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record]))
+    ) { task, _ in
+      try successfulOutcome(for: task)
+    }
+
+    await #expect(throws: BackgroundAgentTaskStoreError.self) {
+      try await coordinator.start()
+    }
+  }
+
+  @Test("Queued non-replayable mutation evidence cannot run again")
+  func queuedNonReplayableMutationFailsClosed() async throws {
+    var record = makeRecord(
+      state: .queued,
+      recoveryPolicy: .nonReplayableMutation,
+      attemptCount: 1
+    )
+    record.attempts[0].endedAt = record.submittedAt
+    record.attempts[0].terminalCode = .executionFailed
+    record.attempts[0].mutationName = "charge"
+    let calls = ExecutionCapture()
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record]))
+    ) { task, _ in
+      await calls.append(task.prompt)
+      return try successfulOutcome(for: task)
+    }
+
+    await #expect(throws: BackgroundAgentTaskStoreError.self) {
+      try await coordinator.start()
+    }
+    #expect(await calls.values.isEmpty)
+  }
+
+  @Test("Persisted attempts cannot erase cumulative wall-clock time")
+  func missingFirstStartedAtFailsClosed() async throws {
+    let now = Date(timeIntervalSince1970: 12_000)
+    var record = makeRecord(
+      submittedAt: now.addingTimeInterval(-60),
+      state: .preparing,
+      recoveryPolicy: .readOnly,
+      attemptCount: 1,
+      lease: lease(expiresAt: now.addingTimeInterval(-1))
+    )
+    record.firstStartedAt = nil
+    let calls = ExecutionCapture()
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record])),
+      now: { now },
+      executionFactory: { task, _ in
+        await calls.append(task.prompt)
+        return try successfulOutcome(for: task)
+      }
+    )
+
+    await #expect(throws: BackgroundAgentTaskStoreError.self) {
+      try await coordinator.start()
+    }
+    #expect(await calls.values.isEmpty)
+  }
+
+  @Test("Queued recovery budget settlement preserves prior attempt evidence across restart")
+  func queuedRecoveryBudgetSettlementRestarts() async throws {
+    let now = Date(timeIntervalSince1970: 13_000)
+    var record = makeRecord(
+      submittedAt: now.addingTimeInterval(-60),
+      state: .queued,
+      recoveryPolicy: .idempotentMutation(idempotencyKey: "budget-retry"),
+      attemptCount: 1,
+      budget: BackgroundAgentTaskBudget(maximumWallClock: 1)
+    )
+    record.attempts[0].endedAt = now.addingTimeInterval(-59)
+    record.attempts[0].terminalCode = .executionFailed
+    record.attempts[0].terminalDetail = "interrupted"
+    record.attempts[0].mutationName = "write"
+    record.attempts[0].mutationIdempotencyKey = "budget-retry"
+    let store = InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record]))
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: store,
+      now: { now },
+      executionFactory: { task, _ in
+        try successfulOutcome(for: task)
+      }
+    )
+
+    try await coordinator.start()
+    let settled = try await coordinator.waitForSettlement(of: record.id)
+    #expect(settled.state == .failed)
+    #expect(settled.terminalReason?.code == .budgetExceeded)
+    #expect(settled.attempts[0].terminalCode == .executionFailed)
+    #expect(settled.attempts[0].terminalDetail == "interrupted")
+
+    let restarted = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+      try successfulOutcome(for: task)
+    }
+    try await restarted.start()
+    #expect(await restarted.record(for: record.id)?.state == .failed)
+  }
+
+  @Test("Cancelling queued recovered work preserves prior attempt evidence across restart")
+  func queuedRecoveryCancellationRestarts() async throws {
+    let blocker = makeRecord(
+      id: BackgroundAgentTaskID(),
+      prompt: "blocker",
+      sequence: 0,
+      state: .queued,
+      recoveryPolicy: .readOnly
+    )
+    var recovered = makeRecord(
+      id: BackgroundAgentTaskID(),
+      prompt: "cancel recovered",
+      sequence: 1,
+      state: .queued,
+      recoveryPolicy: .idempotentMutation(idempotencyKey: "cancel-retry"),
+      attemptCount: 1
+    )
+    recovered.attempts[0].endedAt = recovered.submittedAt
+    recovered.attempts[0].terminalCode = .executionFailed
+    recovered.attempts[0].terminalDetail = "interrupted"
+    recovered.attempts[0].mutationName = "write"
+    recovered.attempts[0].mutationIdempotencyKey = "cancel-retry"
+    let store = InMemoryBackgroundAgentTaskStore(
+      snapshot: snapshot(records: [blocker, recovered])
+    )
+    let gate = ExecutionGate()
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: store,
+      configuration: .init(maximumConcurrentTasks: 1)
+    ) { task, _ in
+      await gate.run(task)
+      return try successfulOutcome(for: task)
+    }
+
+    try await coordinator.start()
+    await gate.waitForStartedCount(1)
+    try await coordinator.cancel(recovered.id, reason: "user")
+    let cancelled = try await coordinator.waitForSettlement(of: recovered.id)
+    #expect(cancelled.state == .cancelled)
+    #expect(cancelled.attempts[0].terminalCode == .executionFailed)
+    #expect(cancelled.attempts[0].terminalDetail == "interrupted")
+    await gate.releaseAll()
+    _ = try await coordinator.waitForSettlement(of: blocker.id)
+
+    let restarted = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+      try successfulOutcome(for: task)
+    }
+    try await restarted.start()
+    #expect(await restarted.record(for: recovered.id)?.state == .cancelled)
+  }
+
+  @Test("A historical canonical success cannot be replayed as queued work")
+  func historicalCanonicalResultFailsClosed() async throws {
+    var record = makeRecord(
+      state: .queued,
+      recoveryPolicy: .nonReplayableMutation,
+      attemptCount: 2
+    )
+    record.attempts[0].endedAt = record.submittedAt
+    record.attempts[0].terminalCode = .completed
+    record.attempts[0].mutationName = "charge"
+    record.attempts[0].taskResult = try AgentTaskResult(
+      lineage: record.attempts[0].lineage,
+      status: .succeeded,
+      timing: AgentTaskTiming(
+        queuedAt: record.submittedAt,
+        startedAt: record.submittedAt,
+        endedAt: record.submittedAt
+      )
+    )
+    record.attempts[1].endedAt = record.submittedAt
+    record.attempts[1].terminalCode = .executionFailed
+    let calls = ExecutionCapture()
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record]))
+    ) { task, _ in
+      await calls.append(task.prompt)
+      return try successfulOutcome(for: task)
+    }
+
+    await #expect(throws: BackgroundAgentTaskStoreError.self) {
+      try await coordinator.start()
+    }
+    #expect(await calls.values.isEmpty)
+  }
+
+  @Test("Successfully settled mutations remain loadable after restart")
+  func settledMutationsRestart() async throws {
+    let cases: [(BackgroundAgentTaskRecoveryPolicy, String?)] = [
+      (.nonReplayableMutation, nil),
+      (.idempotentMutation(idempotencyKey: "charge:restart"), "charge:restart"),
+    ]
+
+    for (policy, idempotencyKey) in cases {
+      let store = InMemoryBackgroundAgentTaskStore()
+      let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, context in
+        try await context.markExecutingMutation(
+          named: "charge",
+          idempotencyKey: idempotencyKey
+        )
+        return try successfulOutcome(for: task)
+      }
+      let id = try await coordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "charge once",
+          ownerID: "owner",
+          parentLineage: testParentLineage,
+          recoveryPolicy: policy
+        )
+      )
+      let settled = try await coordinator.waitForSettlement(of: id)
+      #expect(settled.state == .completed)
+      #expect(settled.hasBegunMutation)
+
+      let restarted = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+        try successfulOutcome(for: task)
+      }
+      try await restarted.start()
+      #expect(await restarted.record(for: id)?.state == .completed)
+    }
+  }
+
+  @Test("Empty tool names fail before persistence and remain restartable")
+  func emptyToolNamesFailBeforePersistence() async throws {
+    let cases: [(BackgroundAgentTaskRecoveryPolicy, Bool)] = [
+      (.readOnly, false),
+      (.nonReplayableMutation, true),
+      (.idempotentMutation(idempotencyKey: "empty-name"), true),
+    ]
+
+    for (policy, isMutation) in cases {
+      let store = InMemoryBackgroundAgentTaskStore()
+      let coordinator = try BackgroundAgentTaskCoordinator(store: store) { task, context in
+        if isMutation {
+          let key: String? =
+            if case .idempotentMutation(let idempotencyKey) = task.recoveryPolicy {
+              idempotencyKey
+            } else {
+              nil
+            }
+          try await context.markExecutingMutation(named: " \n", idempotencyKey: key)
+        } else {
+          try await context.markExecutingTool(named: " \n")
+        }
+        return try successfulOutcome(for: task)
+      }
+      let id = try await coordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "reject an empty tool name",
+          ownerID: "owner",
+          parentLineage: testParentLineage,
+          recoveryPolicy: policy
+        )
+      )
+      let settled = try await coordinator.waitForSettlement(of: id)
+      #expect(settled.state == .failed)
+      #expect(!settled.hasBegunMutation)
+
+      let restarted = try BackgroundAgentTaskCoordinator(store: store) { task, _ in
+        try successfulOutcome(for: task)
+      }
+      try await restarted.start()
+      #expect(await restarted.record(for: id)?.state == .failed)
+    }
+  }
+
+  @Test("Finite wall-clock budgets outside Duration range are rejected")
+  func unrepresentableFiniteWallClockFailsClosed() async throws {
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore()
+    ) { task, _ in
+      try successfulOutcome(for: task)
+    }
+
+    await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
+      _ = try await coordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "too long",
+          ownerID: "owner",
+          parentLineage: testParentLineage,
+          recoveryPolicy: .readOnly,
+          budget: BackgroundAgentTaskBudget(maximumWallClock: .greatestFiniteMagnitude)
+        )
+      )
+    }
+  }
+
+  @Test("Terminal snapshots cannot retain an open attempt")
+  func terminalSnapshotRequiresSettledAttempt() async throws {
+    let now = Date(timeIntervalSince1970: 11_000)
+    var record = makeRecord(
+      submittedAt: now.addingTimeInterval(-5),
+      state: .preparing,
+      recoveryPolicy: .readOnly,
+      attemptCount: 1,
+      lease: lease(expiresAt: now.addingTimeInterval(30))
+    )
+    record.state = .failed
+    record.updatedAt = now
+    record.settledAt = now
+    record.lease = nil
+    record.terminalReason = BackgroundAgentTaskTerminalReason(
+      code: .executionFailed,
+      detail: "failed"
+    )
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record]))
+    ) { task, _ in
+      try successfulOutcome(for: task)
+    }
+
+    await #expect(throws: BackgroundAgentTaskStoreError.self) {
+      try await coordinator.start()
+    }
+  }
+
+  @Test("Cancellation cannot hide uncertain non-replayable attempt evidence")
+  func cancelledMutationSnapshotFailsClosed() async throws {
+    let now = Date(timeIntervalSince1970: 14_000)
+    var record = makeRecord(
+      submittedAt: now.addingTimeInterval(-5),
+      state: .preparing,
+      recoveryPolicy: .nonReplayableMutation,
+      attemptCount: 1,
+      lease: lease(expiresAt: now.addingTimeInterval(30))
+    )
+    record.attempts[0].endedAt = now.addingTimeInterval(-1)
+    record.attempts[0].terminalCode = .ambiguousAfterCrash
+    record.attempts[0].mutationName = "charge"
+    record.state = .cancelled
+    record.updatedAt = now
+    record.settledAt = now
+    record.lease = nil
+    record.terminalReason = BackgroundAgentTaskTerminalReason(
+      code: .cancelled,
+      detail: "hidden uncertainty"
+    )
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(snapshot: snapshot(records: [record]))
+    ) { task, _ in
+      try successfulOutcome(for: task)
+    }
+
+    await #expect(throws: BackgroundAgentTaskStoreError.self) {
+      try await coordinator.start()
+    }
+  }
+
+  @Test("A second file store cannot own the same durable queue")
+  func fileStoreOwnershipIsExclusive() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let fileURL = directory.appending(path: "background-tasks.json")
+    let first = try FileBackgroundAgentTaskStore(fileURL: fileURL)
+
+    _ = withExtendedLifetime(first) {
+      #expect(throws: BackgroundAgentTaskStoreError.self) {
+        _ = try FileBackgroundAgentTaskStore(fileURL: fileURL)
+      }
+    }
+  }
+
+  @Test("Infinite budgets and terminal parents fail before durable acceptance")
+  func invalidRequestBoundaries() async throws {
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore()
+    ) { task, _ in
+      try successfulOutcome(for: task)
+    }
+    await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
+      _ = try await coordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "infinite",
+          ownerID: "owner",
+          parentLineage: testParentLineage,
+          recoveryPolicy: .readOnly,
+          budget: BackgroundAgentTaskBudget(maximumWallClock: .infinity)
+        )
+      )
+    }
+
+    let gate = ExecutionGate()
+    let parentCoordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore()
+    ) { task, _ in
+      await gate.run(task)
+      return try successfulOutcome(for: task)
+    }
+    let parent = try await parentCoordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "cancel parent",
+        ownerID: "owner",
+        parentLineage: testParentLineage,
+        recoveryPolicy: .readOnly
+      )
+    )
+    await gate.waitForStartedCount(1)
+    let parentLineage = try #require(
+      await parentCoordinator.record(for: parent)?.currentAttemptLineage
+    )
+    try await parentCoordinator.cancel(parent)
+    await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
+      _ = try await parentCoordinator.submit(
+        BackgroundAgentTaskRequest(
+          prompt: "late child",
+          ownerID: "owner",
+          parentLineage: parentLineage,
+          parentTaskID: parent,
+          recoveryPolicy: .readOnly
+        )
+      )
+    }
+    await gate.releaseAll()
+  }
+}
+
+private let testParentLineage = AgentRunLineage.root()
+
+private func successfulOutcome(
+  for record: BackgroundAgentTaskRecord
+) throws -> BackgroundAgentTaskOutcome {
+  let lineage = try #require(record.currentAttemptLineage)
+  let startedAt = record.firstStartedAt ?? record.submittedAt
+  let result = try AgentTaskResult(
+    lineage: lineage,
+    status: .succeeded,
+    timing: AgentTaskTiming(
+      queuedAt: record.submittedAt,
+      startedAt: startedAt,
+      endedAt: startedAt
+    )
+  )
+  return BackgroundAgentTaskOutcome(taskResult: result)
 }
 
 private func makeRecord(
@@ -776,12 +1614,25 @@ private func makeRecord(
   lease: BackgroundAgentTaskLease? = nil,
   hasBegunMutation: Bool = false,
   currentToolExecution: BackgroundAgentTaskToolExecution? = nil,
-  priority: BackgroundAgentTaskPriority = .normal
+  priority: BackgroundAgentTaskPriority = .normal,
+  budget: BackgroundAgentTaskBudget = .default
 ) -> BackgroundAgentTaskRecord {
-  BackgroundAgentTaskRecord(
+  var attempts = (0..<attemptCount).map { _ in
+    BackgroundAgentTaskAttempt(
+      lineage: testAttemptLineage(for: id),
+      startedAt: submittedAt
+    )
+  }
+  if hasBegunMutation, !attempts.isEmpty {
+    let index = attempts.index(before: attempts.endIndex)
+    attempts[index].mutationName = currentToolExecution?.name ?? "mutation"
+    attempts[index].mutationIdempotencyKey = currentToolExecution?.idempotencyKey
+  }
+  return BackgroundAgentTaskRecord(
     id: id,
     prompt: prompt,
     ownerID: "owner",
+    parentLineage: testParentLineage,
     rootTaskID: id,
     parentTaskID: nil,
     metadata: [:],
@@ -789,16 +1640,28 @@ private func makeRecord(
     priority: priority,
     sequence: sequence,
     recoveryPolicy: recoveryPolicy,
-    budget: .default,
+    budget: budget,
     submittedAt: submittedAt,
     updatedAt: submittedAt,
-    firstStartedAt: state == .queued ? nil : submittedAt,
+    firstStartedAt: attemptCount == 0 ? nil : submittedAt,
     state: state,
     attemptCount: attemptCount,
     lease: lease,
     hasBegunMutation: hasBegunMutation,
-    currentToolExecution: currentToolExecution
+    currentToolExecution: currentToolExecution,
+    attempts: attempts
   )
+}
+
+private func testAttemptLineage(for id: BackgroundAgentTaskID) -> AgentRunLineage {
+  do {
+    return try testParentLineage.descendant(
+      taskID: id.agentTaskID,
+      relationship: .background
+    )
+  } catch {
+    preconditionFailure("The fixed test parent lineage must accept a background descendant.")
+  }
 }
 
 private func snapshot(
@@ -842,6 +1705,7 @@ private actor ExecutionGate {
   private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
   private(set) var maximumConcurrent = 0
   private(set) var maximumConcurrentForOneParent = 0
+  var totalStarted: Int { startedCount }
 
   func run(_ task: BackgroundAgentTaskRecord) async {
     startedCount += 1

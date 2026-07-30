@@ -13,6 +13,49 @@
   `ambiguousAfterCrash`.
 - Serialized coordinator snapshot writes so concurrent submission, execution,
   cancellation, and settlement cannot overwrite newer durable state.
+- Linked each durable task to canonical `AgentTaskID`, `AgentRunLineage`, and
+  `AgentTaskResult` evidence, with a separate persisted lineage and stop reason
+  for every retry attempt.
+- Added exclusive file ownership, semantic snapshot validation, overflow-safe
+  usage accounting, cancellation-aware waiters, and fail-closed mutation
+  recovery for timeout, cancellation, persistence failure, and restart.
+- Added stable native-transcript trajectories projected from verified
+  `AgentReceiptBundle` graphs, including child/task lineage, terminal
+  settlements, and routing/context/tool evidence links; deterministic redacted
+  fixture export; and an optional Xcode 27 `FoundationModelsAgentEvaluations`
+  product with `ToolCallEvaluator`, `TrajectoryExpectation`, `ModelSample`, and
+  `ModelSubject` helpers.
+- Added opt-in OSLog signposts and a deterministic injectable event projection
+  for canonically correlated run, routing, context, checkpoint, approval,
+  governed-tool, retry, cancellation, and dynamic-profile observability.
+- Added stable hierarchical run/task identifiers, parent-child lineage on runs,
+  observer events and tamper-evident receipts, structured terminal
+  `AgentTaskResult` evidence, canonical run/event evidence references,
+  deterministic denied/timed-out/crash settlement, JSON/file bundle transport,
+  and receipt-bundle graph verification.
+- Added native explicit-model context budgeting with reserved response
+  headroom, fractional and absolute input limits, deterministic overflow
+  policy, per-component accounting, and fail-before-inference behavior.
+- Added audited app-owned history transforms with authoritative-checkpoint
+  preservation, tool-turn validation, cancellation, and a documented
+  dynamic-profile boundary that composes with Apple's history utilities.
+- Added atomic routed-session construction so context measurement receives the
+  actual selected native model without treating route metadata as token counts.
+- Added explicit app-policy routing among native `LanguageModel` values with typed
+  availability, privacy/network, context, reasoning, quota, accounting, fallback,
+  and per-candidate decision evidence.
+- Added truthful on-device and Private Cloud Compute snapshots plus routed
+  `AgentSession` provenance on completed and failed runs.
+- Added Xcode 27 dynamic-profile tool governance with explicit manifest
+  registries, fail-closed unknown and changed-tool handling, canonical native
+  arguments, async approval, total and per-tool call budgets, and audited
+  pre-execution outcomes carrying native tool-call IDs.
+- Added `ChildAgentTool` and `ChildAgentDefinition` for bounded, foreground
+  phone-a-friend consultations using fresh native `AgentSession` instances,
+  canonical child lineage and task evidence, explicit policy narrowing,
+  correlated instrumentation, cancellation propagation, and child, depth,
+  turn, tool-call, timeout, and output limits. Child factories retain explicit
+  ownership of routing, context, governance, checkpoint, and memory scope.
 
 ## 0.4.0 - 2026-07-30
 

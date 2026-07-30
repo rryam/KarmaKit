@@ -3,9 +3,14 @@ import Foundation
 
 public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable {
   case runStarted
+  case routeSelected
+  case routeCandidateRejected
   case modelAttemptStarted
   case modelAttemptFailed
   case modelResponseCompleted
+  case contextBudgetEvaluated
+  case contextBudgetTransformed
+  case contextBudgetFailed
   case pluginPreparationStarted
   case pluginPreparationCompleted
   case pluginPreparationFailed
@@ -14,6 +19,10 @@ public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable
   case pluginCompletionFailed
   case pluginEvent
   case profileToolAuditBestEffort
+  case profileToolAllowed
+  case profileToolDenied
+  case profileToolApprovalFailed
+  case profileToolBudgetExhausted
   case toolAuthorizationStarted
   case toolAuthorizationSucceeded
   case toolAuthorizationDenied
@@ -24,9 +33,15 @@ public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable
   case toolExecutionFailed
   case nativeToolCallRecorded
   case nativeToolOutputRecorded
+  case checkpointRestoreStarted
+  case checkpointRestoreCompleted
+  case checkpointRestoreFailed
+  case checkpointWriteStarted
   case transcriptCheckpointed
   case transcriptCheckpointFailed
+  case modelRetryScheduled
   case runCompleted
+  case runCancelled
   case runFailed
 }
 
@@ -37,6 +52,8 @@ public struct FoundationModelsAgentEvent: Codable, Equatable, Sendable, Identifi
   public let kind: FoundationModelsAgentEventKind
   public let message: String
   public let attributes: [String: String]
+  /// Present for new runs and absent when decoding legacy event exports.
+  public let lineage: AgentRunLineage?
 
   public init(
     id: UUID = UUID(),
@@ -44,7 +61,8 @@ public struct FoundationModelsAgentEvent: Codable, Equatable, Sendable, Identifi
     timestamp: Date = Date(),
     kind: FoundationModelsAgentEventKind,
     message: String,
-    attributes: [String: String] = [:]
+    attributes: [String: String] = [:],
+    lineage: AgentRunLineage? = nil
   ) {
     self.id = id
     self.runID = runID
@@ -52,6 +70,7 @@ public struct FoundationModelsAgentEvent: Codable, Equatable, Sendable, Identifi
     self.kind = kind
     self.message = message
     self.attributes = attributes
+    self.lineage = lineage
   }
 }
 
@@ -159,10 +178,33 @@ public struct FoundationModelsAgentRedactionPolicy: Sendable {
     return result
   }
 
-  fileprivate func redact(attributes: [String: String]) -> [String: String] {
+  func redact(attributes: [String: String]) -> [String: String] {
     let sensitiveMarkers = ["authorization", "api_key", "apikey", "token", "secret", "password"]
     return attributes.mapValues { redactor($0) }.reduce(into: [:]) { result, pair in
-      if sensitiveMarkers.contains(where: { pair.key.lowercased().contains($0) }) {
+      let key = pair.key.lowercased()
+      let usageTokenCountKeys = [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+      ]
+      let contextTokenCountSuffixes = [
+        "_instructions_tokens",
+        "_tools_tokens",
+        "_prompt_tokens",
+        "_schema_tokens",
+        "_transcript_tokens",
+        "_total_input_tokens",
+        "_usable_input_tokens",
+      ]
+      let isNumericTokenCount =
+        (usageTokenCountKeys.contains(key)
+          || contextTokenCountSuffixes.contains(where: {
+            (key.hasPrefix("before_") || key.hasPrefix("after_"))
+              && key.hasSuffix($0)
+          }))
+        && Int(pair.value) != nil
+      if sensitiveMarkers.contains(where: { key.contains($0) }), !isNumericTokenCount {
         result[pair.key] = "[REDACTED]"
       } else {
         result[pair.key] = pair.value
@@ -177,23 +219,69 @@ public struct FoundationModelsAgentRun: Codable, Equatable, Sendable, Identifiab
   public let endedAt: Date
   public let usage: FoundationModelsAgentUsage?
   public let events: [FoundationModelsAgentEvent]
+  /// Present for new runs and absent when decoding legacy trace exports.
+  public let lineage: AgentRunLineage?
+  /// The pre-execution route evidence, present for routed explicit-model runs.
+  public let routingDecision: FoundationModelsAgentRouteDecision?
 
   public init(
     id: UUID,
     startedAt: Date,
     endedAt: Date,
     usage: FoundationModelsAgentUsage?,
-    events: [FoundationModelsAgentEvent]
+    events: [FoundationModelsAgentEvent],
+    lineage: AgentRunLineage? = nil,
+    routingDecision: FoundationModelsAgentRouteDecision? = nil
   ) {
     self.id = id
     self.startedAt = startedAt
     self.endedAt = endedAt
     self.usage = usage
     self.events = events
+    self.lineage = lineage
+    self.routingDecision = routingDecision
   }
 
   public var duration: TimeInterval {
     endedAt.timeIntervalSince(startedAt)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case startedAt
+    case endedAt
+    case usage
+    case events
+    case lineage
+    case routingDecision
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.id = try container.decode(UUID.self, forKey: .id)
+    self.startedAt = try container.decode(Date.self, forKey: .startedAt)
+    self.endedAt = try container.decode(Date.self, forKey: .endedAt)
+    self.usage = try container.decodeIfPresent(
+      FoundationModelsAgentUsage.self,
+      forKey: .usage
+    )
+    self.events = try container.decode([FoundationModelsAgentEvent].self, forKey: .events)
+    self.lineage = try container.decodeIfPresent(AgentRunLineage.self, forKey: .lineage)
+    self.routingDecision = try container.decodeIfPresent(
+      FoundationModelsAgentRouteDecision.self,
+      forKey: .routingDecision
+    )
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(id, forKey: .id)
+    try container.encode(startedAt, forKey: .startedAt)
+    try container.encode(endedAt, forKey: .endedAt)
+    try container.encodeIfPresent(usage, forKey: .usage)
+    try container.encode(events, forKey: .events)
+    try container.encodeIfPresent(lineage, forKey: .lineage)
+    try container.encodeIfPresent(routingDecision, forKey: .routingDecision)
   }
 }
 
@@ -215,15 +303,35 @@ public struct FoundationModelsAgentRunReceipt: Codable, Equatable, Sendable {
   public let runID: UUID
   public let receipts: [FoundationModelsAgentEventReceipt]
   public let rootHash: String?
+  /// Present for lineage-aware receipts and absent in legacy receipt fixtures.
+  public let lineage: AgentRunLineage?
 
-  public init(runID: UUID, receipts: [FoundationModelsAgentEventReceipt], rootHash: String?) {
+  public init(
+    runID: UUID,
+    receipts: [FoundationModelsAgentEventReceipt],
+    rootHash: String?,
+    lineage: AgentRunLineage? = nil
+  ) {
     self.runID = runID
     self.receipts = receipts
     self.rootHash = rootHash
+    self.lineage = lineage
   }
 
   public init(run: FoundationModelsAgentRun) throws {
-    var previousHash: String? = Self.chainSeed(runID: run.id)
+    if let lineage = run.lineage {
+      guard lineage.runID.rawValue == run.id,
+        run.events.allSatisfy({ $0.lineage == lineage })
+      else {
+        throw AgentExecutionEvidenceError.runLineageMismatch(
+          AgentRunID(rawValue: run.id))
+      }
+    } else if !run.events.allSatisfy({ $0.lineage == nil }) {
+      throw AgentExecutionEvidenceError.runLineageMismatch(
+        AgentRunID(rawValue: run.id))
+    }
+
+    var previousHash: String? = try Self.chainSeed(runID: run.id, lineage: run.lineage)
     var values: [FoundationModelsAgentEventReceipt] = []
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .millisecondsSince1970
@@ -240,13 +348,20 @@ public struct FoundationModelsAgentRunReceipt: Codable, Equatable, Sendable {
     self.runID = run.id
     self.receipts = values
     self.rootHash = previousHash
+    self.lineage = run.lineage
   }
 
   public func verify() -> Bool {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .millisecondsSince1970
     encoder.outputFormatting = [.sortedKeys]
-    var previousHash: String? = Self.chainSeed(runID: runID)
+    guard lineage?.runID.rawValue == runID || lineage == nil,
+      receipts.allSatisfy({ $0.event.lineage == lineage }),
+      let seed = try? Self.chainSeed(runID: runID, lineage: lineage)
+    else {
+      return false
+    }
+    var previousHash: String? = seed
 
     for (index, receipt) in receipts.enumerated() {
       guard receipt.index == index,
@@ -285,8 +400,18 @@ public struct FoundationModelsAgentRunReceipt: Codable, Equatable, Sendable {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
   }
 
-  private static func chainSeed(runID: UUID) -> String {
-    sha256(Data("foundationmodelsagent-receipt-v1\u{0}\(runID.uuidString.lowercased())".utf8))
+  private static func chainSeed(runID: UUID, lineage: AgentRunLineage?) throws -> String {
+    guard let lineage else {
+      return sha256(
+        Data("foundationmodelsagent-receipt-v1\u{0}\(runID.uuidString.lowercased())".utf8))
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let encodedLineage = try encoder.encode(lineage)
+    var seed = Data(
+      "foundationmodelsagent-receipt-v2\u{0}\(runID.uuidString.lowercased())\u{0}".utf8)
+    seed.append(encodedLineage)
+    return sha256(seed)
   }
 }
 
@@ -414,22 +539,31 @@ actor FoundationModelsAgentEventRecorder {
   private let deliveries: [FoundationModelsAgentObserverDelivery]
   private let deliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration
   private let redactionPolicy: FoundationModelsAgentRedactionPolicy
+  private let instrumentation: AgentSessionInstrumentationRuntime?
   private var eventsByRun: [UUID: [FoundationModelsAgentEvent]] = [:]
+  private var lineageByRun: [UUID: AgentRunLineage] = [:]
 
   init(
     observers: [any FoundationModelsAgentObserver],
     redactionPolicy: FoundationModelsAgentRedactionPolicy,
-    deliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration
+    deliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration,
+    instrumentationConfiguration: AgentSessionInstrumentationConfiguration
   ) {
     self.deliveries = observers.map {
       FoundationModelsAgentObserverDelivery(observer: $0, configuration: deliveryConfiguration)
     }
     self.deliveryConfiguration = deliveryConfiguration
     self.redactionPolicy = redactionPolicy
+    self.instrumentation =
+      instrumentationConfiguration.isEnabled
+      ? AgentSessionInstrumentationRuntime(configuration: instrumentationConfiguration)
+      : nil
   }
 
-  func begin(runID: UUID, message: String) async {
+  func begin(lineage: AgentRunLineage, message: String) async {
+    let runID = lineage.runID.rawValue
     eventsByRun[runID] = []
+    lineageByRun[runID] = lineage
     await record(runID: runID, kind: .runStarted, message: message)
   }
 
@@ -443,9 +577,11 @@ actor FoundationModelsAgentEventRecorder {
       runID: runID,
       kind: kind,
       message: redactionPolicy.redact(message),
-      attributes: redactionPolicy.redact(attributes: attributes)
+      attributes: redactionPolicy.redact(attributes: attributes),
+      lineage: lineageByRun[runID]
     )
     eventsByRun[runID, default: []].append(event)
+    await instrumentation?.record(event)
     for delivery in deliveries {
       await delivery.enqueue(event)
     }
@@ -457,6 +593,7 @@ actor FoundationModelsAgentEventRecorder {
 
   func discard(runID: UUID) {
     eventsByRun.removeValue(forKey: runID)
+    lineageByRun.removeValue(forKey: runID)
   }
 
   func flushObservers(timeout: Duration? = nil) async -> FoundationModelsAgentObserverFlushResult {
