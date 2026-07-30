@@ -62,7 +62,7 @@ Add `FoundationModelsAgentMemory` only when the app needs inspectable long-term 
 import FoundationModelsAgent
 import FoundationModels
 
-let agent = try FoundationModelsAgentSession(
+let agent = try AgentSession(
   model: SystemLanguageModel.default,
   instructions: Instructions {
     "Be concise. Use a tool only when it materially improves the answer."
@@ -85,7 +85,7 @@ the composition root. This preserves native dynamic instructions, model
 switching, lifecycle hooks, and utilities such as Skills and history modifiers:
 
 ```swift
-let agent = try FoundationModelsAgentSession(
+let agent = try AgentSession(
   checkpointCompatibilityID: "assistant-profile-v1",
   checkpointStore: store,
   checkpointKey: "assistant:user-123"
@@ -182,7 +182,7 @@ let approval = ClosureFoundationModelsAgentApprovalProvider { request in
   return await askUserToApprove(request) ? .approve : .deny(reason: "User declined")
 }
 
-let agent = try FoundationModelsAgentSession(
+let agent = try AgentSession(
   model: SystemLanguageModel.default,
   tools: [SendEmailTool()],
   toolConfiguration: FoundationModelsAgentToolConfiguration(
@@ -214,7 +214,7 @@ let store = FileCheckpointStore(
     .appending(path: "FoundationModelsAgent", directoryHint: .isDirectory)
 )
 
-let agent = try FoundationModelsAgentSession(
+let agent = try AgentSession(
   model: model,
   tools: tools,
   instructions: Instructions("Help the user."),
@@ -283,7 +283,7 @@ let memory = FoundationModelsAgentMemoryCoordinator(
   disclosurePolicy: FoundationModelsAgentMemoryDisclosurePolicy(destination: .onDevice)
 )
 
-let agent = try FoundationModelsAgentSession(
+let agent = try AgentSession(
   model: model,
   plugins: [memory]
 )
@@ -317,7 +317,7 @@ let observer = ClosureFoundationModelsAgentObserver { event in
   logger.info("\(event.kind.rawValue): \(event.message)")
 }
 
-let agent = try FoundationModelsAgentSession(
+let agent = try AgentSession(
   model: model,
   observers: [observer]
 )
@@ -366,7 +366,7 @@ tool begins, preventing duplicate UI output or side effects.
 
 ## Provider Traits
 
-Every conforming `LanguageModel` already works with `FoundationModelsAgentSession`. The
+Every conforming `LanguageModel` already works with `AgentSession`. The
 optional `FoundationModelsAgentProviders` product adds one import and construction helpers
 for the packages announced alongside Xcode 27.
 
@@ -408,13 +408,13 @@ let localModel = FoundationModelsAgentProviderModels.chatCompletions(
   baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
   supportsGuidedGeneration: false
 )
-let localAgent = try FoundationModelsAgentSession(model: localModel)
+let localAgent = try AgentSession(model: localModel)
 
 let claude = FoundationModelsAgentProviderModels.claude(
   auth: .proxied(headers: ["Authorization": appSessionToken]),
   baseURL: URL(string: "https://your-relay.example.com")!
 )
-let claudeAgent = try FoundationModelsAgentSession(model: claude)
+let claudeAgent = try AgentSession(model: claude)
 
 // Firebase requires a configured app and GoogleService-Info.plist first.
 FirebaseApp.configure()
@@ -422,7 +422,7 @@ let gemini = FoundationModelsAgentProviderModels.gemini(
   using: FirebaseAIClient.firebaseAI(backend: .googleAI()),
   name: "gemini-2.5-flash"
 )
-let geminiAgent = try FoundationModelsAgentSession(model: gemini)
+let geminiAgent = try AgentSession(model: gemini)
 ```
 
 `chatCompletions(...)` is Apple's generic protocol client for local,
@@ -449,7 +449,7 @@ current Firebase graph is exceptionally large.
 The trait syntax above is for clients that own a `Package.swift`. Xcode 27's
 Add Package UI does not currently expose dependency-trait selection. Xcode app
 projects can add the desired upstream provider package directly and pass its
-`LanguageModel` to `FoundationModelsAgentSession`; the helper product is optional and adds
+`LanguageModel` to `AgentSession`; the helper product is optional and adds
 no runtime capability.
 
 ## Test without keys or Apple Intelligence
@@ -468,7 +468,7 @@ let model = RecordedLanguageModel(steps: [
   .response(text: "Recorded final response")
 ])
 
-let agent = try FoundationModelsAgentSession(model: model, tools: [LookupTool()])
+let agent = try AgentSession(model: model, tools: [LookupTool()])
 let response = try await agent.respond(to: "Test the flow")
 ```
 

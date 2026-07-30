@@ -1,7 +1,7 @@
 import Foundation
 import FoundationModels
 
-public enum FoundationModelsAgentSessionMode: String, Codable, Equatable, Sendable {
+public enum AgentSessionMode: String, Codable, Equatable, Sendable {
   case explicitModel
   case dynamicProfile
 }
@@ -69,14 +69,14 @@ public struct FoundationModelsAgentPluginRequest: Sendable {
   public let prompt: Prompt
   public let contextQuery: String?
   public let metadata: FoundationModelsAgentRequestMetadata
-  public let mode: FoundationModelsAgentSessionMode
+  public let mode: AgentSessionMode
 
   public init(
     runID: UUID,
     prompt: Prompt,
     contextQuery: String?,
     metadata: FoundationModelsAgentRequestMetadata,
-    mode: FoundationModelsAgentSessionMode
+    mode: AgentSessionMode
   ) {
     self.runID = runID
     self.prompt = prompt
@@ -108,7 +108,7 @@ public struct FoundationModelsAgentPluginCompletion: Sendable {
   public let rawContent: GeneratedContent
   public let transcriptEntries: [Transcript.Entry]
   public let usage: FoundationModelsAgentUsage
-  public let mode: FoundationModelsAgentSessionMode
+  public let mode: AgentSessionMode
 
   public init(
     runID: UUID,
@@ -117,7 +117,7 @@ public struct FoundationModelsAgentPluginCompletion: Sendable {
     rawContent: GeneratedContent,
     transcriptEntries: [Transcript.Entry],
     usage: FoundationModelsAgentUsage,
-    mode: FoundationModelsAgentSessionMode
+    mode: AgentSessionMode
   ) {
     self.runID = runID
     self.contextQuery = contextQuery
@@ -135,14 +135,14 @@ public struct FoundationModelsAgentPluginFailure: Sendable {
   public let metadata: FoundationModelsAgentRequestMetadata
   public let errorDescription: String
   public let errorType: String
-  public let mode: FoundationModelsAgentSessionMode
+  public let mode: AgentSessionMode
 
   public init(
     runID: UUID,
     contextQuery: String?,
     metadata: FoundationModelsAgentRequestMetadata,
     error: any Error,
-    mode: FoundationModelsAgentSessionMode
+    mode: AgentSessionMode
   ) {
     self.runID = runID
     self.contextQuery = contextQuery
@@ -154,7 +154,7 @@ public struct FoundationModelsAgentPluginFailure: Sendable {
 }
 
 /// Extends a native FoundationModelsAgent run without introducing another model abstraction.
-public protocol FoundationModelsAgentSessionPlugin: Sendable {
+public protocol AgentSessionPlugin: Sendable {
   var identifier: String { get }
   var tools: [any Tool] { get }
   var failurePolicies: FoundationModelsAgentPluginFailurePolicies { get }
@@ -167,7 +167,7 @@ public protocol FoundationModelsAgentSessionPlugin: Sendable {
     -> [FoundationModelsAgentPluginEvent]
 }
 
-extension FoundationModelsAgentSessionPlugin {
+extension AgentSessionPlugin {
   public var tools: [any Tool] { [] }
   public var failurePolicies: FoundationModelsAgentPluginFailurePolicies { .default }
 

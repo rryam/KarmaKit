@@ -31,7 +31,7 @@ private actor TestPluginProbe {
   }
 }
 
-private struct TestSessionPlugin: FoundationModelsAgentSessionPlugin {
+private struct TestSessionPlugin: AgentSessionPlugin {
   let identifier: String
   let probe: TestPluginProbe
   let contextBlocks: [FoundationModelsAgentContextBlock]
@@ -133,7 +133,7 @@ struct FoundationModelsAgentPluginTests {
       .response(text: "blue"),
     ])
     let checkpointStore = InMemoryCheckpointStore()
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: model,
       configuration: .init(retryPolicy: retry),
       checkpointStore: checkpointStore,
@@ -181,7 +181,7 @@ struct FoundationModelsAgentPluginTests {
   @Test("Applies the same plugin lifecycle to streaming responses")
   func streamingLifecycle() async throws {
     let probe = TestPluginProbe()
-    let session = try FoundationModelsAgentSession(
+    let session = try AgentSession(
       model: RecordedLanguageModel(steps: [.responseFragments(["hel", "lo"])]),
       plugins: [
         TestSessionPlugin(
@@ -205,7 +205,7 @@ struct FoundationModelsAgentPluginTests {
   @Test("Plugin preparation failures continue or fail according to policy")
   func preparationFailurePolicy() async throws {
     let continuingProbe = TestPluginProbe()
-    let continuing = try FoundationModelsAgentSession(
+    let continuing = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "continued")]),
       plugins: [TestSessionPlugin(probe: continuingProbe, failsPreparation: true)]
     )
@@ -214,7 +214,7 @@ struct FoundationModelsAgentPluginTests {
     #expect(await continuingProbe.completionCount == 1)
 
     let failingProbe = TestPluginProbe()
-    let failing = try FoundationModelsAgentSession(
+    let failing = try AgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "unused")]),
       plugins: [
         TestSessionPlugin(
@@ -235,7 +235,7 @@ struct FoundationModelsAgentPluginTests {
   func duplicatePluginToolName() throws {
     let probe = TestPluginProbe()
     #expect(throws: FoundationModelsAgentError.self) {
-      _ = try FoundationModelsAgentSession(
+      _ = try AgentSession(
         model: RecordedLanguageModel(steps: []),
         tools: [PluginTool(name: "duplicate")],
         plugins: [
@@ -254,7 +254,7 @@ struct FoundationModelsAgentPluginTests {
     let second = TestSessionPlugin(probe: TestPluginProbe())
 
     #expect(throws: FoundationModelsAgentError.self) {
-      _ = try FoundationModelsAgentSession(
+      _ = try AgentSession(
         model: RecordedLanguageModel(steps: []),
         plugins: [first, second]
       )

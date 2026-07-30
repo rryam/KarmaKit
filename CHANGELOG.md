@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
+  `AgentSessionMode`. This is a source-breaking change with no compatibility
+  aliases.
+
 ## 0.4.0 - 2026-07-30
 
 - Renamed the package, products, modules, and public APIs to Foundation Models
@@ -18,7 +24,7 @@
 ## 0.2.0 - 2026-06-23
 
 - Rebuilt FoundationModelsAgent on native Xcode 27 Foundation Models types.
-- Added persistent `FoundationModelsAgentSession` text, structured, schema, and streaming
+- Added persistent `AgentSession` text, structured, schema, and streaming
   response APIs.
 - Added a dynamic-profile factory path with history-only restore and explicit
   checkpoint compatibility revisions.
