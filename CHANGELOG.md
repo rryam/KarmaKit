@@ -5,6 +5,12 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added native explicit-model context budgeting with reserved response
+  headroom, fractional and absolute input limits, deterministic overflow
+  policy, per-component accounting, and fail-before-inference behavior.
+- Added audited app-owned history transforms with authoritative-checkpoint
+  preservation, tool-turn validation, cancellation, and a documented
+  dynamic-profile boundary that composes with Apple's history utilities.
 
 ## 0.4.0 - 2026-07-30
 

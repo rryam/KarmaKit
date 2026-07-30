@@ -125,6 +125,72 @@ the transcript. An earlier throwing hook inside the supplied profile can
 preempt FoundationModelsAgent's outer observer and erase that evidence; every profile run
 contains `profileToolAuditBestEffort` to make this limit machine-visible.
 
+## Native context budgets
+
+`AgentSessionContextBudget` preflights the exact native components used by an
+explicit-model session: instructions, governed tools, the final prompt
+(including plugin context), an applicable generation schema, and transcript
+history. `SystemLanguageModel` uses its native `contextSize` and
+`tokenCount(for:)` APIs automatically:
+
+```swift
+let agent = try AgentSession(
+  model: SystemLanguageModel.default,
+  tools: tools,
+  instructions: Instructions("Answer from the available evidence."),
+  configuration: FoundationModelsAgentConfiguration(
+    contextBudget: AgentSessionContextBudget(
+      reservedResponseTokens: 768,
+      maximumUsableFraction: 0.9,
+      maximumUsableTokens: 3_000,
+      overflowPolicy: .failBeforeInference
+    )
+  )
+)
+```
+
+Exact fits proceed; overflow fails before inference. A custom `LanguageModel`
+can opt in with `AgentSessionContextMeasurer<Model>`. Its closure receives the
+exact model instance passed to the session and the native values to measure.
+FoundationModelsAgent never substitutes an approximate tokenizer.
+
+For app-owned compaction, use `.transform(...)`. The rewritten active session
+is validated, remeasured, and recorded with before/after counts, affected
+entry IDs, provenance, and cache invalidation. The complete authoritative
+transcript and checkpoint remain unchanged by default. Choosing
+`authoritativeTranscriptPolicy: .replace` is the explicit lossy option.
+
+Dynamic profiles are intentionally different: their active model and
+modifier-produced history are opaque outside Foundation Models, so
+`AgentSession` rejects `contextBudget` in profile mode. Apply model-aware
+history policy inside the profile. Apple's `foundation-models-utilities`
+modifiers compose directly:
+
+```swift
+import FoundationModelsUtilities
+
+let agent = try AgentSession(
+  checkpointCompatibilityID: "assistant-profile-v2"
+) {
+  LanguageModelSession.Profile {
+    Instructions("Help with the current project.")
+    dynamicTools
+  }
+  .model(model)
+  .summarizeHistory(entryThreshold: 50, model: summarizer)
+  .rollingWindow(entries: 10)
+  .droppingCompletedToolCalls()
+}
+```
+
+Those are Apple's native profile modifiers, not implementations supplied or
+replaced by FoundationModelsAgent. Because `rollingWindow(entries:)` is an
+entry suffix rather than a turn-aware window, compose and test it carefully
+when tool calls are present. See
+[Context budgeting](Sources/FoundationModelsAgent/FoundationModelsAgent.docc/Context-Budgeting.md)
+for custom-model
+measurement, transform auditing, checkpoint semantics, and limitations.
+
 ## Native typed and multimodal input
 
 There is no FoundationModelsAgent-specific message type to flatten rich input.
@@ -236,6 +302,11 @@ or provide an async custom transform. Bounded retention keeps only whole
 prompt-led turns, so it may retain fewer entries than the limit rather than
 orphaning a tool call or output. The file store hashes keys before using them as
 filenames and writes atomically.
+
+Transcript retention is persistence-only. Context-budget transforms change
+the active inference history and preserve the complete authoritative
+checkpoint unless the app explicitly selects `.replace`; do not use retention
+as a second implicit context compactor.
 
 Important Foundation Models persistence behavior in Xcode 27:
 
