@@ -1,0 +1,159 @@
+# Durable Background Tasks
+
+`FoundationModelsAgentBackgroundTasks` stores enough scheduler state to decide
+what may run after an app restart. It does not own a model protocol, transcript
+format, provider layer, or agent loop. An app passes each record to a
+caller-supplied `@Sendable` factory, which uses `AgentSession` and native
+Foundation Models values for the actual work.
+
+## State and settlement
+
+Every record starts as `queued`, receives a lease while `preparing`, then moves
+through states reported by the execution factory:
+
+| State | Meaning |
+| --- | --- |
+| `queued` | Persisted and waiting for an eligible scheduler slot |
+| `preparing` | Leased to this coordinator, before factory execution |
+| `generating` | The caller's native session is running |
+| `awaitingApproval` | The caller paused before an approval decision |
+| `executingTool` | A tool boundary was durably recorded |
+| `settling` | Factory execution returned and terminal persistence is next |
+| `completed` | Execution and settlement finished |
+| `failed` | Execution or a budget failed |
+| `cancelled` | User, ancestor, or shutdown cancellation won |
+| `ambiguousAfterCrash` | A non-idempotent mutation may have completed |
+
+`completed`, `failed`, `cancelled`, and `ambiguousAfterCrash` are terminal.
+Settlement ignores a late second result. This matters when cancellation and a
+factory return race: the first actor-isolated terminal transition wins and the
+stored record never moves to a different terminal state.
+
+`shutdown()` settles every open record as cancelled. `cancel(_:includingDescendants:)`
+does the same for one subtree. Active Swift tasks receive cooperative
+cancellation; an external API that ignores cancellation can still finish its
+request, which is why mutation recovery must not depend on cancellation alone.
+
+## Stored identity
+
+`BackgroundAgentTaskID` wraps a caller-supplied or generated UUID. Each record
+also stores:
+
+- `ownerID`, `rootTaskID`, `parentTaskID`, and `depth`;
+- caller metadata for future lineage adapters;
+- a monotonic FIFO sequence and priority;
+- submission, update, first-start, and settlement dates;
+- attempt count, executor lease, usage, and terminal reason.
+
+These fields are scheduling data. They do not define an agent-run lineage or a
+receipt hierarchy. A separate adapter can map the raw UUID and metadata to a
+canonical lineage API later.
+
+## Persistence
+
+`BackgroundAgentTaskStore` reads and writes one
+`BackgroundAgentTaskStoreSnapshot`. Both the snapshot and every record have
+format versions. The production `FileBackgroundAgentTaskStore` encodes sorted
+JSON and uses an atomic file replacement, so the old complete snapshot or the
+new complete snapshot survives a process stop.
+
+Use one coordinator for a file. The store has no distributed claim protocol,
+cross-device consensus, or server lease authority.
+
+The in-memory store is intended for tests. Its `snapshots()` history also makes
+settlement races inspectable.
+
+## Recovery rules
+
+On a new coordinator start, every nonterminal leased record is treated as work
+interrupted by the prior process. A running coordinator reclaims an in-flight
+record only after its lease expires.
+
+| Interrupted state | Recovery |
+| --- | --- |
+| `preparing` | Queue again if attempt and elapsed-time budgets remain |
+| `generating` | Queue again; mutations must not start without the tool-boundary call below |
+| `awaitingApproval` | Queue again and request a fresh decision |
+| read-only `executingTool` | Queue again |
+| any state after an idempotent mutation boundary | Queue again with the declared key |
+| any state after a non-idempotent mutation boundary | Settle as `ambiguousAfterCrash` |
+
+The coordinator never turns `ambiguousAfterCrash` back into queued work.
+Inspect the external system, then submit a new task only after the app knows
+whether the effect happened.
+
+## Side-effect protocol
+
+The execution factory must durably mark a mutation before making its external
+request:
+
+```swift
+let key = "invoice:\(invoiceID):capture"
+
+let request = BackgroundAgentTaskRequest(
+  prompt: "Capture the approved invoice.",
+  ownerID: userID,
+  recoveryPolicy: .idempotentMutation(idempotencyKey: key)
+)
+
+let coordinator = try BackgroundAgentTaskCoordinator(store: store) {
+  record, context in
+  try await context.markAwaitingApproval()
+  try await requireApproval(for: record)
+  try await context.markGenerating()
+
+  try await context.markExecutingMutation(
+    named: "capture_invoice",
+    idempotencyKey: key
+  )
+  try await billing.capture(invoiceID, idempotencyKey: key)
+  try await context.markToolFinished()
+
+  return BackgroundAgentTaskOutcome()
+}
+```
+
+`.readOnly` rejects `markExecutingMutation`. A
+`.nonReplayableMutation` must omit the key and will become ambiguous if the
+process stops at or after the recorded boundary.
+
+Opaque profile-owned tools and ordinary `AgentSession` tools do not
+automatically notify this separate scheduler. The app must wrap a mutating tool
+or its external client so the context call happens first. Failing to do that
+breaks the recovery contract.
+
+## Scheduling and budgets
+
+The coordinator enforces one global active-task limit and one limit for
+siblings sharing a parent. Submission rejects excess depth or total fan-out.
+Within the same effective priority, the persisted sequence is FIFO; prompts
+remain distinct even when their text matches.
+
+Waiting tasks gain one priority class per configured starvation interval, up
+to `critical`. This gives old work a deterministic path to execution.
+
+Each task carries maximum elapsed time, attempts, turns, tool calls, and tokens.
+The coordinator cancels cooperative execution when elapsed time expires.
+`markExecutingTool` consumes one tool-call unit. The factory must report native
+session usage with `recordUsage`; the scheduler cannot infer usage from an
+opaque caller-owned session.
+
+## Process runtime is not OS runtime
+
+Durability answers, "What should this app do when it runs again?" It does not
+answer, "Will iOS keep this process alive?"
+
+iOS can suspend or terminate an app while a task is generating, waiting for
+approval, or calling a tool. This package does not request execution time,
+register `BGTaskScheduler` identifiers, schedule refresh or processing tasks,
+or provide a background-task UI. An app may connect those OS APIs separately,
+subject to Apple's scheduling decisions and entitlement rules.
+
+## Deliberate scope
+
+This product stops at a single-process, file-backed scheduler. It does not
+implement `ChildAgentTool`, a general distributed queue, server coordination,
+`BGTaskScheduler` registration, or arbitrary rich-prompt serialization.
+Callers that need image or custom-segment input should persist an app-owned
+asset reference in metadata and rebuild the native `Prompt` inside the
+execution factory.

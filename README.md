@@ -56,6 +56,13 @@ Add `FoundationModelsAgentMemory` only when the app needs inspectable long-term 
 .product(name: "FoundationModelsAgentMemory", package: "FoundationModelsAgent")
 ```
 
+Add `FoundationModelsAgentBackgroundTasks` when the app needs a durable, app-managed
+task queue:
+
+```swift
+.product(name: "FoundationModelsAgentBackgroundTasks", package: "FoundationModelsAgent")
+```
+
 ## Quick start
 
 ```swift
@@ -255,6 +262,75 @@ not cross a Codable boundary and preserve the concrete values.
 
 Encrypt sensitive checkpoint files at the application boundary. FoundationModelsAgent's
 plain file store is intentionally not presented as encrypted storage.
+
+## Durable app-managed tasks
+
+`FoundationModelsAgentBackgroundTasks` persists task scheduling and recovery without
+replacing the native model loop. The caller supplies a `@Sendable` execution
+factory; that factory creates or restores its own `AgentSession` and passes the
+stored string prompt straight to the session.
+
+```swift
+import FoundationModelsAgent
+import FoundationModelsAgentBackgroundTasks
+
+let taskStore = FileBackgroundAgentTaskStore(
+  fileURL: URL.applicationSupportDirectory
+    .appending(path: "FoundationModelsAgent/background-tasks.json")
+)
+
+let coordinator = try BackgroundAgentTaskCoordinator(store: taskStore) {
+  record, context in
+  let session = try makeAgentSession(for: record)
+  let response = try await session.respond(to: record.prompt)
+  try await context.recordUsage(
+    turns: 1,
+    tokens: response.usage.inputTokens + response.usage.outputTokens
+  )
+  return BackgroundAgentTaskOutcome(terminalDetail: "Response checkpointed.")
+}
+
+try await coordinator.start()
+let taskID = try await coordinator.submit(
+  BackgroundAgentTaskRequest(
+    prompt: "Reconcile the local draft.",
+    ownerID: signedInUserID,
+    metadata: ["workspace": workspaceID],
+    priority: .normal,
+    recoveryPolicy: .readOnly
+  )
+)
+let finalRecord = try await coordinator.waitForSettlement(of: taskID)
+```
+
+Every prompt gets its own stable UUID and FIFO sequence. The coordinator does
+not merge matching text. It records owner, root, parent, depth, priority,
+timestamps, attempts, leases, usage, and a terminal reason in a versioned
+snapshot. `FileBackgroundAgentTaskStore` atomically replaces that snapshot.
+
+Mutation recovery is explicit. Call
+`context.markExecutingMutation(named:idempotencyKey:)` before the external call.
+Use `.nonReplayableMutation` when the destination has no idempotency contract;
+if the process stops after that boundary, recovery settles the task as
+`ambiguousAfterCrash`. `.idempotentMutation(idempotencyKey:)` permits replay
+only when the execution factory presents the same key at the mutation boundary.
+The coordinator never guesses whether an opaque native tool changed external
+state.
+
+Global and per-parent concurrency, depth, fan-out, elapsed time, attempts,
+turns, tool calls, and tokens are bounded. Priority aging prevents a steady
+stream of urgent work from starving an older low-priority task. Cancellation
+settles the selected task and its descendants deterministically, then
+cooperatively cancels active execution.
+
+This is app-managed durability, not guaranteed OS background runtime. A saved
+task can resume after the app launches again, but iOS may suspend or terminate
+the process at any time and does not promise arbitrary model work will keep
+running. The package does not register `BGTaskScheduler` jobs or create UI for
+them.
+
+See [Durable Background Tasks](Sources/FoundationModelsAgentBackgroundTasks/FoundationModelsAgentBackgroundTasks.docc/DurableBackgroundTasks.md)
+for the state machine, crash rules, side-effect protocol, and scope boundaries.
 
 ## Production long-term memory
 

@@ -5,6 +5,12 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added the optional `FoundationModelsAgentBackgroundTasks` product with a
+  versioned atomic file store, priority-aware scheduling, hierarchy and budget
+  bounds, cooperative cancellation, and deterministic terminal settlement.
+- Added crash recovery that replays only read-only or explicitly idempotent
+  work and marks a possibly completed non-idempotent mutation as
+  `ambiguousAfterCrash`.
 
 ## 0.4.0 - 2026-07-30
 
