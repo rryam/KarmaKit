@@ -392,6 +392,55 @@ struct AgentSessionContextBudgetTests {
     #expect(event.attributes["authoritative_transcript_policy"] == "replace")
   }
 
+  @Test("Explicit bounded retention remains lossy after a preserving transform")
+  func preservingTransformWithBoundedRetention() async throws {
+    let store = InMemoryCheckpointStore()
+    let transform = AgentSessionContextTransform(identifier: "preserve-then-retain") {
+      request in
+      var transcript = request.transcript
+      let affected = 0..<transcript.history.count
+      transcript.history = []
+      return AgentSessionContextTransformResult(
+        transcript: transcript,
+        affectedHistoryRange: affected,
+        provenance: "explicit persistence boundary",
+        authoritativeTranscriptPolicy: .preserve
+      )
+    }
+    let measurer = AgentSessionContextMeasurer { _, request in
+      AgentSessionContextTokenCounts(
+        contextSize: 6,
+        instructions: 0,
+        tools: 0,
+        prompt: 1,
+        schema: 0,
+        transcript: request.transcriptEntries.count * 3
+      )
+    }
+    let session = try AgentSession(
+      model: RecordedLanguageModel(steps: [
+        .response(text: "one"),
+        .response(text: "two"),
+      ]),
+      configuration: .init(
+        contextBudget: .init(
+          reservedResponseTokens: 0,
+          overflowPolicy: .transform(transform)
+        )
+      ),
+      contextMeasurer: measurer,
+      checkpointStore: store,
+      transcriptRetention: .latestHistoryEntries(2)
+    )
+
+    _ = try await session.respond(to: "First")
+    _ = try await session.respond(to: "Second")
+
+    #expect(try await session.transcript().history.count == 4)
+    let checkpoint = try #require(await store.loadCheckpoint(for: "default"))
+    #expect(checkpoint.transcript.history.count == 2)
+  }
+
   @Test("Remeasures the transcript rematerialized for inference")
   func remeasuresRematerializedTranscript() async throws {
     let probe = MeasurementTranscriptProbe()

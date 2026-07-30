@@ -444,10 +444,12 @@ prompt-led turns, so it may retain fewer entries than the limit rather than
 orphaning a tool call or output. The file store hashes keys before using them as
 filenames and writes atomically.
 
-Transcript retention is persistence-only. Context-budget transforms change
-the active inference history and preserve the complete authoritative
-checkpoint unless the app explicitly selects `.replace`; do not use retention
-as a second implicit context compactor.
+Transcript retention is persistence-only. A `.preserve` context transform
+keeps the complete in-memory authoritative transcript and, with the default
+`.complete` retention, the complete checkpoint. Choosing
+`.latestHistoryEntries` or a custom retention transform is a separate explicit
+lossy checkpoint policy; `.replace` is the explicit way to make the context
+rewrite itself authoritative.
 
 Important Foundation Models persistence behavior in Xcode 27:
 

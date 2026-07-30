@@ -116,10 +116,13 @@ and tools are rematerialized, and installs the rewrite only when it fits. A
 changed transcript creates a new native session and invalidates the model's
 prompt cache.
 
-With `.preserve`, `transcript()` and checkpoints retain the complete
-authoritative history while the active native session uses the compacted
-history. New prompt/response entries are appended to both views. This allows a
-checkpoint restore to recompute compaction from complete evidence.
+With `.preserve`, `transcript()` retains the complete authoritative history
+while the active native session uses the compacted history. New
+prompt/response entries are appended to both views. The default `.complete`
+transcript retention also persists that complete checkpoint, allowing restore
+to recompute compaction from complete evidence. An explicitly configured
+`.latestHistoryEntries` or custom retention policy remains a separate lossy
+checkpoint choice.
 
 Use `.replace` only when the app intentionally makes the rewrite authoritative
 and accepts a lossy checkpoint. FoundationModelsAgent never silently drops

@@ -111,7 +111,10 @@ public struct AgentSessionContextMeasurer: Sendable {
 
 /// Whether a successful history rewrite also replaces the authoritative transcript.
 public enum AgentSessionAuthoritativeTranscriptPolicy: String, Sendable {
-  /// Keep the complete transcript for `transcript()` and checkpoint persistence.
+  /// Keep the complete in-memory transcript and pass it to the configured checkpoint retention.
+  ///
+  /// The default `.complete` retention persists it in full. An explicitly
+  /// bounded or custom retention policy may still make the checkpoint lossy.
   case preserve
   /// Make the rewritten transcript authoritative. This is an explicit lossy choice.
   case replace
