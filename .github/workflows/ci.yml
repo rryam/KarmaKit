@@ -85,7 +85,7 @@ jobs:
       - name: Build package products
         run: >-
           xcodebuild build
-          -scheme CoreAgent-Package
+          -scheme FoundationModelsAgent-Package
           -destination '${{ matrix.destination }}'
           CODE_SIGNING_ALLOWED=NO
 

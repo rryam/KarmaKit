@@ -1,36 +1,36 @@
-import CoreAgent
 import Foundation
 import FoundationModels
+import FoundationModelsAgent
 
-public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
-  public nonisolated let identifier = "coreagent.memory"
-  public nonisolated let scope: CoreAgentMemoryScope
-  public nonisolated let searchTool: CoreAgentMemorySearchTool
-  public nonisolated let failurePolicies: CoreAgentPluginFailurePolicies
+public actor FoundationModelsAgentMemoryCoordinator: FoundationModelsAgentSessionPlugin {
+  public nonisolated let identifier = "foundationmodelsagent.memory"
+  public nonisolated let scope: FoundationModelsAgentMemoryScope
+  public nonisolated let searchTool: FoundationModelsAgentMemorySearchTool
+  public nonisolated let failurePolicies: FoundationModelsAgentPluginFailurePolicies
 
   public nonisolated var tools: [any Tool] { [searchTool] }
 
-  private let store: any CoreAgentMemoryStore
-  private let runtime: CoreAgentMemoryRuntime
-  private let consolidator: (any CoreAgentMemoryConsolidator)?
-  private let consolidationWorker: CoreAgentMemoryConsolidationWorker?
+  private let store: any FoundationModelsAgentMemoryStore
+  private let runtime: FoundationModelsAgentMemoryRuntime
+  private let consolidator: (any FoundationModelsAgentMemoryConsolidator)?
+  private let consolidationWorker: FoundationModelsAgentMemoryConsolidationWorker?
   private var consolidationGeneration: UInt64 = 0
   private var pendingEpisodeCaptures = 0
   private var episodeCaptureWaiters: [CheckedContinuation<Void, Never>] = []
 
   public init(
-    scope: CoreAgentMemoryScope,
-    store: any CoreAgentMemoryStore,
-    disclosurePolicy: CoreAgentMemoryDisclosurePolicy,
-    index: (any CoreAgentMemoryIndex)? = nil,
-    consolidator: (any CoreAgentMemoryConsolidator)? = nil,
-    approvalProvider: any CoreAgentMemoryApprovalProvider =
-      DeferCoreAgentMemoryApprovalProvider(),
-    retrievalConfiguration: CoreAgentMemoryRetrievalConfiguration = .default,
-    failurePolicies: CoreAgentPluginFailurePolicies = .default,
-    observers: [any CoreAgentMemoryObserver] = []
+    scope: FoundationModelsAgentMemoryScope,
+    store: any FoundationModelsAgentMemoryStore,
+    disclosurePolicy: FoundationModelsAgentMemoryDisclosurePolicy,
+    index: (any FoundationModelsAgentMemoryIndex)? = nil,
+    consolidator: (any FoundationModelsAgentMemoryConsolidator)? = nil,
+    approvalProvider: any FoundationModelsAgentMemoryApprovalProvider =
+      DeferFoundationModelsAgentMemoryApprovalProvider(),
+    retrievalConfiguration: FoundationModelsAgentMemoryRetrievalConfiguration = .default,
+    failurePolicies: FoundationModelsAgentPluginFailurePolicies = .default,
+    observers: [any FoundationModelsAgentMemoryObserver] = []
   ) {
-    let runtime = CoreAgentMemoryRuntime(
+    let runtime = FoundationModelsAgentMemoryRuntime(
       scope: scope,
       store: store,
       index: index,
@@ -41,11 +41,11 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
     self.scope = scope
     self.store = store
     self.runtime = runtime
-    self.searchTool = CoreAgentMemorySearchTool(runtime: runtime)
+    self.searchTool = FoundationModelsAgentMemorySearchTool(runtime: runtime)
     self.consolidator = consolidator
     self.failurePolicies = failurePolicies
     if let consolidator {
-      let worker = CoreAgentMemoryConsolidationWorker(
+      let worker = FoundationModelsAgentMemoryConsolidationWorker(
         scope: scope,
         store: store,
         consolidator: consolidator,
@@ -59,8 +59,8 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
     }
   }
 
-  public func prepare(for request: CoreAgentPluginRequest) async throws
-    -> CoreAgentPluginPreparation
+  public func prepare(for request: FoundationModelsAgentPluginRequest) async throws
+    -> FoundationModelsAgentPluginPreparation
   {
     guard request.mode == .explicitModel,
       let query = request.contextQuery?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -79,35 +79,35 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
         attributes: ["record_count": String(results.count)]
       )
     )
-    return CoreAgentPluginPreparation(
+    return FoundationModelsAgentPluginPreparation(
       contextBlocks: [
-        CoreAgentContextBlock(
-          id: CoreAgentMemoryContextFormatter.blockID(for: results),
+        FoundationModelsAgentContextBlock(
+          id: FoundationModelsAgentMemoryContextFormatter.blockID(for: results),
           content: context,
           attributes: ["record_count": String(results.count)]
         )
       ],
       events: results.map {
-        CoreAgentPluginEvent(
+        FoundationModelsAgentPluginEvent(
           name: "memory_retrieved",
-          message: "CoreAgent memory record was selected for context.",
+          message: "FoundationModelsAgent memory record was selected for context.",
           attributes: ["record_id": $0.id.uuidString.lowercased()]
         )
       }
     )
   }
 
-  public func didComplete(_ completion: CoreAgentPluginCompletion) async throws
-    -> [CoreAgentPluginEvent]
+  public func didComplete(_ completion: FoundationModelsAgentPluginCompletion) async throws
+    -> [FoundationModelsAgentPluginEvent]
   {
     guard let capture = Self.captureEpisode(from: completion) else { return [] }
     beginEpisodeCapture()
     defer { finishEpisodeCapture() }
-    var episode = try CoreAgentMemoryRecord(
+    var episode = try FoundationModelsAgentMemoryRecord(
       scope: scope,
       kind: .episode,
       content: capture.content,
-      source: CoreAgentMemorySource(
+      source: FoundationModelsAgentMemorySource(
         kind: .conversation,
         runID: completion.runID,
         transcriptEntryIDs: capture.transcriptEntryIDs,
@@ -124,7 +124,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
       indexState: runtime.hasIndex ? .pending : .notConfigured
     )
     let job = consolidator.map {
-      _ in CoreAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
+      _ in FoundationModelsAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
     }
     try await store.saveEpisode(episode, enqueueing: job)
     episode = await runtime.indexAfterCanonicalWrite(episode)
@@ -133,32 +133,34 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
     )
     await consolidationWorker?.resume()
     return [
-      CoreAgentPluginEvent(
+      FoundationModelsAgentPluginEvent(
         name: "memory_episode_persisted",
-        message: "CoreAgent persisted the completed run as an episode.",
+        message: "FoundationModelsAgent persisted the completed run as an episode.",
         attributes: ["record_id": episode.id.uuidString.lowercased()]
       )
     ]
   }
 
-  public func didFail(_ failure: CoreAgentPluginFailure) async -> [CoreAgentPluginEvent] {
+  public func didFail(_ failure: FoundationModelsAgentPluginFailure) async
+    -> [FoundationModelsAgentPluginEvent]
+  {
     []
   }
 
   @discardableResult
   public func remember(
     _ content: String,
-    kind: CoreAgentMemoryKind = .fact,
-    source: CoreAgentMemorySource = .init(kind: .application),
-    authority: CoreAgentMemoryAuthority = .trustedApplication,
+    kind: FoundationModelsAgentMemoryKind = .fact,
+    source: FoundationModelsAgentMemorySource = .init(kind: .application),
+    authority: FoundationModelsAgentMemoryAuthority = .trustedApplication,
     confidence: Double = 1,
     importance: Double = 0.5,
-    sensitivity: CoreAgentMemorySensitivity = .personal,
+    sensitivity: FoundationModelsAgentMemorySensitivity = .personal,
     validFrom: Date? = nil,
     validUntil: Date? = nil,
-    retention: CoreAgentMemoryRetention = .persistent
-  ) async throws -> CoreAgentMemoryRecord {
-    let record = try CoreAgentMemoryRecord(
+    retention: FoundationModelsAgentMemoryRetention = .persistent
+  ) async throws -> FoundationModelsAgentMemoryRecord {
+    let record = try FoundationModelsAgentMemoryRecord(
       scope: scope,
       kind: kind,
       content: content,
@@ -179,16 +181,16 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   public func correct(
     recordIDs: [UUID],
     with content: String,
-    kind: CoreAgentMemoryKind = .fact,
-    source: CoreAgentMemorySource = .init(kind: .correction),
+    kind: FoundationModelsAgentMemoryKind = .fact,
+    source: FoundationModelsAgentMemorySource = .init(kind: .correction),
     confidence: Double = 1,
     importance: Double = 1,
-    sensitivity: CoreAgentMemorySensitivity = .personal,
+    sensitivity: FoundationModelsAgentMemorySensitivity = .personal,
     validFrom: Date? = nil,
     validUntil: Date? = nil,
-    retention: CoreAgentMemoryRetention = .persistent
-  ) async throws -> CoreAgentMemoryRecord {
-    let correction = try CoreAgentMemoryRecord(
+    retention: FoundationModelsAgentMemoryRetention = .persistent
+  ) async throws -> FoundationModelsAgentMemoryRecord {
+    let correction = try FoundationModelsAgentMemoryRecord(
       scope: scope,
       kind: kind,
       content: content,
@@ -219,7 +221,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   }
 
   @discardableResult
-  public func approve(_ candidateID: UUID) async throws -> CoreAgentMemoryRecord {
+  public func approve(_ candidateID: UUID) async throws -> FoundationModelsAgentMemoryRecord {
     try await runtime.approve(candidateID)
   }
 
@@ -230,15 +232,16 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   public func search(
     _ query: String,
     maximumResults: Int? = nil
-  ) async throws -> [CoreAgentMemorySearchResult] {
+  ) async throws -> [FoundationModelsAgentMemorySearchResult] {
     try await runtime.search(query: query, maximumResults: maximumResults)
   }
 
-  public func pendingCandidates() async throws -> [CoreAgentMemoryCandidate] {
+  public func pendingCandidates() async throws -> [FoundationModelsAgentMemoryCandidate] {
     try await store.candidates(in: scope, status: .pending)
   }
 
-  public func consolidationFailures() async throws -> [CoreAgentMemoryConsolidationJob] {
+  public func consolidationFailures() async throws -> [FoundationModelsAgentMemoryConsolidationJob]
+  {
     try await store.consolidationJobs(in: scope, statuses: [.failed])
   }
 
@@ -270,7 +273,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
     await runtime.emit(.init(kind: .recordTombstoned, scope: scope, recordID: id))
     await runtime.removeDerivative(id: id)
     for path in exportDirectories {
-      try CoreAgentMemoryMarkdownExporter.remove(
+      try FoundationModelsAgentMemoryMarkdownExporter.remove(
         recordID: id,
         scope: scope,
         from: URL(fileURLWithPath: path)
@@ -286,7 +289,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
     await runtime.removeDerivative(id: id)
     try await store.purge(id: id, in: scope)
     for path in exportDirectories {
-      try CoreAgentMemoryMarkdownExporter.remove(
+      try FoundationModelsAgentMemoryMarkdownExporter.remove(
         recordID: id,
         scope: scope,
         from: URL(fileURLWithPath: path)
@@ -302,7 +305,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
     }
     await runtime.removeAllDerivatives()
     for path in exportDirectories {
-      try CoreAgentMemoryMarkdownExporter.removeAll(
+      try FoundationModelsAgentMemoryMarkdownExporter.removeAll(
         scope: scope,
         from: URL(fileURLWithPath: path)
       )
@@ -319,11 +322,11 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   public func exportMarkdown(
     to directory: URL,
     exportedAt: Date = Date(),
-    configuration: CoreAgentMemoryMarkdownExportConfiguration = .default
-  ) async throws -> CoreAgentMemoryMarkdownManifest {
+    configuration: FoundationModelsAgentMemoryMarkdownExportConfiguration = .default
+  ) async throws -> FoundationModelsAgentMemoryMarkdownManifest {
     let directory = directory.standardizedFileURL
     try await store.registerExportDirectory(directory.path, in: scope)
-    return try CoreAgentMemoryMarkdownExporter.export(
+    return try FoundationModelsAgentMemoryMarkdownExporter.export(
       records: try await store.records(in: scope),
       scope: scope,
       to: directory,
@@ -353,7 +356,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   }
 
   private static func captureEpisode(
-    from completion: CoreAgentPluginCompletion
+    from completion: FoundationModelsAgentPluginCompletion
   ) -> EpisodeCapture? {
     var lines: [String] = []
     var entryIDs: [String] = []
@@ -369,14 +372,14 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
         let rendered = render(prompt.segments, assetReferences: &assets)
         if !rendered.isEmpty { lines.append("USER:\n\(rendered)") }
       case .toolCalls(let calls):
-        let visibleCalls = calls.filter { $0.toolName != "coreagent_search_memory" }
+        let visibleCalls = calls.filter { $0.toolName != "foundationmodelsagent_search_memory" }
         guard !visibleCalls.isEmpty else { continue }
         entryIDs.append(calls.id)
         for call in visibleCalls {
           lines.append("TOOL_CALL \(call.toolName):\n\(call.arguments.jsonString)")
         }
       case .toolOutput(let output):
-        guard output.toolName != "coreagent_search_memory" else { continue }
+        guard output.toolName != "foundationmodelsagent_search_memory" else { continue }
         entryIDs.append(output.id)
         let rendered = render(output.segments, assetReferences: &assets)
         if !rendered.isEmpty {
@@ -448,24 +451,24 @@ private struct EpisodeCapture: Sendable {
   let assetReferences: [String]
 }
 
-actor CoreAgentMemoryRuntime {
-  let scope: CoreAgentMemoryScope
+actor FoundationModelsAgentMemoryRuntime {
+  let scope: FoundationModelsAgentMemoryScope
   let hasIndex: Bool
 
-  private let store: any CoreAgentMemoryStore
-  private let index: (any CoreAgentMemoryIndex)?
-  private let disclosurePolicy: CoreAgentMemoryDisclosurePolicy
-  private let retrievalConfiguration: CoreAgentMemoryRetrievalConfiguration
-  private let observers: [any CoreAgentMemoryObserver]
+  private let store: any FoundationModelsAgentMemoryStore
+  private let index: (any FoundationModelsAgentMemoryIndex)?
+  private let disclosurePolicy: FoundationModelsAgentMemoryDisclosurePolicy
+  private let retrievalConfiguration: FoundationModelsAgentMemoryRetrievalConfiguration
+  private let observers: [any FoundationModelsAgentMemoryObserver]
   private var indexRepairTasks: [UUID: Task<Void, Never>] = [:]
 
   init(
-    scope: CoreAgentMemoryScope,
-    store: any CoreAgentMemoryStore,
-    index: (any CoreAgentMemoryIndex)?,
-    disclosurePolicy: CoreAgentMemoryDisclosurePolicy,
-    retrievalConfiguration: CoreAgentMemoryRetrievalConfiguration,
-    observers: [any CoreAgentMemoryObserver]
+    scope: FoundationModelsAgentMemoryScope,
+    store: any FoundationModelsAgentMemoryStore,
+    index: (any FoundationModelsAgentMemoryIndex)?,
+    disclosurePolicy: FoundationModelsAgentMemoryDisclosurePolicy,
+    retrievalConfiguration: FoundationModelsAgentMemoryRetrievalConfiguration,
+    observers: [any FoundationModelsAgentMemoryObserver]
   ) {
     self.scope = scope
     self.store = store
@@ -476,30 +479,32 @@ actor CoreAgentMemoryRuntime {
     self.observers = observers
   }
 
-  func persist(_ record: CoreAgentMemoryRecord) async throws -> CoreAgentMemoryRecord {
+  func persist(_ record: FoundationModelsAgentMemoryRecord) async throws
+    -> FoundationModelsAgentMemoryRecord
+  {
     try await store.save(record)
     return await indexAfterCanonicalWrite(record)
   }
 
-  func approve(_ candidateID: UUID) async throws -> CoreAgentMemoryRecord {
+  func approve(_ candidateID: UUID) async throws -> FoundationModelsAgentMemoryRecord {
     guard let candidate = try await store.candidate(id: candidateID, in: scope) else {
-      throw CoreAgentMemoryError.candidateNotFound(candidateID)
+      throw FoundationModelsAgentMemoryError.candidateNotFound(candidateID)
     }
     guard candidate.status == .pending else {
-      throw CoreAgentMemoryError.invalidCandidateDecision
+      throw FoundationModelsAgentMemoryError.invalidCandidateDecision
     }
     guard let episode = try await store.record(id: candidate.sourceRecordID, in: scope) else {
-      throw CoreAgentMemoryError.recordNotFound(candidate.sourceRecordID)
+      throw FoundationModelsAgentMemoryError.recordNotFound(candidate.sourceRecordID)
     }
     guard episode.isActive else {
-      throw CoreAgentMemoryError.sourceRecordInactive(episode.id)
+      throw FoundationModelsAgentMemoryError.sourceRecordInactive(episode.id)
     }
     let draft = candidate.draft
-    let record = try CoreAgentMemoryRecord(
+    let record = try FoundationModelsAgentMemoryRecord(
       scope: scope,
       kind: draft.kind,
       content: draft.content,
-      source: CoreAgentMemorySource(
+      source: FoundationModelsAgentMemorySource(
         kind: .conversation,
         runID: episode.source.runID,
         transcriptEntryIDs: episode.source.transcriptEntryIDs,
@@ -534,8 +539,8 @@ actor CoreAgentMemoryRuntime {
   }
 
   func indexAfterCanonicalWrite(
-    _ record: CoreAgentMemoryRecord
-  ) async -> CoreAgentMemoryRecord {
+    _ record: FoundationModelsAgentMemoryRecord
+  ) async -> FoundationModelsAgentMemoryRecord {
     guard let index else { return record }
     var updated = record
     do {
@@ -564,7 +569,7 @@ actor CoreAgentMemoryRuntime {
   func search(
     query: String,
     maximumResults: Int? = nil
-  ) async throws -> [CoreAgentMemorySearchResult] {
+  ) async throws -> [FoundationModelsAgentMemorySearchResult] {
     let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !query.isEmpty else { return [] }
     let maximum = min(
@@ -615,7 +620,7 @@ actor CoreAgentMemoryRuntime {
         && disclosurePolicy.allows($0.sensitivity)
     }
     let results = filtered.map {
-      CoreAgentMemorySearchResult(record: $0, relevance: relevance[$0.id, default: 0])
+      FoundationModelsAgentMemorySearchResult(record: $0, relevance: relevance[$0.id, default: 0])
     }.sorted(by: Self.resultsBefore).prefix(maximum).map { $0 }
 
     await emit(
@@ -638,8 +643,8 @@ actor CoreAgentMemoryRuntime {
     return results
   }
 
-  func format(_ results: [CoreAgentMemorySearchResult]) -> String {
-    CoreAgentMemoryContextFormatter.format(
+  func format(_ results: [FoundationModelsAgentMemorySearchResult]) -> String {
+    FoundationModelsAgentMemoryContextFormatter.format(
       results,
       maximumCharacters: retrievalConfiguration.maximumCharacters
     )
@@ -711,7 +716,7 @@ actor CoreAgentMemoryRuntime {
     }
   }
 
-  func emit(_ event: CoreAgentMemoryEvent) async {
+  func emit(_ event: FoundationModelsAgentMemoryEvent) async {
     for observer in observers {
       await observer.memoryDidEmit(event)
     }
@@ -788,7 +793,7 @@ actor CoreAgentMemoryRuntime {
   }
 
   private func merge(
-    _ candidates: [CoreAgentMemorySearchCandidate],
+    _ candidates: [FoundationModelsAgentMemorySearchCandidate],
     into relevance: inout [UUID: Double]
   ) {
     for (index, candidate) in candidates.enumerated() {
@@ -798,8 +803,8 @@ actor CoreAgentMemoryRuntime {
   }
 
   private static func resultsBefore(
-    _ lhs: CoreAgentMemorySearchResult,
-    _ rhs: CoreAgentMemorySearchResult
+    _ lhs: FoundationModelsAgentMemorySearchResult,
+    _ rhs: FoundationModelsAgentMemorySearchResult
   ) -> Bool {
     if lhs.relevance != rhs.relevance { return lhs.relevance > rhs.relevance }
     if lhs.record.authority.rank != rhs.record.authority.rank {

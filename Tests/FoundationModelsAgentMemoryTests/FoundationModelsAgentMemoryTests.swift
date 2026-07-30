@@ -1,15 +1,15 @@
-import CoreAgent
-import CoreAgentMemory
 import Foundation
 import FoundationModels
+import FoundationModelsAgent
+import FoundationModelsAgentMemory
 import Testing
 
 private enum TestMemoryError: Error {
   case intentional
 }
 
-private actor TestMemoryIndex: CoreAgentMemoryIndex {
-  private var records: [UUID: CoreAgentMemoryRecord] = [:]
+private actor TestMemoryIndex: FoundationModelsAgentMemoryIndex {
+  private var records: [UUID: FoundationModelsAgentMemoryRecord] = [:]
   private var failsRemoval = false
   private var upsertFailuresRemaining = 0
 
@@ -21,7 +21,7 @@ private actor TestMemoryIndex: CoreAgentMemoryIndex {
     upsertFailuresRemaining = count
   }
 
-  func upsert(_ record: CoreAgentMemoryRecord) throws {
+  func upsert(_ record: FoundationModelsAgentMemoryRecord) throws {
     if upsertFailuresRemaining > 0 {
       upsertFailuresRemaining -= 1
       throw TestMemoryError.intentional
@@ -31,38 +31,40 @@ private actor TestMemoryIndex: CoreAgentMemoryIndex {
 
   func search(
     query: String,
-    in scope: CoreAgentMemoryScope,
+    in scope: FoundationModelsAgentMemoryScope,
     limit: Int
-  ) -> [CoreAgentMemorySearchCandidate] {
+  ) -> [FoundationModelsAgentMemorySearchCandidate] {
     records.values
       .filter { $0.scope == scope && $0.content.localizedCaseInsensitiveContains(query) }
       .prefix(limit)
-      .map { CoreAgentMemorySearchCandidate(id: $0.id, score: 1) }
+      .map { FoundationModelsAgentMemorySearchCandidate(id: $0.id, score: 1) }
   }
 
-  func remove(id: UUID, in scope: CoreAgentMemoryScope) throws {
+  func remove(id: UUID, in scope: FoundationModelsAgentMemoryScope) throws {
     if failsRemoval { throw TestMemoryError.intentional }
     guard records[id]?.scope == scope else { return }
     records.removeValue(forKey: id)
   }
 
-  func removeAll(in scope: CoreAgentMemoryScope) throws {
+  func removeAll(in scope: FoundationModelsAgentMemoryScope) throws {
     if failsRemoval { throw TestMemoryError.intentional }
     records = records.filter { $0.value.scope != scope }
   }
 }
 
-private actor TestConsolidator: CoreAgentMemoryConsolidator {
+private actor TestConsolidator: FoundationModelsAgentMemoryConsolidator {
   private var failuresRemaining: Int
-  private let drafts: [CoreAgentMemoryCandidateDraft]
+  private let drafts: [FoundationModelsAgentMemoryCandidateDraft]
   private(set) var calls = 0
 
-  init(failuresRemaining: Int = 0, drafts: [CoreAgentMemoryCandidateDraft]) {
+  init(failuresRemaining: Int = 0, drafts: [FoundationModelsAgentMemoryCandidateDraft]) {
     self.failuresRemaining = failuresRemaining
     self.drafts = drafts
   }
 
-  func consolidate(episode: CoreAgentMemoryRecord) throws -> [CoreAgentMemoryCandidateDraft] {
+  func consolidate(episode: FoundationModelsAgentMemoryRecord) throws
+    -> [FoundationModelsAgentMemoryCandidateDraft]
+  {
     calls += 1
     if failuresRemaining > 0 {
       failuresRemaining -= 1
@@ -72,29 +74,33 @@ private actor TestConsolidator: CoreAgentMemoryConsolidator {
   }
 }
 
-private struct ApproveAllMemoryCandidates: CoreAgentMemoryApprovalProvider {
-  func decision(for candidate: CoreAgentMemoryCandidate) -> CoreAgentMemoryApprovalDecision {
+private struct ApproveAllMemoryCandidates: FoundationModelsAgentMemoryApprovalProvider {
+  func decision(for candidate: FoundationModelsAgentMemoryCandidate)
+    -> FoundationModelsAgentMemoryApprovalDecision
+  {
     .approve
   }
 }
 
-private actor ThrowingMemoryApprovalProvider: CoreAgentMemoryApprovalProvider {
+private actor ThrowingMemoryApprovalProvider: FoundationModelsAgentMemoryApprovalProvider {
   private(set) var calls = 0
 
   func decision(
-    for candidate: CoreAgentMemoryCandidate
-  ) throws -> CoreAgentMemoryApprovalDecision {
+    for candidate: FoundationModelsAgentMemoryCandidate
+  ) throws -> FoundationModelsAgentMemoryApprovalDecision {
     calls += 1
     throw TestMemoryError.intentional
   }
 }
 
-private actor BlockingCountingConsolidator: CoreAgentMemoryConsolidator {
+private actor BlockingCountingConsolidator: FoundationModelsAgentMemoryConsolidator {
   private(set) var calls = 0
   private var startWaiters: [CheckedContinuation<Void, Never>] = []
   private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
-  func consolidate(episode: CoreAgentMemoryRecord) async -> [CoreAgentMemoryCandidateDraft] {
+  func consolidate(episode: FoundationModelsAgentMemoryRecord) async
+    -> [FoundationModelsAgentMemoryCandidateDraft]
+  {
     calls += 1
     let waiters = startWaiters
     startWaiters.removeAll()
@@ -123,23 +129,23 @@ private func makeScope(
   application: String = "com.example.app",
   user: String = "user-1",
   agent: String = "assistant"
-) throws -> CoreAgentMemoryScope {
-  try CoreAgentMemoryScope(applicationID: application, userID: user, agentID: agent)
+) throws -> FoundationModelsAgentMemoryScope {
+  try FoundationModelsAgentMemoryScope(applicationID: application, userID: user, agentID: agent)
 }
 
 private func makeRecord(
   id: UUID = UUID(),
-  scope: CoreAgentMemoryScope,
+  scope: FoundationModelsAgentMemoryScope,
   content: String,
-  kind: CoreAgentMemoryKind = .fact,
-  status: CoreAgentMemoryStatus = .active,
-  authority: CoreAgentMemoryAuthority = .priorUserStatement,
-  sensitivity: CoreAgentMemorySensitivity = .personal,
+  kind: FoundationModelsAgentMemoryKind = .fact,
+  status: FoundationModelsAgentMemoryStatus = .active,
+  authority: FoundationModelsAgentMemoryAuthority = .priorUserStatement,
+  sensitivity: FoundationModelsAgentMemorySensitivity = .personal,
   observedAt: Date = Date(),
   validFrom: Date? = nil,
   validUntil: Date? = nil
-) throws -> CoreAgentMemoryRecord {
-  try CoreAgentMemoryRecord(
+) throws -> FoundationModelsAgentMemoryRecord {
+  try FoundationModelsAgentMemoryRecord(
     id: id,
     scope: scope,
     kind: kind,
@@ -157,25 +163,25 @@ private func makeRecord(
 
 private func temporaryDirectory(_ name: String = UUID().uuidString) throws -> URL {
   let url = FileManager.default.temporaryDirectory
-    .appending(path: "CoreAgentMemoryTests")
+    .appending(path: "FoundationModelsAgentMemoryTests")
     .appending(path: name)
   try? FileManager.default.removeItem(at: url)
   try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
   return url
 }
 
-@Suite("CoreAgent production memory")
-struct CoreAgentMemoryTests {
+@Suite("FoundationModelsAgent production memory")
+struct FoundationModelsAgentMemoryTests {
   @Test("Requires an explicit application, user, and agent scope")
   func scopeValidation() {
-    #expect(throws: CoreAgentMemoryError.self) {
-      _ = try CoreAgentMemoryScope(applicationID: "", userID: "user", agentID: "agent")
+    #expect(throws: FoundationModelsAgentMemoryError.self) {
+      _ = try FoundationModelsAgentMemoryScope(applicationID: "", userID: "user", agentID: "agent")
     }
-    #expect(throws: CoreAgentMemoryError.self) {
-      _ = try CoreAgentMemoryScope(applicationID: "app", userID: "", agentID: "agent")
+    #expect(throws: FoundationModelsAgentMemoryError.self) {
+      _ = try FoundationModelsAgentMemoryScope(applicationID: "app", userID: "", agentID: "agent")
     }
-    #expect(throws: CoreAgentMemoryError.self) {
-      _ = try CoreAgentMemoryScope(applicationID: "app", userID: "user", agentID: "")
+    #expect(throws: FoundationModelsAgentMemoryError.self) {
+      _ = try FoundationModelsAgentMemoryScope(applicationID: "app", userID: "user", agentID: "")
     }
   }
 
@@ -184,7 +190,7 @@ struct CoreAgentMemoryTests {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let databaseURL = directory.appending(path: "memory.sqlite")
-    let configuration = SQLiteCoreAgentMemoryStoreConfiguration(
+    let configuration = SQLiteFoundationModelsAgentMemoryStoreConfiguration(
       fileProtection: .none,
       excludesFromBackup: false
     )
@@ -200,7 +206,7 @@ struct CoreAgentMemoryTests {
       scope: secondScope,
       content: "The launch color is ultraviolet."
     )
-    let store = try SQLiteCoreAgentMemoryStore(
+    let store = try SQLiteFoundationModelsAgentMemoryStore(
       databaseURL: databaseURL,
       configuration: configuration
     )
@@ -215,7 +221,7 @@ struct CoreAgentMemoryTests {
     #expect(firstHits.map(\.id) == [firstRecord.id])
     #expect(try await store.record(id: secondRecord.id, in: firstScope) == nil)
 
-    let reopened = try SQLiteCoreAgentMemoryStore(
+    let reopened = try SQLiteFoundationModelsAgentMemoryStore(
       databaseURL: databaseURL,
       configuration: configuration
     )
@@ -230,9 +236,9 @@ struct CoreAgentMemoryTests {
   @Test("Canonical filtering blocks stale-index, tombstoned, expired, and restricted records")
   func canonicalFiltering() async throws {
     let scope = try makeScope()
-    let store = InMemoryCoreAgentMemoryStore()
+    let store = InMemoryFoundationModelsAgentMemoryStore()
     let index = TestMemoryIndex()
-    let coordinator = CoreAgentMemoryCoordinator(
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .remote),
@@ -254,10 +260,10 @@ struct CoreAgentMemoryTests {
   @Test("A failed optional-index write stays canonical and repairs asynchronously")
   func indexRepair() async throws {
     let scope = try makeScope()
-    let store = InMemoryCoreAgentMemoryStore()
+    let store = InMemoryFoundationModelsAgentMemoryStore()
     let index = TestMemoryIndex()
     await index.setUpsertFailures(1)
-    let coordinator = CoreAgentMemoryCoordinator(
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .onDevice),
@@ -277,8 +283,8 @@ struct CoreAgentMemoryTests {
   @Test("Corrections append provenance and supersede rather than overwrite")
   func correctionAuthority() async throws {
     let scope = try makeScope()
-    let store = InMemoryCoreAgentMemoryStore()
-    let coordinator = CoreAgentMemoryCoordinator(
+    let store = InMemoryFoundationModelsAgentMemoryStore()
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .onDevice)
@@ -307,20 +313,20 @@ struct CoreAgentMemoryTests {
   @Test("Context packing is bounded, delimited, and records source identifiers")
   func boundedContext() async throws {
     let scope = try makeScope()
-    let coordinator = CoreAgentMemoryCoordinator(
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
-      store: InMemoryCoreAgentMemoryStore(),
+      store: InMemoryFoundationModelsAgentMemoryStore(),
       disclosurePolicy: .init(destination: .onDevice),
       retrievalConfiguration: .init(
         maximumRecords: 2,
-        maximumCharacters: 500,
+        maximumCharacters: 524,
         overfetchMultiplier: 2
       )
     )
     _ = try await coordinator.remember(String(repeating: "starlight ", count: 200))
 
     let preparation = try await coordinator.prepare(
-      for: CoreAgentPluginRequest(
+      for: FoundationModelsAgentPluginRequest(
         runID: UUID(),
         prompt: Prompt("Recall"),
         contextQuery: "starlight",
@@ -329,19 +335,19 @@ struct CoreAgentMemoryTests {
       )
     )
     let block = try #require(preparation.contextBlocks.first)
-    #expect(block.content.count <= 500)
-    #expect(block.content.hasPrefix("COREAGENT_UNTRUSTED_MEMORY_EVIDENCE_V1"))
+    #expect(block.content.count <= 524)
+    #expect(block.content.hasPrefix("FOUNDATIONMODELSAGENT_UNTRUSTED_MEMORY_EVIDENCE_V1"))
     #expect(block.content.contains("contentTruncated"))
-    #expect(block.content.hasSuffix("END_COREAGENT_UNTRUSTED_MEMORY_EVIDENCE"))
+    #expect(block.content.hasSuffix("END_FOUNDATIONMODELSAGENT_UNTRUSTED_MEMORY_EVIDENCE"))
     #expect(preparation.events.first?.attributes["record_id"] != nil)
   }
 
   @Test("Rich prompts require a query and dynamic profiles never receive injected context")
   func contextQueryBoundaries() async throws {
     let scope = try makeScope()
-    let coordinator = CoreAgentMemoryCoordinator(
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
-      store: InMemoryCoreAgentMemoryStore(),
+      store: InMemoryFoundationModelsAgentMemoryStore(),
       disclosurePolicy: .init(destination: .onDevice)
     )
     _ = try await coordinator.remember("A remembered comet preference.")
@@ -368,21 +374,21 @@ struct CoreAgentMemoryTests {
 
     #expect(withoutQuery.contextBlocks.isEmpty)
     #expect(dynamicProfile.contextBlocks.isEmpty)
-    #expect(coordinator.searchTool.name == "coreagent_search_memory")
+    #expect(coordinator.searchTool.name == "foundationmodelsagent_search_memory")
   }
 
   @Test("Durable consolidation resumes, retries three times, and exposes terminal failure")
   func consolidationRetryExhaustion() async throws {
     let scope = try makeScope()
-    let store = InMemoryCoreAgentMemoryStore()
+    let store = InMemoryFoundationModelsAgentMemoryStore()
     let episode = try makeRecord(scope: scope, content: "USER:\nI prefer tea.", kind: .episode)
-    let job = CoreAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
+    let job = FoundationModelsAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
     try await store.saveEpisode(episode, enqueueing: job)
     let consolidator = TestConsolidator(
       failuresRemaining: 3,
       drafts: [try .init(kind: .preference, content: "The user prefers tea.")]
     )
-    let coordinator = CoreAgentMemoryCoordinator(
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .onDevice),
@@ -399,7 +405,7 @@ struct CoreAgentMemoryTests {
   @Test("Approval-provider failures remain durable and exhaust the retry policy")
   func approvalFailureRetryExhaustion() async throws {
     let scope = try makeScope()
-    let store = InMemoryCoreAgentMemoryStore()
+    let store = InMemoryFoundationModelsAgentMemoryStore()
     let episode = try makeRecord(
       scope: scope,
       content: "USER:\nI prefer gyokuro tea.",
@@ -410,7 +416,7 @@ struct CoreAgentMemoryTests {
       enqueueing: .init(scope: scope, episodeID: episode.id)
     )
     let approvalProvider = ThrowingMemoryApprovalProvider()
-    let coordinator = CoreAgentMemoryCoordinator(
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .onDevice),
@@ -433,9 +439,9 @@ struct CoreAgentMemoryTests {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let scope = try makeScope()
-    let stores: [any CoreAgentMemoryStore] = [
-      InMemoryCoreAgentMemoryStore(),
-      try SQLiteCoreAgentMemoryStore(
+    let stores: [any FoundationModelsAgentMemoryStore] = [
+      InMemoryFoundationModelsAgentMemoryStore(),
+      try SQLiteFoundationModelsAgentMemoryStore(
         databaseURL: directory.appending(path: "claims.sqlite"),
         configuration: .init(fileProtection: .none, excludesFromBackup: false)
       ),
@@ -443,7 +449,7 @@ struct CoreAgentMemoryTests {
 
     for store in stores {
       let episode = try makeRecord(scope: scope, content: "USER:\nRemember this.", kind: .episode)
-      let job = CoreAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
+      let job = FoundationModelsAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
       try await store.saveEpisode(episode, enqueueing: job)
 
       async let firstClaim = store.claimNextConsolidationJob(in: scope)
@@ -468,18 +474,18 @@ struct CoreAgentMemoryTests {
   @Test("Coordinators sharing a store do not consolidate the same episode twice")
   func sharedStoreSingleConsolidation() async throws {
     let scope = try makeScope()
-    let store = InMemoryCoreAgentMemoryStore()
+    let store = InMemoryFoundationModelsAgentMemoryStore()
     let episode = try makeRecord(scope: scope, content: "USER:\nOne episode.", kind: .episode)
-    let job = CoreAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
+    let job = FoundationModelsAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
     try await store.saveEpisode(episode, enqueueing: job)
     let consolidator = BlockingCountingConsolidator()
-    let first = CoreAgentMemoryCoordinator(
+    let first = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .onDevice),
       consolidator: consolidator
     )
-    let second = CoreAgentMemoryCoordinator(
+    let second = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .onDevice),
@@ -500,7 +506,7 @@ struct CoreAgentMemoryTests {
   @Test("Consolidated semantics stay pending until policy approval")
   func consolidationApproval() async throws {
     let scope = try makeScope()
-    let pendingStore = InMemoryCoreAgentMemoryStore()
+    let pendingStore = InMemoryFoundationModelsAgentMemoryStore()
     let pendingEpisode = try makeRecord(
       scope: scope,
       content: "USER:\nI prefer jasmine tea.",
@@ -510,12 +516,12 @@ struct CoreAgentMemoryTests {
       pendingEpisode,
       enqueueing: .init(scope: scope, episodeID: pendingEpisode.id)
     )
-    let draft = try CoreAgentMemoryCandidateDraft(
+    let draft = try FoundationModelsAgentMemoryCandidateDraft(
       kind: .preference,
       content: "The user prefers jasmine tea.",
       authority: .priorUserStatement
     )
-    let pendingCoordinator = CoreAgentMemoryCoordinator(
+    let pendingCoordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: pendingStore,
       disclosurePolicy: .init(destination: .onDevice),
@@ -526,7 +532,7 @@ struct CoreAgentMemoryTests {
     #expect(try await pendingCoordinator.pendingCandidates().count == 1)
     #expect(try await pendingCoordinator.search("jasmine").map(\.record.kind) == [.episode])
 
-    let approvedStore = InMemoryCoreAgentMemoryStore()
+    let approvedStore = InMemoryFoundationModelsAgentMemoryStore()
     let approvedEpisode = try makeRecord(
       scope: scope,
       content: "USER:\nI prefer oolong tea.",
@@ -536,7 +542,7 @@ struct CoreAgentMemoryTests {
       approvedEpisode,
       enqueueing: .init(scope: scope, episodeID: approvedEpisode.id)
     )
-    let approvedCoordinator = CoreAgentMemoryCoordinator(
+    let approvedCoordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: approvedStore,
       disclosurePolicy: .init(destination: .onDevice),
@@ -558,7 +564,7 @@ struct CoreAgentMemoryTests {
   @Test("Forgotten episodes do not consolidate pending jobs")
   func forgottenEpisodesSkipConsolidation() async throws {
     let scope = try makeScope()
-    let store = InMemoryCoreAgentMemoryStore()
+    let store = InMemoryFoundationModelsAgentMemoryStore()
     let episode = try makeRecord(scope: scope, content: "USER:\nI prefer matcha.", kind: .episode)
     try await store.saveEpisode(
       episode,
@@ -567,7 +573,7 @@ struct CoreAgentMemoryTests {
     let consolidator = TestConsolidator(
       drafts: [try .init(kind: .preference, content: "The user prefers matcha.")]
     )
-    let coordinator = CoreAgentMemoryCoordinator(
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .onDevice),
@@ -584,13 +590,13 @@ struct CoreAgentMemoryTests {
   @Test("Approving a candidate from a forgotten episode fails")
   func forgottenEpisodesCannotApproveCandidates() async throws {
     let scope = try makeScope()
-    let store = InMemoryCoreAgentMemoryStore()
+    let store = InMemoryFoundationModelsAgentMemoryStore()
     let episode = try makeRecord(scope: scope, content: "USER:\nI prefer sencha.", kind: .episode)
     try await store.saveEpisode(
       episode,
       enqueueing: .init(scope: scope, episodeID: episode.id)
     )
-    let coordinator = CoreAgentMemoryCoordinator(
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .onDevice),
@@ -604,7 +610,7 @@ struct CoreAgentMemoryTests {
 
     try await coordinator.forget(episode.id, reason: "user_request")
 
-    await #expect(throws: CoreAgentMemoryError.self) {
+    await #expect(throws: FoundationModelsAgentMemoryError.self) {
       _ = try await coordinator.approve(candidate.id)
     }
   }
@@ -614,9 +620,9 @@ struct CoreAgentMemoryTests {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let scope = try makeScope()
-    let stores: [any CoreAgentMemoryStore] = [
-      InMemoryCoreAgentMemoryStore(),
-      try SQLiteCoreAgentMemoryStore(
+    let stores: [any FoundationModelsAgentMemoryStore] = [
+      InMemoryFoundationModelsAgentMemoryStore(),
+      try SQLiteFoundationModelsAgentMemoryStore(
         databaseURL: directory.appending(path: "memory.sqlite"),
         configuration: .init(fileProtection: .none, excludesFromBackup: false)
       ),
@@ -628,13 +634,13 @@ struct CoreAgentMemoryTests {
         content: "USER:\nI prefer sencha tea.",
         kind: .episode
       )
-      let job = CoreAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
-      let draft = try CoreAgentMemoryCandidateDraft(
+      let job = FoundationModelsAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
+      let draft = try FoundationModelsAgentMemoryCandidateDraft(
         kind: .preference,
         content: "The user prefers sencha tea.",
         authority: .priorUserStatement
       )
-      let candidate = CoreAgentMemoryCandidate(
+      let candidate = FoundationModelsAgentMemoryCandidate(
         scope: scope,
         sourceRecordID: episode.id,
         draft: draft
@@ -648,9 +654,9 @@ struct CoreAgentMemoryTests {
       let rejected = try #require(try await store.candidate(id: candidate.id, in: scope))
       #expect(rejected.status == .rejected)
       #expect(rejected.decisionReason == "source_tombstoned")
-      await #expect(throws: CoreAgentMemoryError.self) {
+      await #expect(throws: FoundationModelsAgentMemoryError.self) {
         try await store.save(
-          CoreAgentMemoryCandidate(
+          FoundationModelsAgentMemoryCandidate(
             scope: scope,
             sourceRecordID: episode.id,
             draft: draft
@@ -659,7 +665,7 @@ struct CoreAgentMemoryTests {
       }
 
       let consolidator = TestConsolidator(drafts: [draft])
-      let coordinator = CoreAgentMemoryCoordinator(
+      let coordinator = FoundationModelsAgentMemoryCoordinator(
         scope: scope,
         store: store,
         disclosurePolicy: .init(destination: .onDevice),
@@ -667,7 +673,7 @@ struct CoreAgentMemoryTests {
       )
       await coordinator.flush()
       #expect(await consolidator.calls == 0)
-      await #expect(throws: CoreAgentMemoryError.self) {
+      await #expect(throws: FoundationModelsAgentMemoryError.self) {
         _ = try await coordinator.approve(candidate.id)
       }
     }
@@ -678,7 +684,7 @@ struct CoreAgentMemoryTests {
       kind: .episode
     )
     inactiveEpisode.status = .tombstoned
-    let pendingCandidate = CoreAgentMemoryCandidate(
+    let pendingCandidate = FoundationModelsAgentMemoryCandidate(
       scope: scope,
       sourceRecordID: inactiveEpisode.id,
       draft: try .init(
@@ -687,16 +693,16 @@ struct CoreAgentMemoryTests {
         authority: .priorUserStatement
       )
     )
-    let recoveryStore = InMemoryCoreAgentMemoryStore(
+    let recoveryStore = InMemoryFoundationModelsAgentMemoryStore(
       records: [inactiveEpisode],
       candidates: [pendingCandidate]
     )
-    let recoveryCoordinator = CoreAgentMemoryCoordinator(
+    let recoveryCoordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: recoveryStore,
       disclosurePolicy: .init(destination: .onDevice)
     )
-    await #expect(throws: CoreAgentMemoryError.self) {
+    await #expect(throws: FoundationModelsAgentMemoryError.self) {
       _ = try await recoveryCoordinator.approve(pendingCandidate.id)
     }
   }
@@ -706,8 +712,8 @@ struct CoreAgentMemoryTests {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let scope = try makeScope()
-    let store = InMemoryCoreAgentMemoryStore()
-    let coordinator = CoreAgentMemoryCoordinator(
+    let store = InMemoryFoundationModelsAgentMemoryStore()
+    let coordinator = FoundationModelsAgentMemoryCoordinator(
       scope: scope,
       store: store,
       disclosurePolicy: .init(destination: .onDevice)
@@ -716,7 +722,7 @@ struct CoreAgentMemoryTests {
     let first = root.appending(path: "first")
     let second = root.appending(path: "second")
     let date = Date(timeIntervalSince1970: 1_000)
-    let configuration = CoreAgentMemoryMarkdownExportConfiguration(
+    let configuration = FoundationModelsAgentMemoryMarkdownExportConfiguration(
       fileProtection: .none,
       excludesFromBackup: false
     )

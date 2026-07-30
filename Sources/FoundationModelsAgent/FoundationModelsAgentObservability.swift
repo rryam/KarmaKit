@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-public enum CoreAgentEventKind: String, Codable, Equatable, Sendable {
+public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable {
   case runStarted
   case modelAttemptStarted
   case modelAttemptFailed
@@ -30,11 +30,11 @@ public enum CoreAgentEventKind: String, Codable, Equatable, Sendable {
   case runFailed
 }
 
-public struct CoreAgentEvent: Codable, Equatable, Sendable, Identifiable {
+public struct FoundationModelsAgentEvent: Codable, Equatable, Sendable, Identifiable {
   public let id: UUID
   public let runID: UUID
   public let timestamp: Date
-  public let kind: CoreAgentEventKind
+  public let kind: FoundationModelsAgentEventKind
   public let message: String
   public let attributes: [String: String]
 
@@ -42,7 +42,7 @@ public struct CoreAgentEvent: Codable, Equatable, Sendable, Identifiable {
     id: UUID = UUID(),
     runID: UUID,
     timestamp: Date = Date(),
-    kind: CoreAgentEventKind,
+    kind: FoundationModelsAgentEventKind,
     message: String,
     attributes: [String: String] = [:]
   ) {
@@ -55,37 +55,37 @@ public struct CoreAgentEvent: Codable, Equatable, Sendable, Identifiable {
   }
 }
 
-public protocol CoreAgentObserver: Sendable {
-  func receive(_ event: CoreAgentEvent) async
+public protocol FoundationModelsAgentObserver: Sendable {
+  func receive(_ event: FoundationModelsAgentEvent) async
 }
 
-public struct ClosureCoreAgentObserver: CoreAgentObserver {
-  private let handler: @Sendable (CoreAgentEvent) async -> Void
+public struct ClosureFoundationModelsAgentObserver: FoundationModelsAgentObserver {
+  private let handler: @Sendable (FoundationModelsAgentEvent) async -> Void
 
-  public init(_ handler: @escaping @Sendable (CoreAgentEvent) async -> Void) {
+  public init(_ handler: @escaping @Sendable (FoundationModelsAgentEvent) async -> Void) {
     self.handler = handler
   }
 
-  public func receive(_ event: CoreAgentEvent) async {
+  public func receive(_ event: FoundationModelsAgentEvent) async {
     await handler(event)
   }
 }
 
-public enum CoreAgentObserverOverflowPolicy: Sendable {
+public enum FoundationModelsAgentObserverOverflowPolicy: Sendable {
   /// Preserve the newest events when an observer cannot keep up.
   case dropOldest
   /// Preserve the events already waiting for delivery.
   case dropNewest
 }
 
-public struct CoreAgentObserverDeliveryConfiguration: Sendable {
+public struct FoundationModelsAgentObserverDeliveryConfiguration: Sendable {
   public var maximumPendingEvents: Int
-  public var overflowPolicy: CoreAgentObserverOverflowPolicy
+  public var overflowPolicy: FoundationModelsAgentObserverOverflowPolicy
   public var defaultFlushTimeout: Duration
 
   public init(
     maximumPendingEvents: Int = 256,
-    overflowPolicy: CoreAgentObserverOverflowPolicy = .dropOldest,
+    overflowPolicy: FoundationModelsAgentObserverOverflowPolicy = .dropOldest,
     defaultFlushTimeout: Duration = .seconds(5)
   ) {
     self.maximumPendingEvents = maximumPendingEvents
@@ -93,10 +93,10 @@ public struct CoreAgentObserverDeliveryConfiguration: Sendable {
     self.defaultFlushTimeout = defaultFlushTimeout
   }
 
-  public static let `default` = CoreAgentObserverDeliveryConfiguration()
+  public static let `default` = FoundationModelsAgentObserverDeliveryConfiguration()
 }
 
-public enum CoreAgentObserverFlushStatus: Sendable, Equatable {
+public enum FoundationModelsAgentObserverFlushStatus: Sendable, Equatable {
   /// Every queued event covered by the flush barrier is now settled.
   case drained
   /// At least one observer did not settle its covered events before the deadline.
@@ -107,13 +107,13 @@ public enum CoreAgentObserverFlushStatus: Sendable, Equatable {
   case reentrant
 }
 
-public struct CoreAgentObserverFlushResult: Sendable, Equatable {
-  public let status: CoreAgentObserverFlushStatus
+public struct FoundationModelsAgentObserverFlushResult: Sendable, Equatable {
+  public let status: FoundationModelsAgentObserverFlushStatus
   /// Total events dropped by all observer queues since this session was created.
   public let cumulativeDroppedEventCount: Int
 
   public init(
-    status: CoreAgentObserverFlushStatus,
+    status: FoundationModelsAgentObserverFlushStatus,
     cumulativeDroppedEventCount: Int
   ) {
     self.status = status
@@ -126,7 +126,7 @@ public struct CoreAgentObserverFlushResult: Sendable, Equatable {
   }
 }
 
-public struct CoreAgentRedactionPolicy: Sendable {
+public struct FoundationModelsAgentRedactionPolicy: Sendable {
   private let redactor: @Sendable (String) -> String
 
   public init(_ redactor: @escaping @Sendable (String) -> String) {
@@ -137,9 +137,9 @@ public struct CoreAgentRedactionPolicy: Sendable {
     redactor(value)
   }
 
-  public static let none = CoreAgentRedactionPolicy { $0 }
+  public static let none = FoundationModelsAgentRedactionPolicy { $0 }
 
-  public static let standard = CoreAgentRedactionPolicy { value in
+  public static let standard = FoundationModelsAgentRedactionPolicy { value in
     var result = value
     let patterns: [(String, String)] = [
       (#"(?i)bearer\s+[a-z0-9._~+/=-]+"#, "Bearer [REDACTED]"),
@@ -171,19 +171,19 @@ public struct CoreAgentRedactionPolicy: Sendable {
   }
 }
 
-public struct CoreAgentRun: Codable, Equatable, Sendable, Identifiable {
+public struct FoundationModelsAgentRun: Codable, Equatable, Sendable, Identifiable {
   public let id: UUID
   public let startedAt: Date
   public let endedAt: Date
-  public let usage: CoreAgentUsage?
-  public let events: [CoreAgentEvent]
+  public let usage: FoundationModelsAgentUsage?
+  public let events: [FoundationModelsAgentEvent]
 
   public init(
     id: UUID,
     startedAt: Date,
     endedAt: Date,
-    usage: CoreAgentUsage?,
-    events: [CoreAgentEvent]
+    usage: FoundationModelsAgentUsage?,
+    events: [FoundationModelsAgentEvent]
   ) {
     self.id = id
     self.startedAt = startedAt
@@ -197,13 +197,13 @@ public struct CoreAgentRun: Codable, Equatable, Sendable, Identifiable {
   }
 }
 
-public struct CoreAgentEventReceipt: Codable, Equatable, Sendable {
+public struct FoundationModelsAgentEventReceipt: Codable, Equatable, Sendable {
   public let index: Int
   public let previousHash: String?
   public let hash: String
-  public let event: CoreAgentEvent
+  public let event: FoundationModelsAgentEvent
 
-  public init(index: Int, previousHash: String?, hash: String, event: CoreAgentEvent) {
+  public init(index: Int, previousHash: String?, hash: String, event: FoundationModelsAgentEvent) {
     self.index = index
     self.previousHash = previousHash
     self.hash = hash
@@ -211,20 +211,20 @@ public struct CoreAgentEventReceipt: Codable, Equatable, Sendable {
   }
 }
 
-public struct CoreAgentRunReceipt: Codable, Equatable, Sendable {
+public struct FoundationModelsAgentRunReceipt: Codable, Equatable, Sendable {
   public let runID: UUID
-  public let receipts: [CoreAgentEventReceipt]
+  public let receipts: [FoundationModelsAgentEventReceipt]
   public let rootHash: String?
 
-  public init(runID: UUID, receipts: [CoreAgentEventReceipt], rootHash: String?) {
+  public init(runID: UUID, receipts: [FoundationModelsAgentEventReceipt], rootHash: String?) {
     self.runID = runID
     self.receipts = receipts
     self.rootHash = rootHash
   }
 
-  public init(run: CoreAgentRun) throws {
+  public init(run: FoundationModelsAgentRun) throws {
     var previousHash: String? = Self.chainSeed(runID: run.id)
-    var values: [CoreAgentEventReceipt] = []
+    var values: [FoundationModelsAgentEventReceipt] = []
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .millisecondsSince1970
     encoder.outputFormatting = [.sortedKeys]
@@ -270,13 +270,13 @@ public struct CoreAgentRunReceipt: Codable, Equatable, Sendable {
   private static func payload(
     index: Int,
     previousHash: String?,
-    event: CoreAgentEvent,
+    event: FoundationModelsAgentEvent,
     encoder: JSONEncoder
   ) throws -> Data {
     struct Payload: Codable {
       let index: Int
       let previousHash: String?
-      let event: CoreAgentEvent
+      let event: FoundationModelsAgentEvent
     }
     return try encoder.encode(Payload(index: index, previousHash: previousHash, event: event))
   }
@@ -286,67 +286,69 @@ public struct CoreAgentRunReceipt: Codable, Equatable, Sendable {
   }
 
   private static func chainSeed(runID: UUID) -> String {
-    sha256(Data("coreagent-receipt-v1\u{0}\(runID.uuidString.lowercased())".utf8))
+    sha256(Data("foundationmodelsagent-receipt-v1\u{0}\(runID.uuidString.lowercased())".utf8))
   }
 }
 
-public struct CoreAgentTraceExporter: Sendable {
+public struct FoundationModelsAgentTraceExporter: Sendable {
   public init() {}
 
-  public func data(for run: CoreAgentRun, prettyPrinted: Bool = true) throws -> Data {
+  public func data(for run: FoundationModelsAgentRun, prettyPrinted: Bool = true) throws -> Data {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = prettyPrinted ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
     return try encoder.encode(run)
   }
 
-  public func write(_ run: CoreAgentRun, to url: URL, prettyPrinted: Bool = true) throws {
+  public func write(_ run: FoundationModelsAgentRun, to url: URL, prettyPrinted: Bool = true) throws
+  {
     try data(for: run, prettyPrinted: prettyPrinted).write(to: url, options: .atomic)
   }
 }
 
-public struct CoreAgentReceiptExporter: Sendable {
+public struct FoundationModelsAgentReceiptExporter: Sendable {
   public init() {}
 
-  public func data(for run: CoreAgentRun, prettyPrinted: Bool = true) throws -> Data {
-    let receipt = try CoreAgentRunReceipt(run: run)
+  public func data(for run: FoundationModelsAgentRun, prettyPrinted: Bool = true) throws -> Data {
+    let receipt = try FoundationModelsAgentRunReceipt(run: run)
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .millisecondsSince1970
     encoder.outputFormatting = prettyPrinted ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
     return try encoder.encode(receipt)
   }
 
-  public func write(_ run: CoreAgentRun, to url: URL, prettyPrinted: Bool = true) throws {
+  public func write(_ run: FoundationModelsAgentRun, to url: URL, prettyPrinted: Bool = true) throws
+  {
     try data(for: run, prettyPrinted: prettyPrinted).write(to: url, options: .atomic)
   }
 
-  public func decode(_ data: Data) throws -> CoreAgentRunReceipt {
+  public func decode(_ data: Data) throws -> FoundationModelsAgentRunReceipt {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .millisecondsSince1970
-    return try decoder.decode(CoreAgentRunReceipt.self, from: data)
+    return try decoder.decode(FoundationModelsAgentRunReceipt.self, from: data)
   }
 
-  public func decode(contentsOf url: URL) throws -> CoreAgentRunReceipt {
+  public func decode(contentsOf url: URL) throws -> FoundationModelsAgentRunReceipt {
     try decode(Data(contentsOf: url))
   }
 }
 
-private enum CoreAgentObserverDeliveryContext {
+private enum FoundationModelsAgentObserverDeliveryContext {
   @TaskLocal static var isDelivering = false
 }
 
-private struct CoreAgentObserverBarrier: Sendable {
+private struct FoundationModelsAgentObserverBarrier: Sendable {
   let sequence: Int
 }
 
-private actor CoreAgentObserverDelivery {
+private actor FoundationModelsAgentObserverDelivery {
   private struct PendingEvent {
     let sequence: Int
-    let event: CoreAgentEvent
+    let event: FoundationModelsAgentEvent
   }
 
-  private let observer: any CoreAgentObserver
-  private let configuration: CoreAgentObserverDeliveryConfiguration
+  private let observer: any FoundationModelsAgentObserver
+  private let configuration: FoundationModelsAgentObserverDeliveryConfiguration
   private var pending: [PendingEvent] = []
   private var isDelivering = false
   private var nextSequence = 0
@@ -354,14 +356,14 @@ private actor CoreAgentObserverDelivery {
   private var cumulativeDroppedEventCount = 0
 
   init(
-    observer: any CoreAgentObserver,
-    configuration: CoreAgentObserverDeliveryConfiguration
+    observer: any FoundationModelsAgentObserver,
+    configuration: FoundationModelsAgentObserverDeliveryConfiguration
   ) {
     self.observer = observer
     self.configuration = configuration
   }
 
-  func enqueue(_ event: CoreAgentEvent) {
+  func enqueue(_ event: FoundationModelsAgentEvent) {
     let item = PendingEvent(sequence: nextSequence, event: event)
     nextSequence += 1
 
@@ -384,8 +386,8 @@ private actor CoreAgentObserverDelivery {
     Task { await drain() }
   }
 
-  func barrier() -> CoreAgentObserverBarrier {
-    CoreAgentObserverBarrier(sequence: nextSequence - 1)
+  func barrier() -> FoundationModelsAgentObserverBarrier {
+    FoundationModelsAgentObserverBarrier(sequence: nextSequence - 1)
   }
 
   func hasSettled(through sequence: Int) -> Bool {
@@ -399,7 +401,7 @@ private actor CoreAgentObserverDelivery {
   private func drain() async {
     while !pending.isEmpty {
       let item = pending.removeFirst()
-      await CoreAgentObserverDeliveryContext.$isDelivering.withValue(true) {
+      await FoundationModelsAgentObserverDeliveryContext.$isDelivering.withValue(true) {
         await observer.receive(item.event)
       }
       unsettledSequences.remove(item.sequence)
@@ -408,19 +410,19 @@ private actor CoreAgentObserverDelivery {
   }
 }
 
-actor CoreAgentEventRecorder {
-  private let deliveries: [CoreAgentObserverDelivery]
-  private let deliveryConfiguration: CoreAgentObserverDeliveryConfiguration
-  private let redactionPolicy: CoreAgentRedactionPolicy
-  private var eventsByRun: [UUID: [CoreAgentEvent]] = [:]
+actor FoundationModelsAgentEventRecorder {
+  private let deliveries: [FoundationModelsAgentObserverDelivery]
+  private let deliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration
+  private let redactionPolicy: FoundationModelsAgentRedactionPolicy
+  private var eventsByRun: [UUID: [FoundationModelsAgentEvent]] = [:]
 
   init(
-    observers: [any CoreAgentObserver],
-    redactionPolicy: CoreAgentRedactionPolicy,
-    deliveryConfiguration: CoreAgentObserverDeliveryConfiguration
+    observers: [any FoundationModelsAgentObserver],
+    redactionPolicy: FoundationModelsAgentRedactionPolicy,
+    deliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration
   ) {
     self.deliveries = observers.map {
-      CoreAgentObserverDelivery(observer: $0, configuration: deliveryConfiguration)
+      FoundationModelsAgentObserverDelivery(observer: $0, configuration: deliveryConfiguration)
     }
     self.deliveryConfiguration = deliveryConfiguration
     self.redactionPolicy = redactionPolicy
@@ -433,11 +435,11 @@ actor CoreAgentEventRecorder {
 
   func record(
     runID: UUID,
-    kind: CoreAgentEventKind,
+    kind: FoundationModelsAgentEventKind,
     message: String,
     attributes: [String: String] = [:]
   ) async {
-    let event = CoreAgentEvent(
+    let event = FoundationModelsAgentEvent(
       runID: runID,
       kind: kind,
       message: redactionPolicy.redact(message),
@@ -449,7 +451,7 @@ actor CoreAgentEventRecorder {
     }
   }
 
-  func events(for runID: UUID) -> [CoreAgentEvent] {
+  func events(for runID: UUID) -> [FoundationModelsAgentEvent] {
     eventsByRun[runID] ?? []
   }
 
@@ -457,20 +459,21 @@ actor CoreAgentEventRecorder {
     eventsByRun.removeValue(forKey: runID)
   }
 
-  func flushObservers(timeout: Duration? = nil) async -> CoreAgentObserverFlushResult {
-    guard !CoreAgentObserverDeliveryContext.isDelivering else {
-      return CoreAgentObserverFlushResult(
+  func flushObservers(timeout: Duration? = nil) async -> FoundationModelsAgentObserverFlushResult {
+    guard !FoundationModelsAgentObserverDeliveryContext.isDelivering else {
+      return FoundationModelsAgentObserverFlushResult(
         status: .reentrant,
         cumulativeDroppedEventCount: await cumulativeDroppedEventCount()
       )
     }
 
-    var barriers: [(CoreAgentObserverDelivery, CoreAgentObserverBarrier)] = []
+    var barriers: [(FoundationModelsAgentObserverDelivery, FoundationModelsAgentObserverBarrier)] =
+      []
     for delivery in deliveries {
       barriers.append((delivery, await delivery.barrier()))
     }
     guard !barriers.isEmpty else {
-      return CoreAgentObserverFlushResult(
+      return FoundationModelsAgentObserverFlushResult(
         status: .drained,
         cumulativeDroppedEventCount: 0
       )
@@ -487,19 +490,19 @@ actor CoreAgentEventRecorder {
         break
       }
       if complete {
-        return CoreAgentObserverFlushResult(
+        return FoundationModelsAgentObserverFlushResult(
           status: .drained,
           cumulativeDroppedEventCount: await cumulativeDroppedEventCount()
         )
       }
       if Task.isCancelled {
-        return CoreAgentObserverFlushResult(
+        return FoundationModelsAgentObserverFlushResult(
           status: .cancelled,
           cumulativeDroppedEventCount: await cumulativeDroppedEventCount()
         )
       }
       if duration <= .zero || clock.now >= deadline {
-        return CoreAgentObserverFlushResult(
+        return FoundationModelsAgentObserverFlushResult(
           status: .timedOut,
           cumulativeDroppedEventCount: await cumulativeDroppedEventCount()
         )

@@ -4,43 +4,44 @@ import FoundationModels
 
 /// A production harness around one persistent native `LanguageModelSession`.
 ///
-/// CoreAgent deliberately accepts Foundation Models types directly. It does not
+/// FoundationModelsAgent deliberately accepts Foundation Models types directly. It does not
 /// define another provider, message, tool, schema, or agent-loop abstraction.
-public actor CoreAgentSession {
+public actor FoundationModelsAgentSession {
   private typealias SessionFactory = (Transcript?) -> LanguageModelSession
 
   private let makeSession: SessionFactory
-  private let configuration: CoreAgentConfiguration
-  private let checkpointStore: (any CoreAgentCheckpointStore)?
+  private let configuration: FoundationModelsAgentConfiguration
+  private let checkpointStore: (any FoundationModelsAgentCheckpointStore)?
   private let checkpointKey: String
-  private let retention: CoreAgentTranscriptRetention
+  private let retention: FoundationModelsAgentTranscriptRetention
   private let requiresMatchingCheckpointConfiguration: Bool
   private let checkpointCompatibilityRevision: String
   private let recordsProfileToolLifecycle: Bool
-  private let sessionMode: CoreAgentSessionMode
-  private let plugins: [any CoreAgentSessionPlugin]
-  private let toolRuntime: CoreAgentToolRuntime
-  private let recorder: CoreAgentEventRecorder
+  private let sessionMode: FoundationModelsAgentSessionMode
+  private let plugins: [any FoundationModelsAgentSessionPlugin]
+  private let toolRuntime: FoundationModelsAgentToolRuntime
+  private let recorder: FoundationModelsAgentEventRecorder
 
   private var nativeSession: LanguageModelSession?
-  private var mostRecentRun: CoreAgentRun?
+  private var mostRecentRun: FoundationModelsAgentRun?
   private var hasActiveOperation = false
 
   public init<Model: LanguageModel>(
     model: Model,
     tools: [any Tool] = [],
     instructions: Instructions? = nil,
-    configuration: CoreAgentConfiguration = .default,
-    toolConfiguration: CoreAgentToolConfiguration = .default,
-    checkpointStore: (any CoreAgentCheckpointStore)? = nil,
+    configuration: FoundationModelsAgentConfiguration = .default,
+    toolConfiguration: FoundationModelsAgentToolConfiguration = .default,
+    checkpointStore: (any FoundationModelsAgentCheckpointStore)? = nil,
     checkpointKey: String = "default",
-    transcriptRetention: CoreAgentTranscriptRetention = .complete,
+    transcriptRetention: FoundationModelsAgentTranscriptRetention = .complete,
     requiresMatchingToolset: Bool = true,
-    instructionRestorationPolicy: CoreAgentInstructionRestorationPolicy = .replaceWithCurrent,
-    plugins: [any CoreAgentSessionPlugin] = [],
-    redactionPolicy: CoreAgentRedactionPolicy = .standard,
-    observers: [any CoreAgentObserver] = [],
-    observerDeliveryConfiguration: CoreAgentObserverDeliveryConfiguration = .default
+    instructionRestorationPolicy: FoundationModelsAgentInstructionRestorationPolicy =
+      .replaceWithCurrent,
+    plugins: [any FoundationModelsAgentSessionPlugin] = [],
+    redactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
+    observers: [any FoundationModelsAgentObserver] = [],
+    observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default
   ) throws {
     try Self.validate(
       configuration: configuration,
@@ -50,18 +51,19 @@ public actor CoreAgentSession {
     )
     try Self.validate(plugins: plugins)
 
-    let recorder = CoreAgentEventRecorder(
+    let recorder = FoundationModelsAgentEventRecorder(
       observers: observers,
       redactionPolicy: redactionPolicy,
       deliveryConfiguration: observerDeliveryConfiguration
     )
-    let runtime = CoreAgentToolRuntime(maximumCallsPerRun: toolConfiguration.maximumCallsPerRun)
+    let runtime = FoundationModelsAgentToolRuntime(
+      maximumCallsPerRun: toolConfiguration.maximumCallsPerRun)
     let allTools = tools + plugins.flatMap(\.tools)
     try Self.validateUniqueToolNames(allTools)
-    let prepared = try allTools.map { tool -> (any Tool, CoreAgentToolManifest) in
-      let manifest = try CoreAgentToolManifest(tool: tool)
-      let erased = CoreAgentAnyTool(tool)
-      let governed = CoreAgentGovernedTool(
+    let prepared = try allTools.map { tool -> (any Tool, FoundationModelsAgentToolManifest) in
+      let manifest = try FoundationModelsAgentToolManifest(tool: tool)
+      let erased = FoundationModelsAgentAnyTool(tool)
+      let governed = FoundationModelsAgentGovernedTool(
         base: erased,
         manifest: manifest,
         configuration: toolConfiguration,
@@ -110,17 +112,17 @@ public actor CoreAgentSession {
   /// Creates a harness around a native Xcode 27 dynamic profile.
   ///
   /// The factory is called again for lazy checkpoint restoration and `reset()`.
-  /// Profile-owned tools remain native and are not wrapped by CoreAgent policy.
+  /// Profile-owned tools remain native and are not wrapped by FoundationModelsAgent policy.
   public init<Profile: LanguageModelSession.DynamicProfile>(
     checkpointCompatibilityID: String,
-    configuration: CoreAgentConfiguration = .default,
-    checkpointStore: (any CoreAgentCheckpointStore)? = nil,
+    configuration: FoundationModelsAgentConfiguration = .default,
+    checkpointStore: (any FoundationModelsAgentCheckpointStore)? = nil,
     checkpointKey: String = "default",
-    transcriptRetention: CoreAgentTranscriptRetention = .complete,
-    plugins: [any CoreAgentSessionPlugin] = [],
-    redactionPolicy: CoreAgentRedactionPolicy = .standard,
-    observers: [any CoreAgentObserver] = [],
-    observerDeliveryConfiguration: CoreAgentObserverDeliveryConfiguration = .default,
+    transcriptRetention: FoundationModelsAgentTranscriptRetention = .complete,
+    plugins: [any FoundationModelsAgentSessionPlugin] = [],
+    redactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
+    observers: [any FoundationModelsAgentObserver] = [],
+    observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default,
     profile makeProfile: @escaping @Sendable () -> sending Profile
   ) throws {
     try Self.validate(
@@ -132,20 +134,20 @@ public actor CoreAgentSession {
     try Self.validate(plugins: plugins)
     guard !checkpointCompatibilityID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     else {
-      throw CoreAgentError.emptyCheckpointCompatibilityID
+      throw FoundationModelsAgentError.emptyCheckpointCompatibilityID
     }
     if configuration.retryPolicy.maximumAttempts > 1 {
-      throw CoreAgentError.unsafeRetryConfiguration(
-        "Dynamic profiles may preserve partial history or own tools and lifecycle hooks that CoreAgent cannot intercept. Profile mode supports one attempt."
+      throw FoundationModelsAgentError.unsafeRetryConfiguration(
+        "Dynamic profiles may preserve partial history or own tools and lifecycle hooks that FoundationModelsAgent cannot intercept. Profile mode supports one attempt."
       )
     }
 
-    let recorder = CoreAgentEventRecorder(
+    let recorder = FoundationModelsAgentEventRecorder(
       observers: observers,
       redactionPolicy: redactionPolicy,
       deliveryConfiguration: observerDeliveryConfiguration
     )
-    let runtime = CoreAgentToolRuntime(maximumCallsPerRun: nil)
+    let runtime = FoundationModelsAgentToolRuntime(maximumCallsPerRun: nil)
     let revision = Self.makeProfileRevision(checkpointCompatibilityID)
     let makeSession: SessionFactory = { transcript in
       let profile = makeProfile()
@@ -196,17 +198,17 @@ public actor CoreAgentSession {
 
   private init(
     makeSession: @escaping SessionFactory,
-    configuration: CoreAgentConfiguration,
-    checkpointStore: (any CoreAgentCheckpointStore)?,
+    configuration: FoundationModelsAgentConfiguration,
+    checkpointStore: (any FoundationModelsAgentCheckpointStore)?,
     checkpointKey: String,
-    transcriptRetention: CoreAgentTranscriptRetention,
+    transcriptRetention: FoundationModelsAgentTranscriptRetention,
     requiresMatchingCheckpointConfiguration: Bool,
     checkpointCompatibilityRevision: String,
     recordsProfileToolLifecycle: Bool,
-    sessionMode: CoreAgentSessionMode,
-    plugins: [any CoreAgentSessionPlugin],
-    toolRuntime: CoreAgentToolRuntime,
-    recorder: CoreAgentEventRecorder
+    sessionMode: FoundationModelsAgentSessionMode,
+    plugins: [any FoundationModelsAgentSessionPlugin],
+    toolRuntime: FoundationModelsAgentToolRuntime,
+    recorder: FoundationModelsAgentEventRecorder
   ) {
     self.makeSession = makeSession
     self.configuration = configuration
@@ -235,19 +237,21 @@ public actor CoreAgentSession {
     return try await resolveSession().transcript
   }
 
-  public func lastRun() -> CoreAgentRun? {
+  public func lastRun() -> FoundationModelsAgentRun? {
     mostRecentRun
   }
 
   /// Waits up to `timeout` for previously emitted events to reach observers.
   /// Reports timeouts, reentrant calls, and any cumulative queue overflow.
   @discardableResult
-  public func flushObservers(timeout: Duration? = nil) async -> CoreAgentObserverFlushResult {
+  public func flushObservers(timeout: Duration? = nil) async
+    -> FoundationModelsAgentObserverFlushResult
+  {
     await recorder.flushObservers(timeout: timeout)
   }
 
   @discardableResult
-  public func checkpoint() async throws -> CoreAgentCheckpoint {
+  public func checkpoint() async throws -> FoundationModelsAgentCheckpoint {
     try acquireSessionLease()
     defer { releaseSessionLease() }
     let session = try await resolveSession()
@@ -271,9 +275,9 @@ public actor CoreAgentSession {
     to prompt: Prompt,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil
-  ) async throws -> CoreAgentResponse<String> {
+  ) async throws -> FoundationModelsAgentResponse<String> {
     try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
       try await $0.respond(
         to: $1,
@@ -289,9 +293,9 @@ public actor CoreAgentSession {
     to prompt: String,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil
-  ) async throws -> CoreAgentResponse<String> {
+  ) async throws -> FoundationModelsAgentResponse<String> {
     try await respond(
       to: Prompt(prompt),
       options: options,
@@ -307,9 +311,9 @@ public actor CoreAgentSession {
     generating type: Content.Type = Content.self,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil
-  ) async throws -> CoreAgentResponse<Content> {
+  ) async throws -> FoundationModelsAgentResponse<Content> {
     try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
       try await $0.respond(
         to: $1,
@@ -327,9 +331,9 @@ public actor CoreAgentSession {
     generating type: Content.Type = Content.self,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil
-  ) async throws -> CoreAgentResponse<Content> {
+  ) async throws -> FoundationModelsAgentResponse<Content> {
     try await respond(
       to: Prompt(prompt),
       generating: type,
@@ -346,9 +350,9 @@ public actor CoreAgentSession {
     schema: GenerationSchema,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil
-  ) async throws -> CoreAgentResponse<GeneratedContent> {
+  ) async throws -> FoundationModelsAgentResponse<GeneratedContent> {
     try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
       try await $0.respond(
         to: $1,
@@ -366,9 +370,9 @@ public actor CoreAgentSession {
     schema: GenerationSchema,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil
-  ) async throws -> CoreAgentResponse<GeneratedContent> {
+  ) async throws -> FoundationModelsAgentResponse<GeneratedContent> {
     try await respond(
       to: Prompt(prompt),
       schema: schema,
@@ -384,10 +388,10 @@ public actor CoreAgentSession {
     to prompt: Prompt,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil,
     onPartialResponse: @escaping @Sendable (String) async -> Void
-  ) async throws -> CoreAgentResponse<String> {
+  ) async throws -> FoundationModelsAgentResponse<String> {
     try await performStream(
       prompt: prompt,
       contextQuery: contextQuery,
@@ -409,10 +413,10 @@ public actor CoreAgentSession {
     to prompt: String,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil,
     onPartialResponse: @escaping @Sendable (String) async -> Void
-  ) async throws -> CoreAgentResponse<String> {
+  ) async throws -> FoundationModelsAgentResponse<String> {
     try await respondStreaming(
       to: Prompt(prompt),
       options: options,
@@ -429,10 +433,11 @@ public actor CoreAgentSession {
     generating type: Content.Type = Content.self,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil,
     onPartialResponse: @escaping @Sendable (Content.PartiallyGenerated) async -> Void
-  ) async throws -> CoreAgentResponse<Content> where Content.PartiallyGenerated: Sendable {
+  ) async throws -> FoundationModelsAgentResponse<Content>
+  where Content.PartiallyGenerated: Sendable {
     try await performStream(
       prompt: prompt,
       contextQuery: contextQuery,
@@ -456,10 +461,11 @@ public actor CoreAgentSession {
     generating type: Content.Type = Content.self,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
-    metadata: CoreAgentRequestMetadata = [:],
+    metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil,
     onPartialResponse: @escaping @Sendable (Content.PartiallyGenerated) async -> Void
-  ) async throws -> CoreAgentResponse<Content> where Content.PartiallyGenerated: Sendable {
+  ) async throws -> FoundationModelsAgentResponse<Content>
+  where Content.PartiallyGenerated: Sendable {
     try await respondStreaming(
       to: Prompt(prompt),
       generating: type,
@@ -479,13 +485,13 @@ public actor CoreAgentSession {
     let checkpoint = try await checkpointStore?.loadCheckpoint(for: checkpointKey)
     let transcript: Transcript?
     if let checkpoint {
-      guard checkpoint.formatVersion == CoreAgentCheckpoint.currentFormatVersion else {
-        throw CoreAgentError.unsupportedCheckpointVersion(checkpoint.formatVersion)
+      guard checkpoint.formatVersion == FoundationModelsAgentCheckpoint.currentFormatVersion else {
+        throw FoundationModelsAgentError.unsupportedCheckpointVersion(checkpoint.formatVersion)
       }
       if requiresMatchingCheckpointConfiguration,
         checkpoint.compatibilityRevision != checkpointCompatibilityRevision
       {
-        throw CoreAgentError.checkpointCompatibilityMismatch(
+        throw FoundationModelsAgentError.checkpointCompatibilityMismatch(
           expected: checkpointCompatibilityRevision,
           actual: checkpoint.compatibilityRevision
         )
@@ -504,11 +510,11 @@ public actor CoreAgentSession {
   private func performResponse<Content: Generable & Sendable>(
     prompt: Prompt,
     contextQuery: String?,
-    metadata: CoreAgentRequestMetadata,
+    metadata: FoundationModelsAgentRequestMetadata,
     _ operation:
       @escaping @Sendable (LanguageModelSession, Prompt) async throws ->
       LanguageModelSession.Response<Content>
-  ) async throws -> CoreAgentResponse<Content> {
+  ) async throws -> FoundationModelsAgentResponse<Content> {
     try acquireSessionLease()
     defer { releaseSessionLease() }
     let session = try await resolveSession()
@@ -535,7 +541,7 @@ public actor CoreAgentSession {
         operation: { try await operation($0, preparedPrompt) }
       )
       completedModelResponse = true
-      let usage = CoreAgentUsage(nativeResponse.usage)
+      let usage = FoundationModelsAgentUsage(nativeResponse.usage)
       let sanitizedTranscript = try await sanitizeCompletedTranscript(
         session.transcript,
         fallback: transcriptBeforeRun,
@@ -562,7 +568,7 @@ public actor CoreAgentSession {
       )
       try await persistAfterSuccessfulResponse(transcript: sanitizedTranscript, runID: runID)
       try await completePlugins(
-        CoreAgentPluginCompletion(
+        FoundationModelsAgentPluginCompletion(
           runID: runID,
           contextQuery: contextQuery,
           metadata: metadata,
@@ -576,7 +582,7 @@ public actor CoreAgentSession {
         runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
       let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
       await toolRuntime.finish(runID: runID)
-      return CoreAgentResponse(
+      return FoundationModelsAgentResponse(
         content: nativeResponse.content,
         rawContent: nativeResponse.rawContent,
         transcriptEntries: Array(nativeResponse.transcriptEntries),
@@ -599,7 +605,7 @@ public actor CoreAgentSession {
         await persistAfterFailedResponse(transcript: session.transcript, runID: runID)
       }
       await failPlugins(
-        CoreAgentPluginFailure(
+        FoundationModelsAgentPluginFailure(
           runID: runID,
           contextQuery: contextQuery,
           metadata: metadata,
@@ -639,12 +645,12 @@ public actor CoreAgentSession {
           return try await operation(session)
         }
         do {
-          let box = try await withCoreAgentTimeout(timeout) {
+          let box = try await withFoundationModelsAgentTimeout(timeout) {
             NativeResponseBox(try await operation(session))
           }
           return box.response
-        } catch is CoreAgentTimeoutMarker {
-          throw CoreAgentError.responseTimedOut
+        } catch is FoundationModelsAgentTimeoutMarker {
+          throw FoundationModelsAgentError.responseTimedOut
         }
       } catch {
         await recorder.record(
@@ -676,13 +682,14 @@ public actor CoreAgentSession {
   private func performStream<Content: Generable & Sendable>(
     prompt: Prompt,
     contextQuery: String?,
-    metadata: CoreAgentRequestMetadata,
+    metadata: FoundationModelsAgentRequestMetadata,
     _ makeStream:
       @escaping @Sendable (LanguageModelSession, Prompt) ->
       LanguageModelSession.ResponseStream<Content>,
     onPartialResponse:
       @escaping @Sendable (Content.PartiallyGenerated, GeneratedContent) async -> Void
-  ) async throws -> CoreAgentResponse<Content> where Content.PartiallyGenerated: Sendable {
+  ) async throws -> FoundationModelsAgentResponse<Content>
+  where Content.PartiallyGenerated: Sendable {
     try acquireSessionLease()
     defer { releaseSessionLease() }
     let session = try await resolveSession()
@@ -711,7 +718,7 @@ public actor CoreAgentSession {
       )
       completedModelResponse = true
       let content = try Content(lastSnapshot.rawContent)
-      let usage = CoreAgentUsage(lastSnapshot.usage)
+      let usage = FoundationModelsAgentUsage(lastSnapshot.usage)
       let sanitizedTranscript = try await sanitizeCompletedTranscript(
         session.transcript,
         fallback: transcriptBeforeRun,
@@ -738,7 +745,7 @@ public actor CoreAgentSession {
       )
       try await persistAfterSuccessfulResponse(transcript: sanitizedTranscript, runID: runID)
       try await completePlugins(
-        CoreAgentPluginCompletion(
+        FoundationModelsAgentPluginCompletion(
           runID: runID,
           contextQuery: contextQuery,
           metadata: metadata,
@@ -752,7 +759,7 @@ public actor CoreAgentSession {
         runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
       let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
       await toolRuntime.finish(runID: runID)
-      return CoreAgentResponse(
+      return FoundationModelsAgentResponse(
         content: content,
         rawContent: lastSnapshot.rawContent,
         transcriptEntries: Array(lastSnapshot.transcriptEntries),
@@ -775,7 +782,7 @@ public actor CoreAgentSession {
         await persistAfterFailedResponse(transcript: session.transcript, runID: runID)
       }
       await failPlugins(
-        CoreAgentPluginFailure(
+        FoundationModelsAgentPluginFailure(
           runID: runID,
           contextQuery: contextQuery,
           metadata: metadata,
@@ -824,7 +831,7 @@ public actor CoreAgentSession {
             await onPartialResponse(snapshot.content, snapshot.rawContent)
           }
           guard let lastSnapshot else {
-            throw CoreAgentError.streamFinishedWithoutResponse
+            throw FoundationModelsAgentError.streamFinishedWithoutResponse
           }
           return NativeStreamSnapshotBox(lastSnapshot)
         }
@@ -833,9 +840,9 @@ public actor CoreAgentSession {
           return try await consume().snapshot
         }
         do {
-          return try await withCoreAgentTimeout(timeout, operation: consume).snapshot
-        } catch is CoreAgentTimeoutMarker {
-          throw CoreAgentError.responseTimedOut
+          return try await withFoundationModelsAgentTimeout(timeout, operation: consume).snapshot
+        } catch is FoundationModelsAgentTimeoutMarker {
+          throw FoundationModelsAgentError.responseTimedOut
         }
       } catch {
         let emittedSnapshot = await state.emittedSnapshot
@@ -871,21 +878,21 @@ public actor CoreAgentSession {
     runID: UUID,
     prompt: Prompt,
     contextQuery: String?,
-    metadata: CoreAgentRequestMetadata
+    metadata: FoundationModelsAgentRequestMetadata
   ) async throws -> PreparedPluginContext {
-    var blocks: [CoreAgentContextBlock] = []
-    var sanitizationFailurePolicy = CoreAgentPluginFailurePolicy.recordAndContinue
+    var blocks: [FoundationModelsAgentContextBlock] = []
+    var sanitizationFailurePolicy = FoundationModelsAgentPluginFailurePolicy.recordAndContinue
 
     for plugin in plugins {
       await recorder.record(
         runID: runID,
         kind: .pluginPreparationStarted,
-        message: "CoreAgent session plugin preparation started.",
+        message: "FoundationModelsAgent session plugin preparation started.",
         attributes: ["plugin": plugin.identifier]
       )
       do {
         let preparation = try await plugin.prepare(
-          for: CoreAgentPluginRequest(
+          for: FoundationModelsAgentPluginRequest(
             runID: runID,
             prompt: prompt,
             contextQuery: contextQuery,
@@ -894,7 +901,7 @@ public actor CoreAgentSession {
           )
         )
         if sessionMode == .dynamicProfile, !preparation.contextBlocks.isEmpty {
-          throw CoreAgentError.pluginContextUnsupportedForDynamicProfile
+          throw FoundationModelsAgentError.pluginContextUnsupportedForDynamicProfile
         }
         blocks.append(contentsOf: preparation.contextBlocks)
         if !preparation.contextBlocks.isEmpty,
@@ -906,7 +913,7 @@ public actor CoreAgentSession {
           await recorder.record(
             runID: runID,
             kind: .pluginEvent,
-            message: "CoreAgent session plugin contributed context.",
+            message: "FoundationModelsAgent session plugin contributed context.",
             attributes: [
               "plugin": plugin.identifier,
               "plugin_event": "context_prepared",
@@ -918,7 +925,7 @@ public actor CoreAgentSession {
         await recorder.record(
           runID: runID,
           kind: .pluginPreparationCompleted,
-          message: "CoreAgent session plugin preparation completed.",
+          message: "FoundationModelsAgent session plugin preparation completed.",
           attributes: [
             "plugin": plugin.identifier,
             "context_blocks": String(preparation.contextBlocks.count),
@@ -946,14 +953,14 @@ public actor CoreAgentSession {
     )
   }
 
-  private func completePlugins(_ completion: CoreAgentPluginCompletion) async throws {
+  private func completePlugins(_ completion: FoundationModelsAgentPluginCompletion) async throws {
     var fatalError: (any Error)?
 
     for plugin in plugins {
       await recorder.record(
         runID: completion.runID,
         kind: .pluginCompletionStarted,
-        message: "CoreAgent session plugin completion started.",
+        message: "FoundationModelsAgent session plugin completion started.",
         attributes: ["plugin": plugin.identifier]
       )
       do {
@@ -962,7 +969,7 @@ public actor CoreAgentSession {
         await recorder.record(
           runID: completion.runID,
           kind: .pluginCompletionCompleted,
-          message: "CoreAgent session plugin completion completed.",
+          message: "FoundationModelsAgent session plugin completion completed.",
           attributes: ["plugin": plugin.identifier]
         )
       } catch {
@@ -986,7 +993,7 @@ public actor CoreAgentSession {
     }
   }
 
-  private func failPlugins(_ failure: CoreAgentPluginFailure) async {
+  private func failPlugins(_ failure: FoundationModelsAgentPluginFailure) async {
     for plugin in plugins {
       let events = await plugin.didFail(failure)
       await recordPluginEvents(events, plugin: plugin.identifier, runID: failure.runID)
@@ -994,7 +1001,7 @@ public actor CoreAgentSession {
   }
 
   private func recordPluginEvents(
-    _ events: [CoreAgentPluginEvent],
+    _ events: [FoundationModelsAgentPluginEvent],
     plugin: String,
     runID: UUID
   ) async {
@@ -1013,7 +1020,7 @@ public actor CoreAgentSession {
 
   private func makePrompt(
     _ prompt: Prompt,
-    contextBlocks: [CoreAgentContextBlock]
+    contextBlocks: [FoundationModelsAgentContextBlock]
   ) -> Prompt {
     guard !contextBlocks.isEmpty else { return prompt }
     return Prompt {
@@ -1024,7 +1031,7 @@ public actor CoreAgentSession {
 
   private func sanitizePluginContext(
     in transcript: Transcript,
-    contextBlocks: [CoreAgentContextBlock],
+    contextBlocks: [FoundationModelsAgentContextBlock],
     requiresMatch: Bool
   ) throws -> Transcript {
     let sanitized = try sanitizePluginContext(
@@ -1049,7 +1056,7 @@ public actor CoreAgentSession {
 
   private func sanitizePluginContext(
     in entries: [Transcript.Entry],
-    contextBlocks: [CoreAgentContextBlock],
+    contextBlocks: [FoundationModelsAgentContextBlock],
     requiresMatch: Bool
   ) throws -> [Transcript.Entry] {
     guard !contextBlocks.isEmpty else { return entries }
@@ -1082,7 +1089,7 @@ public actor CoreAgentSession {
     }
 
     if requiresMatch {
-      throw CoreAgentError.pluginContextSanitizationFailed
+      throw FoundationModelsAgentError.pluginContextSanitizationFailed
     }
     return entries
   }
@@ -1134,7 +1141,8 @@ public actor CoreAgentSession {
     await recorder.record(
       runID: runID,
       kind: .pluginEvent,
-      message: "CoreAgent could not verify injected context during transcript sanitization.",
+      message:
+        "FoundationModelsAgent could not verify injected context during transcript sanitization.",
       attributes: [
         "plugin_event": "context_sanitization_failed",
         "context_block_ids": context.contextBlocks.map(\.id).joined(separator: ","),
@@ -1154,9 +1162,11 @@ public actor CoreAgentSession {
     nativeSession = session
   }
 
-  private func persist(transcript: Transcript, runID: UUID?) async throws -> CoreAgentCheckpoint {
+  private func persist(transcript: Transcript, runID: UUID?) async throws
+    -> FoundationModelsAgentCheckpoint
+  {
     let retained = try await retention.prepareForPersistence(transcript)
-    let checkpoint = CoreAgentCheckpoint(
+    let checkpoint = FoundationModelsAgentCheckpoint(
       compatibilityRevision: checkpointCompatibilityRevision,
       transcript: retained
     )
@@ -1248,17 +1258,17 @@ public actor CoreAgentSession {
       runID: runID,
       kind: .profileToolAuditBestEffort,
       message:
-        "Dynamic-profile tool observation is best effort; an earlier failing profile lifecycle hook can preempt CoreAgent observation."
+        "Dynamic-profile tool observation is best effort; an earlier failing profile lifecycle hook can preempt FoundationModelsAgent observation."
     )
   }
 
   private func finishRun(
     runID: UUID,
     startedAt: Date,
-    usage: CoreAgentUsage?
-  ) async -> CoreAgentRun {
+    usage: FoundationModelsAgentUsage?
+  ) async -> FoundationModelsAgentRun {
     let events = await recorder.events(for: runID)
-    let run = CoreAgentRun(
+    let run = FoundationModelsAgentRun(
       id: runID,
       startedAt: startedAt,
       endedAt: Date(),
@@ -1272,7 +1282,7 @@ public actor CoreAgentSession {
 
   private func acquireSessionLease() throws {
     guard !hasActiveOperation else {
-      throw CoreAgentError.concurrentOperation
+      throw FoundationModelsAgentError.concurrentOperation
     }
     hasActiveOperation = true
   }
@@ -1281,58 +1291,60 @@ public actor CoreAgentSession {
     hasActiveOperation = false
   }
 
-  private static func makeToolsetRevision(_ manifests: [CoreAgentToolManifest]) -> String {
+  private static func makeToolsetRevision(_ manifests: [FoundationModelsAgentToolManifest])
+    -> String
+  {
     let source = manifests.sorted { $0.name < $1.name }.map(\.digest).joined(separator: "\n")
     return SHA256.hash(data: Data(source.utf8)).map { String(format: "%02x", $0) }.joined()
   }
 
   private static func makeProfileRevision(_ compatibilityID: String) -> String {
-    SHA256.hash(data: Data("coreagent-profile-v1\u{0}\(compatibilityID)".utf8))
+    SHA256.hash(data: Data("foundationmodelsagent-profile-v1\u{0}\(compatibilityID)".utf8))
       .map { String(format: "%02x", $0) }
       .joined()
   }
 
   private static func validate(
-    configuration: CoreAgentConfiguration,
-    toolConfiguration: CoreAgentToolConfiguration,
-    transcriptRetention: CoreAgentTranscriptRetention,
-    observerDeliveryConfiguration: CoreAgentObserverDeliveryConfiguration
+    configuration: FoundationModelsAgentConfiguration,
+    toolConfiguration: FoundationModelsAgentToolConfiguration,
+    transcriptRetention: FoundationModelsAgentTranscriptRetention,
+    observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration
   ) throws {
     if let timeout = configuration.responseTimeout, timeout < .zero {
-      throw CoreAgentError.invalidDuration(name: "Response timeout")
+      throw FoundationModelsAgentError.invalidDuration(name: "Response timeout")
     }
     if let timeout = toolConfiguration.executionTimeout, timeout < .zero {
-      throw CoreAgentError.invalidDuration(name: "Tool execution timeout")
+      throw FoundationModelsAgentError.invalidDuration(name: "Tool execution timeout")
     }
     if let limit = toolConfiguration.maximumCallsPerRun, limit < 0 {
-      throw CoreAgentError.invalidToolCallLimit(limit)
+      throw FoundationModelsAgentError.invalidToolCallLimit(limit)
     }
     guard observerDeliveryConfiguration.maximumPendingEvents > 0 else {
-      throw CoreAgentError.invalidObserverQueueLimit(
+      throw FoundationModelsAgentError.invalidObserverQueueLimit(
         observerDeliveryConfiguration.maximumPendingEvents)
     }
     guard observerDeliveryConfiguration.defaultFlushTimeout >= .zero else {
-      throw CoreAgentError.invalidDuration(name: "Observer flush timeout")
+      throw FoundationModelsAgentError.invalidDuration(name: "Observer flush timeout")
     }
     if case .preserve = configuration.transcriptErrorHandlingPolicy,
       configuration.retryPolicy.maximumAttempts > 1
     {
-      throw CoreAgentError.unsafeRetryConfiguration(
+      throw FoundationModelsAgentError.unsafeRetryConfiguration(
         "Preserved partial transcripts cannot be retried safely. Use .revert or one attempt."
       )
     }
     try transcriptRetention.validate()
   }
 
-  private static func validate(plugins: [any CoreAgentSessionPlugin]) throws {
+  private static func validate(plugins: [any FoundationModelsAgentSessionPlugin]) throws {
     var identifiers: Set<String> = []
     for plugin in plugins {
       let identifier = plugin.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !identifier.isEmpty else {
-        throw CoreAgentError.emptyPluginIdentifier
+        throw FoundationModelsAgentError.emptyPluginIdentifier
       }
       guard identifiers.insert(identifier).inserted else {
-        throw CoreAgentError.duplicatePluginIdentifier(identifier)
+        throw FoundationModelsAgentError.duplicatePluginIdentifier(identifier)
       }
     }
   }
@@ -1341,15 +1353,15 @@ public actor CoreAgentSession {
     var names: Set<String> = []
     for tool in tools {
       guard names.insert(tool.name).inserted else {
-        throw CoreAgentError.duplicateToolName(tool.name)
+        throw FoundationModelsAgentError.duplicateToolName(tool.name)
       }
     }
   }
 }
 
 private struct PreparedPluginContext: Sendable {
-  let contextBlocks: [CoreAgentContextBlock]
-  let sanitizationFailurePolicy: CoreAgentPluginFailurePolicy
+  let contextBlocks: [FoundationModelsAgentContextBlock]
+  let sanitizationFailurePolicy: FoundationModelsAgentPluginFailurePolicy
 
   static let empty = PreparedPluginContext(
     contextBlocks: [],

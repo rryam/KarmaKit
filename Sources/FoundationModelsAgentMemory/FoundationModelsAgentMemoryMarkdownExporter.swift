@@ -1,31 +1,32 @@
 import Foundation
 
-public struct CoreAgentMemoryMarkdownExportConfiguration: Sendable {
-  public var fileProtection: CoreAgentMemoryFileProtection
+public struct FoundationModelsAgentMemoryMarkdownExportConfiguration: Sendable {
+  public var fileProtection: FoundationModelsAgentMemoryFileProtection
   public var excludesFromBackup: Bool
 
   public init(
-    fileProtection: CoreAgentMemoryFileProtection = .completeUntilFirstUserAuthentication,
+    fileProtection: FoundationModelsAgentMemoryFileProtection =
+      .completeUntilFirstUserAuthentication,
     excludesFromBackup: Bool = true
   ) {
     self.fileProtection = fileProtection
     self.excludesFromBackup = excludesFromBackup
   }
 
-  public static let `default` = CoreAgentMemoryMarkdownExportConfiguration()
+  public static let `default` = FoundationModelsAgentMemoryMarkdownExportConfiguration()
 }
 
-public struct CoreAgentMemoryMarkdownManifest: Codable, Equatable, Sendable {
+public struct FoundationModelsAgentMemoryMarkdownManifest: Codable, Equatable, Sendable {
   public static let currentFormatVersion = 1
 
   public let formatVersion: Int
-  public let scope: CoreAgentMemoryScope
+  public let scope: FoundationModelsAgentMemoryScope
   public let exportedAt: Date
   public var records: [Entry]
 
   public init(
     formatVersion: Int = currentFormatVersion,
-    scope: CoreAgentMemoryScope,
+    scope: FoundationModelsAgentMemoryScope,
     exportedAt: Date,
     records: [Entry]
   ) {
@@ -39,13 +40,13 @@ public struct CoreAgentMemoryMarkdownManifest: Codable, Equatable, Sendable {
     public let id: UUID
     public let filename: String
     public let contentHash: String
-    public let status: CoreAgentMemoryStatus
+    public let status: FoundationModelsAgentMemoryStatus
 
     public init(
       id: UUID,
       filename: String,
       contentHash: String,
-      status: CoreAgentMemoryStatus
+      status: FoundationModelsAgentMemoryStatus
     ) {
       self.id = id
       self.filename = filename
@@ -55,28 +56,30 @@ public struct CoreAgentMemoryMarkdownManifest: Codable, Equatable, Sendable {
   }
 }
 
-public enum CoreAgentMemoryMarkdownExporter {
+public enum FoundationModelsAgentMemoryMarkdownExporter {
   public static let manifestFilename = "manifest.json"
 
   @discardableResult
   public static func export(
-    records: [CoreAgentMemoryRecord],
-    scope: CoreAgentMemoryScope,
+    records: [FoundationModelsAgentMemoryRecord],
+    scope: FoundationModelsAgentMemoryScope,
     to directory: URL,
     exportedAt: Date = Date(),
-    configuration: CoreAgentMemoryMarkdownExportConfiguration = .default
-  ) throws -> CoreAgentMemoryMarkdownManifest {
+    configuration: FoundationModelsAgentMemoryMarkdownExportConfiguration = .default
+  ) throws -> FoundationModelsAgentMemoryMarkdownManifest {
     let directory = directory.standardizedFileURL
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let previous = try readManifestIfPresent(from: directory)
-    if let previous, previous.scope != scope { throw CoreAgentMemoryError.scopeMismatch }
+    if let previous, previous.scope != scope {
+      throw FoundationModelsAgentMemoryError.scopeMismatch
+    }
 
     let sortedRecords =
       records
       .filter { $0.scope == scope && $0.status != .tombstoned }
       .sorted { $0.id.uuidString < $1.id.uuidString }
     let entries = sortedRecords.map { record in
-      CoreAgentMemoryMarkdownManifest.Entry(
+      FoundationModelsAgentMemoryMarkdownManifest.Entry(
         id: record.id,
         filename: filename(for: record.id),
         contentHash: record.contentHash,
@@ -94,7 +97,7 @@ public enum CoreAgentMemoryMarkdownExporter {
       try applyPolicies(to: url, configuration: configuration)
     }
 
-    let manifest = CoreAgentMemoryMarkdownManifest(
+    let manifest = FoundationModelsAgentMemoryMarkdownManifest(
       scope: scope,
       exportedAt: exportedAt,
       records: entries
@@ -106,35 +109,35 @@ public enum CoreAgentMemoryMarkdownExporter {
 
   public static func remove(
     recordID: UUID,
-    scope: CoreAgentMemoryScope,
+    scope: FoundationModelsAgentMemoryScope,
     from directory: URL,
-    configuration: CoreAgentMemoryMarkdownExportConfiguration = .default
+    configuration: FoundationModelsAgentMemoryMarkdownExportConfiguration = .default
   ) throws {
     let directory = directory.standardizedFileURL
     guard var manifest = try readManifestIfPresent(from: directory) else {
       try removeIfPresent(directory.appending(path: filename(for: recordID)))
       return
     }
-    guard manifest.scope == scope else { throw CoreAgentMemoryError.scopeMismatch }
+    guard manifest.scope == scope else { throw FoundationModelsAgentMemoryError.scopeMismatch }
     try removeIfPresent(directory.appending(path: filename(for: recordID)))
     manifest.records.removeAll { $0.id == recordID }
     try writeManifest(manifest, to: directory, configuration: configuration)
   }
 
   public static func removeAll(
-    scope: CoreAgentMemoryScope,
+    scope: FoundationModelsAgentMemoryScope,
     from directory: URL
   ) throws {
     let directory = directory.standardizedFileURL
     guard let manifest = try readManifestIfPresent(from: directory) else { return }
-    guard manifest.scope == scope else { throw CoreAgentMemoryError.scopeMismatch }
+    guard manifest.scope == scope else { throw FoundationModelsAgentMemoryError.scopeMismatch }
     for entry in manifest.records {
       try removeIfPresent(directory.appending(path: entry.filename))
     }
     try removeIfPresent(directory.appending(path: manifestFilename))
   }
 
-  private static func markdown(for record: CoreAgentMemoryRecord) -> String {
+  private static func markdown(for record: FoundationModelsAgentMemoryRecord) -> String {
     let runID = record.source.runID?.uuidString.lowercased() ?? "none"
     let validFrom = record.validFrom.map(format) ?? "none"
     let validUntil = record.validUntil.map(format) ?? "none"
@@ -171,9 +174,9 @@ public enum CoreAgentMemoryMarkdownExporter {
   }
 
   private static func writeManifest(
-    _ manifest: CoreAgentMemoryMarkdownManifest,
+    _ manifest: FoundationModelsAgentMemoryMarkdownManifest,
     to directory: URL,
-    configuration: CoreAgentMemoryMarkdownExportConfiguration
+    configuration: FoundationModelsAgentMemoryMarkdownExportConfiguration
   ) throws {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .millisecondsSince1970
@@ -185,12 +188,13 @@ public enum CoreAgentMemoryMarkdownExporter {
 
   private static func readManifestIfPresent(
     from directory: URL
-  ) throws -> CoreAgentMemoryMarkdownManifest? {
+  ) throws -> FoundationModelsAgentMemoryMarkdownManifest? {
     let url = directory.appending(path: manifestFilename)
     guard FileManager.default.fileExists(atPath: url.path) else { return nil }
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .millisecondsSince1970
-    return try decoder.decode(CoreAgentMemoryMarkdownManifest.self, from: Data(contentsOf: url))
+    return try decoder.decode(
+      FoundationModelsAgentMemoryMarkdownManifest.self, from: Data(contentsOf: url))
   }
 
   private static func filename(for id: UUID) -> String {
@@ -208,7 +212,7 @@ public enum CoreAgentMemoryMarkdownExporter {
 
   private static func applyPolicies(
     to url: URL,
-    configuration: CoreAgentMemoryMarkdownExportConfiguration
+    configuration: FoundationModelsAgentMemoryMarkdownExportConfiguration
   ) throws {
     #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
       let protection: FileProtectionType?

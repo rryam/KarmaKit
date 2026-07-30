@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-public enum CoreAgentMemoryError: Error, LocalizedError, Sendable {
+public enum FoundationModelsAgentMemoryError: Error, LocalizedError, Sendable {
   case invalidScopeComponent(String)
   case emptyContent
   case scopeMismatch
@@ -42,7 +42,7 @@ public enum CoreAgentMemoryError: Error, LocalizedError, Sendable {
   }
 }
 
-public struct CoreAgentMemoryScope: Codable, Hashable, Sendable {
+public struct FoundationModelsAgentMemoryScope: Codable, Hashable, Sendable {
   public let applicationID: String
   public let userID: String
   public let agentID: String
@@ -52,13 +52,13 @@ public struct CoreAgentMemoryScope: Codable, Hashable, Sendable {
     let userID = userID.trimmingCharacters(in: .whitespacesAndNewlines)
     let agentID = agentID.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !applicationID.isEmpty else {
-      throw CoreAgentMemoryError.invalidScopeComponent("application identifier")
+      throw FoundationModelsAgentMemoryError.invalidScopeComponent("application identifier")
     }
     guard !userID.isEmpty else {
-      throw CoreAgentMemoryError.invalidScopeComponent("user identifier")
+      throw FoundationModelsAgentMemoryError.invalidScopeComponent("user identifier")
     }
     guard !agentID.isEmpty else {
-      throw CoreAgentMemoryError.invalidScopeComponent("agent identifier")
+      throw FoundationModelsAgentMemoryError.invalidScopeComponent("agent identifier")
     }
     self.applicationID = applicationID
     self.userID = userID
@@ -75,7 +75,7 @@ public struct CoreAgentMemoryScope: Codable, Hashable, Sendable {
   }
 }
 
-public enum CoreAgentMemoryKind: String, Codable, CaseIterable, Sendable {
+public enum FoundationModelsAgentMemoryKind: String, Codable, CaseIterable, Sendable {
   case episode
   case fact
   case preference
@@ -83,7 +83,7 @@ public enum CoreAgentMemoryKind: String, Codable, CaseIterable, Sendable {
   case reflection
 }
 
-public enum CoreAgentMemoryAuthority: String, Codable, CaseIterable, Sendable {
+public enum FoundationModelsAgentMemoryAuthority: String, Codable, CaseIterable, Sendable {
   case assistantInference
   case priorUserStatement
   case trustedApplication
@@ -100,33 +100,33 @@ public enum CoreAgentMemoryAuthority: String, Codable, CaseIterable, Sendable {
   }
 }
 
-public enum CoreAgentMemorySensitivity: String, Codable, CaseIterable, Sendable {
+public enum FoundationModelsAgentMemorySensitivity: String, Codable, CaseIterable, Sendable {
   case general
   case personal
   case restricted
 }
 
-public enum CoreAgentMemoryStatus: String, Codable, CaseIterable, Sendable {
+public enum FoundationModelsAgentMemoryStatus: String, Codable, CaseIterable, Sendable {
   case pending
   case active
   case superseded
   case tombstoned
 }
 
-public enum CoreAgentMemoryRetention: Codable, Equatable, Sendable {
+public enum FoundationModelsAgentMemoryRetention: Codable, Equatable, Sendable {
   case persistent
   case until(Date)
   case episodeOnly
 }
 
-public enum CoreAgentMemoryIndexState: String, Codable, CaseIterable, Sendable {
+public enum FoundationModelsAgentMemoryIndexState: String, Codable, CaseIterable, Sendable {
   case notConfigured
   case pending
   case indexed
   case failed
 }
 
-public enum CoreAgentMemorySourceKind: String, Codable, CaseIterable, Sendable {
+public enum FoundationModelsAgentMemorySourceKind: String, Codable, CaseIterable, Sendable {
   case conversation
   case application
   case tool
@@ -134,8 +134,8 @@ public enum CoreAgentMemorySourceKind: String, Codable, CaseIterable, Sendable {
   case importFile
 }
 
-public struct CoreAgentMemorySource: Codable, Equatable, Sendable {
-  public var kind: CoreAgentMemorySourceKind
+public struct FoundationModelsAgentMemorySource: Codable, Equatable, Sendable {
+  public var kind: FoundationModelsAgentMemorySourceKind
   public var runID: UUID?
   public var transcriptEntryIDs: [String]
   public var toolName: String?
@@ -143,7 +143,7 @@ public struct CoreAgentMemorySource: Codable, Equatable, Sendable {
   public var metadata: [String: String]
 
   public init(
-    kind: CoreAgentMemorySourceKind,
+    kind: FoundationModelsAgentMemorySourceKind,
     runID: UUID? = nil,
     transcriptEntryIDs: [String] = [],
     toolName: String? = nil,
@@ -159,52 +159,52 @@ public struct CoreAgentMemorySource: Codable, Equatable, Sendable {
   }
 }
 
-public struct CoreAgentMemoryRecord: Codable, Equatable, Sendable, Identifiable {
+public struct FoundationModelsAgentMemoryRecord: Codable, Equatable, Sendable, Identifiable {
   public var id: UUID
-  public var scope: CoreAgentMemoryScope
-  public var kind: CoreAgentMemoryKind
+  public var scope: FoundationModelsAgentMemoryScope
+  public var kind: FoundationModelsAgentMemoryKind
   public var content: String
-  public var source: CoreAgentMemorySource
+  public var source: FoundationModelsAgentMemorySource
   public var observedAt: Date
   public var validFrom: Date?
   public var validUntil: Date?
-  public var authority: CoreAgentMemoryAuthority
+  public var authority: FoundationModelsAgentMemoryAuthority
   public var confidence: Double
   public var importance: Double
-  public var sensitivity: CoreAgentMemorySensitivity
-  public var status: CoreAgentMemoryStatus
-  public var retention: CoreAgentMemoryRetention
+  public var sensitivity: FoundationModelsAgentMemorySensitivity
+  public var status: FoundationModelsAgentMemoryStatus
+  public var retention: FoundationModelsAgentMemoryRetention
   public var contentHash: String
   public var supersedes: [UUID]
   public var supersededBy: UUID?
-  public var indexState: CoreAgentMemoryIndexState
+  public var indexState: FoundationModelsAgentMemoryIndexState
   public var createdAt: Date
   public var updatedAt: Date
 
   public init(
     id: UUID = UUID(),
-    scope: CoreAgentMemoryScope,
-    kind: CoreAgentMemoryKind,
+    scope: FoundationModelsAgentMemoryScope,
+    kind: FoundationModelsAgentMemoryKind,
     content: String,
-    source: CoreAgentMemorySource,
+    source: FoundationModelsAgentMemorySource,
     observedAt: Date = Date(),
     validFrom: Date? = nil,
     validUntil: Date? = nil,
-    authority: CoreAgentMemoryAuthority,
+    authority: FoundationModelsAgentMemoryAuthority,
     confidence: Double = 1,
     importance: Double = 0.5,
-    sensitivity: CoreAgentMemorySensitivity = .personal,
-    status: CoreAgentMemoryStatus = .active,
-    retention: CoreAgentMemoryRetention = .persistent,
+    sensitivity: FoundationModelsAgentMemorySensitivity = .personal,
+    status: FoundationModelsAgentMemoryStatus = .active,
+    retention: FoundationModelsAgentMemoryRetention = .persistent,
     contentHash: String? = nil,
     supersedes: [UUID] = [],
     supersededBy: UUID? = nil,
-    indexState: CoreAgentMemoryIndexState = .notConfigured,
+    indexState: FoundationModelsAgentMemoryIndexState = .notConfigured,
     createdAt: Date = Date(),
     updatedAt: Date? = nil
   ) throws {
     let content = content.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !content.isEmpty else { throw CoreAgentMemoryError.emptyContent }
+    guard !content.isEmpty else { throw FoundationModelsAgentMemoryError.emptyContent }
     self.id = id
     self.scope = scope
     self.kind = kind
@@ -243,34 +243,34 @@ public struct CoreAgentMemoryRecord: Codable, Equatable, Sendable, Identifiable 
   }
 }
 
-public enum CoreAgentMemoryCandidateStatus: String, Codable, CaseIterable, Sendable {
+public enum FoundationModelsAgentMemoryCandidateStatus: String, Codable, CaseIterable, Sendable {
   case pending
   case approved
   case rejected
 }
 
-public struct CoreAgentMemoryCandidateDraft: Codable, Equatable, Sendable {
-  public var kind: CoreAgentMemoryKind
+public struct FoundationModelsAgentMemoryCandidateDraft: Codable, Equatable, Sendable {
+  public var kind: FoundationModelsAgentMemoryKind
   public var content: String
-  public var authority: CoreAgentMemoryAuthority
+  public var authority: FoundationModelsAgentMemoryAuthority
   public var confidence: Double
   public var importance: Double
-  public var sensitivity: CoreAgentMemorySensitivity
+  public var sensitivity: FoundationModelsAgentMemorySensitivity
   public var validFrom: Date?
   public var validUntil: Date?
 
   public init(
-    kind: CoreAgentMemoryKind,
+    kind: FoundationModelsAgentMemoryKind,
     content: String,
-    authority: CoreAgentMemoryAuthority = .assistantInference,
+    authority: FoundationModelsAgentMemoryAuthority = .assistantInference,
     confidence: Double = 0.5,
     importance: Double = 0.5,
-    sensitivity: CoreAgentMemorySensitivity = .personal,
+    sensitivity: FoundationModelsAgentMemorySensitivity = .personal,
     validFrom: Date? = nil,
     validUntil: Date? = nil
   ) throws {
     let content = content.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !content.isEmpty else { throw CoreAgentMemoryError.emptyContent }
+    guard !content.isEmpty else { throw FoundationModelsAgentMemoryError.emptyContent }
     self.kind = kind
     self.content = content
     self.authority = authority
@@ -282,22 +282,22 @@ public struct CoreAgentMemoryCandidateDraft: Codable, Equatable, Sendable {
   }
 }
 
-public struct CoreAgentMemoryCandidate: Codable, Equatable, Sendable, Identifiable {
+public struct FoundationModelsAgentMemoryCandidate: Codable, Equatable, Sendable, Identifiable {
   public var id: UUID
-  public var scope: CoreAgentMemoryScope
+  public var scope: FoundationModelsAgentMemoryScope
   public var sourceRecordID: UUID
-  public var draft: CoreAgentMemoryCandidateDraft
-  public var status: CoreAgentMemoryCandidateStatus
+  public var draft: FoundationModelsAgentMemoryCandidateDraft
+  public var status: FoundationModelsAgentMemoryCandidateStatus
   public var createdAt: Date
   public var decidedAt: Date?
   public var decisionReason: String?
 
   public init(
     id: UUID = UUID(),
-    scope: CoreAgentMemoryScope,
+    scope: FoundationModelsAgentMemoryScope,
     sourceRecordID: UUID,
-    draft: CoreAgentMemoryCandidateDraft,
-    status: CoreAgentMemoryCandidateStatus = .pending,
+    draft: FoundationModelsAgentMemoryCandidateDraft,
+    status: FoundationModelsAgentMemoryCandidateStatus = .pending,
     createdAt: Date = Date(),
     decidedAt: Date? = nil,
     decisionReason: String? = nil
@@ -313,7 +313,9 @@ public struct CoreAgentMemoryCandidate: Codable, Equatable, Sendable, Identifiab
   }
 }
 
-public enum CoreAgentMemoryConsolidationJobStatus: String, Codable, CaseIterable, Sendable {
+public enum FoundationModelsAgentMemoryConsolidationJobStatus: String, Codable, CaseIterable,
+  Sendable
+{
   case queued
   case processing
   case completed
@@ -321,11 +323,13 @@ public enum CoreAgentMemoryConsolidationJobStatus: String, Codable, CaseIterable
   case cancelled
 }
 
-public struct CoreAgentMemoryConsolidationJob: Codable, Equatable, Sendable, Identifiable {
+public struct FoundationModelsAgentMemoryConsolidationJob: Codable, Equatable, Sendable,
+  Identifiable
+{
   public var id: UUID
-  public var scope: CoreAgentMemoryScope
+  public var scope: FoundationModelsAgentMemoryScope
   public var episodeID: UUID
-  public var status: CoreAgentMemoryConsolidationJobStatus
+  public var status: FoundationModelsAgentMemoryConsolidationJobStatus
   public var attemptCount: Int
   public var maximumAttempts: Int
   public var lastError: String?
@@ -334,9 +338,9 @@ public struct CoreAgentMemoryConsolidationJob: Codable, Equatable, Sendable, Ide
 
   public init(
     id: UUID = UUID(),
-    scope: CoreAgentMemoryScope,
+    scope: FoundationModelsAgentMemoryScope,
     episodeID: UUID,
-    status: CoreAgentMemoryConsolidationJobStatus = .queued,
+    status: FoundationModelsAgentMemoryConsolidationJobStatus = .queued,
     attemptCount: Int = 0,
     maximumAttempts: Int = 3,
     lastError: String? = nil,
@@ -355,7 +359,7 @@ public struct CoreAgentMemoryConsolidationJob: Codable, Equatable, Sendable, Ide
   }
 }
 
-public struct CoreAgentMemorySearchCandidate: Equatable, Sendable, Identifiable {
+public struct FoundationModelsAgentMemorySearchCandidate: Equatable, Sendable, Identifiable {
   public let id: UUID
   public let score: Double
 
@@ -365,47 +369,47 @@ public struct CoreAgentMemorySearchCandidate: Equatable, Sendable, Identifiable 
   }
 }
 
-public struct CoreAgentMemorySearchResult: Equatable, Sendable, Identifiable {
+public struct FoundationModelsAgentMemorySearchResult: Equatable, Sendable, Identifiable {
   public var id: UUID { record.id }
-  public let record: CoreAgentMemoryRecord
+  public let record: FoundationModelsAgentMemoryRecord
   public let relevance: Double
 
-  public init(record: CoreAgentMemoryRecord, relevance: Double) {
+  public init(record: FoundationModelsAgentMemoryRecord, relevance: Double) {
     self.record = record
     self.relevance = relevance
   }
 }
 
-public enum CoreAgentMemoryModelDestination: String, Codable, Sendable {
+public enum FoundationModelsAgentMemoryModelDestination: String, Codable, Sendable {
   case onDevice
   case remote
 }
 
-public struct CoreAgentMemoryDisclosurePolicy: Sendable {
-  public let destination: CoreAgentMemoryModelDestination
-  public let allowedSensitivities: Set<CoreAgentMemorySensitivity>
+public struct FoundationModelsAgentMemoryDisclosurePolicy: Sendable {
+  public let destination: FoundationModelsAgentMemoryModelDestination
+  public let allowedSensitivities: Set<FoundationModelsAgentMemorySensitivity>
 
   public init(
-    destination: CoreAgentMemoryModelDestination,
-    allowedSensitivities: Set<CoreAgentMemorySensitivity>? = nil
+    destination: FoundationModelsAgentMemoryModelDestination,
+    allowedSensitivities: Set<FoundationModelsAgentMemorySensitivity>? = nil
   ) {
     self.destination = destination
     self.allowedSensitivities =
       allowedSensitivities
       ?? {
         switch destination {
-        case .onDevice: Set(CoreAgentMemorySensitivity.allCases)
+        case .onDevice: Set(FoundationModelsAgentMemorySensitivity.allCases)
         case .remote: [.general, .personal]
         }
       }()
   }
 
-  public func allows(_ sensitivity: CoreAgentMemorySensitivity) -> Bool {
+  public func allows(_ sensitivity: FoundationModelsAgentMemorySensitivity) -> Bool {
     allowedSensitivities.contains(sensitivity)
   }
 }
 
-public struct CoreAgentMemoryRetrievalConfiguration: Sendable {
+public struct FoundationModelsAgentMemoryRetrievalConfiguration: Sendable {
   public var maximumRecords: Int
   public var maximumCharacters: Int
   public var overfetchMultiplier: Int
@@ -420,19 +424,19 @@ public struct CoreAgentMemoryRetrievalConfiguration: Sendable {
     self.overfetchMultiplier = max(1, overfetchMultiplier)
   }
 
-  public static let `default` = CoreAgentMemoryRetrievalConfiguration()
+  public static let `default` = FoundationModelsAgentMemoryRetrievalConfiguration()
 }
 
-public struct CoreAgentMemoryTombstone: Codable, Equatable, Sendable, Identifiable {
+public struct FoundationModelsAgentMemoryTombstone: Codable, Equatable, Sendable, Identifiable {
   public var id: UUID { recordID }
   public let recordID: UUID
-  public let scope: CoreAgentMemoryScope
+  public let scope: FoundationModelsAgentMemoryScope
   public let deletedAt: Date
   public let reason: String?
 
   public init(
     recordID: UUID,
-    scope: CoreAgentMemoryScope,
+    scope: FoundationModelsAgentMemoryScope,
     deletedAt: Date = Date(),
     reason: String? = nil
   ) {

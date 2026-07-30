@@ -2,9 +2,9 @@ import Foundation
 import FoundationModels
 
 /// Metadata accepted by Foundation Models for a single generation request.
-public typealias CoreAgentRequestMetadata = [String: any Sendable & Codable & Equatable]
+public typealias FoundationModelsAgentRequestMetadata = [String: any Sendable & Codable & Equatable]
 
-public enum CoreAgentError: Error, LocalizedError, Sendable {
+public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
   case invalidRetryAttemptCount(Int)
   case invalidDuration(name: String)
   case invalidToolCallLimit(Int)
@@ -41,17 +41,17 @@ public enum CoreAgentError: Error, LocalizedError, Sendable {
     case .duplicateToolName(let name):
       "Tool names must be unique; found more than one tool named '\(name)'."
     case .duplicatePluginIdentifier(let identifier):
-      "CoreAgent session plugin identifiers must be unique; found '\(identifier)' more than once."
+      "FoundationModelsAgent session plugin identifiers must be unique; found '\(identifier)' more than once."
     case .emptyPluginIdentifier:
-      "CoreAgent session plugin identifiers must not be empty."
+      "FoundationModelsAgent session plugin identifiers must not be empty."
     case .emptyCheckpointCompatibilityID:
       "The dynamic profile checkpoint compatibility ID must not be empty."
     case .concurrentOperation:
-      "CoreAgentSession already has an operation in flight."
+      "FoundationModelsAgentSession already has an operation in flight."
     case .unsafeRetryConfiguration(let reason):
       "Unsafe retry configuration: \(reason)"
     case .noActiveRun:
-      "A governed tool was called without an active CoreAgent run."
+      "A governed tool was called without an active FoundationModelsAgent run."
     case .unsupportedCheckpointVersion(let version):
       "Checkpoint format version \(version) is unsupported."
     case .checkpointCompatibilityMismatch(let expected, let actual):
@@ -65,14 +65,14 @@ public enum CoreAgentError: Error, LocalizedError, Sendable {
     case .toolExecutionTimedOut(let toolName):
       "Tool '\(toolName)' exceeded its configured timeout."
     case .pluginContextSanitizationFailed:
-      "CoreAgent could not remove transient plugin context from the native transcript."
+      "FoundationModelsAgent could not remove transient plugin context from the native transcript."
     case .pluginContextUnsupportedForDynamicProfile:
       "Dynamic-profile sessions do not support automatic plugin prompt context. Use a profile-owned tool instead."
     }
   }
 }
 
-public struct CoreAgentRetryPolicy: Sendable {
+public struct FoundationModelsAgentRetryPolicy: Sendable {
   public let maximumAttempts: Int
   public let delay: Duration
   private let classifier: @Sendable (any Error) -> Bool
@@ -83,10 +83,10 @@ public struct CoreAgentRetryPolicy: Sendable {
     shouldRetry: @escaping @Sendable (any Error) -> Bool
   ) throws {
     guard maximumAttempts >= 1 else {
-      throw CoreAgentError.invalidRetryAttemptCount(maximumAttempts)
+      throw FoundationModelsAgentError.invalidRetryAttemptCount(maximumAttempts)
     }
     guard delay >= .zero else {
-      throw CoreAgentError.invalidDuration(name: "Retry delay")
+      throw FoundationModelsAgentError.invalidDuration(name: "Retry delay")
     }
     self.maximumAttempts = maximumAttempts
     self.delay = delay
@@ -97,14 +97,17 @@ public struct CoreAgentRetryPolicy: Sendable {
     classifier(error)
   }
 
-  public static let none = try! CoreAgentRetryPolicy(maximumAttempts: 1) { _ in false }
+  public static let none = try! FoundationModelsAgentRetryPolicy(maximumAttempts: 1) { _ in false }
 
   public static func transient(maximumAttempts: Int = 3, delay: Duration = .milliseconds(250))
     throws -> Self
   {
     try Self(maximumAttempts: maximumAttempts, delay: delay) { error in
-      if error is CancellationError || error is CoreAgentPolicyError || error is CoreAgentError {
-        if let coreError = error as? CoreAgentError, case .responseTimedOut = coreError {
+      if error is CancellationError || error is FoundationModelsAgentPolicyError
+        || error is FoundationModelsAgentError
+      {
+        if let coreError = error as? FoundationModelsAgentError, case .responseTimedOut = coreError
+        {
           return true
         }
         return false
@@ -122,21 +125,21 @@ public struct CoreAgentRetryPolicy: Sendable {
   }
 }
 
-public struct CoreAgentConfiguration: Sendable {
+public struct FoundationModelsAgentConfiguration: Sendable {
   public var responseTimeout: Duration?
-  public var retryPolicy: CoreAgentRetryPolicy
-  public var transcriptErrorHandlingPolicy: CoreAgentTranscriptErrorPolicy
+  public var retryPolicy: FoundationModelsAgentRetryPolicy
+  public var transcriptErrorHandlingPolicy: FoundationModelsAgentTranscriptErrorPolicy
   public var savesTranscriptAfterFailedResponse: Bool
   public var allowsRetryAfterToolInvocation: Bool
-  public var checkpointFailurePolicy: CoreAgentCheckpointFailurePolicy
+  public var checkpointFailurePolicy: FoundationModelsAgentCheckpointFailurePolicy
 
   public init(
     responseTimeout: Duration? = nil,
-    retryPolicy: CoreAgentRetryPolicy = .none,
-    transcriptErrorHandlingPolicy: CoreAgentTranscriptErrorPolicy = .revert,
+    retryPolicy: FoundationModelsAgentRetryPolicy = .none,
+    transcriptErrorHandlingPolicy: FoundationModelsAgentTranscriptErrorPolicy = .revert,
     savesTranscriptAfterFailedResponse: Bool = true,
     allowsRetryAfterToolInvocation: Bool = false,
-    checkpointFailurePolicy: CoreAgentCheckpointFailurePolicy = .recordAndContinue
+    checkpointFailurePolicy: FoundationModelsAgentCheckpointFailurePolicy = .recordAndContinue
   ) {
     self.responseTimeout = responseTimeout
     self.retryPolicy = retryPolicy
@@ -146,10 +149,10 @@ public struct CoreAgentConfiguration: Sendable {
     self.checkpointFailurePolicy = checkpointFailurePolicy
   }
 
-  public static let `default` = CoreAgentConfiguration()
+  public static let `default` = FoundationModelsAgentConfiguration()
 }
 
-public enum CoreAgentTranscriptErrorPolicy: Sendable {
+public enum FoundationModelsAgentTranscriptErrorPolicy: Sendable {
   case revert
   case preserve
 
@@ -163,21 +166,21 @@ public enum CoreAgentTranscriptErrorPolicy: Sendable {
   }
 }
 
-public enum CoreAgentCheckpointFailurePolicy: Sendable {
+public enum FoundationModelsAgentCheckpointFailurePolicy: Sendable {
   /// Return a successful model response and record the checkpoint error in the run.
   case recordAndContinue
   /// Fail the run when checkpoint durability is mandatory.
   case failRun
 }
 
-public enum CoreAgentInstructionRestorationPolicy: Sendable {
+public enum FoundationModelsAgentInstructionRestorationPolicy: Sendable {
   /// Reuse the instructions encoded in the checkpoint.
   case preserveCheckpoint
   /// Replace checkpoint instructions when current instructions were supplied.
   case replaceWithCurrent
 }
 
-public struct CoreAgentUsage: Codable, Equatable, Sendable {
+public struct FoundationModelsAgentUsage: Codable, Equatable, Sendable {
   public let inputTokens: Int
   public let cachedInputTokens: Int
   public let outputTokens: Int
@@ -205,19 +208,19 @@ public struct CoreAgentUsage: Codable, Equatable, Sendable {
   }
 }
 
-public struct CoreAgentResponse<Content>: Sendable where Content: Generable & Sendable {
+public struct FoundationModelsAgentResponse<Content>: Sendable where Content: Generable & Sendable {
   public let content: Content
   public let rawContent: GeneratedContent
   public let transcriptEntries: [Transcript.Entry]
-  public let usage: CoreAgentUsage
-  public let run: CoreAgentRun
+  public let usage: FoundationModelsAgentUsage
+  public let run: FoundationModelsAgentRun
 
   public init(
     content: Content,
     rawContent: GeneratedContent,
     transcriptEntries: [Transcript.Entry],
-    usage: CoreAgentUsage,
-    run: CoreAgentRun
+    usage: FoundationModelsAgentUsage,
+    run: FoundationModelsAgentRun
   ) {
     self.content = content
     self.rawContent = rawContent

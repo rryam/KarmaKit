@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import FoundationModels
 
-public struct CoreAgentCheckpoint: Codable, Sendable {
+public struct FoundationModelsAgentCheckpoint: Codable, Sendable {
   public static let currentFormatVersion = 1
 
   public let formatVersion: Int
@@ -23,20 +23,20 @@ public struct CoreAgentCheckpoint: Codable, Sendable {
   }
 }
 
-public protocol CoreAgentCheckpointStore: Sendable {
-  func loadCheckpoint(for key: String) async throws -> CoreAgentCheckpoint?
-  func saveCheckpoint(_ checkpoint: CoreAgentCheckpoint, for key: String) async throws
+public protocol FoundationModelsAgentCheckpointStore: Sendable {
+  func loadCheckpoint(for key: String) async throws -> FoundationModelsAgentCheckpoint?
+  func saveCheckpoint(_ checkpoint: FoundationModelsAgentCheckpoint, for key: String) async throws
   func removeCheckpoint(for key: String) async throws
 }
 
-public enum CoreAgentFileCheckpointTypeErasurePolicy: Sendable {
+public enum FoundationModelsAgentFileCheckpointTypeErasurePolicy: Sendable {
   /// Reject content that Foundation Models cannot restore with concrete Swift types.
   case rejectLossyContent
   /// Allow Foundation Models to decode custom content into erased representations.
   case allowFoundationModelsTypeErasure
 }
 
-public enum CoreAgentCheckpointStoreError: Error, LocalizedError, Sendable {
+public enum FoundationModelsAgentCheckpointStoreError: Error, LocalizedError, Sendable {
   case customSegmentRequiresRehydration(entryID: String)
   case typedMetadataRequiresRehydration(entryID: String)
   case unsupportedTranscriptEntry
@@ -48,23 +48,23 @@ public enum CoreAgentCheckpointStoreError: Error, LocalizedError, Sendable {
     case .typedMetadataRequiresRehydration(let entryID):
       "Checkpoint entry '\(entryID)' contains typed metadata that cannot be restored losslessly."
     case .unsupportedTranscriptEntry:
-      "The checkpoint contains a transcript entry this CoreAgent version cannot validate."
+      "The checkpoint contains a transcript entry this FoundationModelsAgent version cannot validate."
     }
   }
 }
 
-public actor InMemoryCheckpointStore: CoreAgentCheckpointStore {
-  private var checkpoints: [String: CoreAgentCheckpoint]
+public actor InMemoryCheckpointStore: FoundationModelsAgentCheckpointStore {
+  private var checkpoints: [String: FoundationModelsAgentCheckpoint]
 
-  public init(checkpoints: [String: CoreAgentCheckpoint] = [:]) {
+  public init(checkpoints: [String: FoundationModelsAgentCheckpoint] = [:]) {
     self.checkpoints = checkpoints
   }
 
-  public func loadCheckpoint(for key: String) -> CoreAgentCheckpoint? {
+  public func loadCheckpoint(for key: String) -> FoundationModelsAgentCheckpoint? {
     checkpoints[key]
   }
 
-  public func saveCheckpoint(_ checkpoint: CoreAgentCheckpoint, for key: String) {
+  public func saveCheckpoint(_ checkpoint: FoundationModelsAgentCheckpoint, for key: String) {
     checkpoints[key] = checkpoint
   }
 
@@ -73,17 +73,17 @@ public actor InMemoryCheckpointStore: CoreAgentCheckpointStore {
   }
 }
 
-public actor FileCheckpointStore: CoreAgentCheckpointStore {
+public actor FileCheckpointStore: FoundationModelsAgentCheckpointStore {
   private let directory: URL
   private let fileManager: FileManager
   private let encoder: JSONEncoder
   private let decoder: JSONDecoder
-  private let typeErasurePolicy: CoreAgentFileCheckpointTypeErasurePolicy
+  private let typeErasurePolicy: FoundationModelsAgentFileCheckpointTypeErasurePolicy
 
   public init(
     directory: URL,
     fileManager: FileManager = .default,
-    typeErasurePolicy: CoreAgentFileCheckpointTypeErasurePolicy = .rejectLossyContent
+    typeErasurePolicy: FoundationModelsAgentFileCheckpointTypeErasurePolicy = .rejectLossyContent
   ) {
     self.directory = directory
     self.fileManager = fileManager
@@ -95,18 +95,19 @@ public actor FileCheckpointStore: CoreAgentCheckpointStore {
     decoder.dateDecodingStrategy = .iso8601
   }
 
-  public func loadCheckpoint(for key: String) throws -> CoreAgentCheckpoint? {
+  public func loadCheckpoint(for key: String) throws -> FoundationModelsAgentCheckpoint? {
     let url = fileURL(for: key)
     guard fileManager.fileExists(atPath: url.path) else {
       return nil
     }
     let data = try Data(contentsOf: url)
-    let checkpoint = try decoder.decode(CoreAgentCheckpoint.self, from: data)
+    let checkpoint = try decoder.decode(FoundationModelsAgentCheckpoint.self, from: data)
     try validateForFilePersistence(checkpoint)
     return checkpoint
   }
 
-  public func saveCheckpoint(_ checkpoint: CoreAgentCheckpoint, for key: String) throws {
+  public func saveCheckpoint(_ checkpoint: FoundationModelsAgentCheckpoint, for key: String) throws
+  {
     try validateForFilePersistence(checkpoint)
     try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
     let data = try encoder.encode(checkpoint)
@@ -124,10 +125,10 @@ public actor FileCheckpointStore: CoreAgentCheckpointStore {
   private func fileURL(for key: String) -> URL {
     let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
     return directory.appending(
-      path: "\(digest).coreagent-transcript.json", directoryHint: .notDirectory)
+      path: "\(digest).foundationmodelsagent-transcript.json", directoryHint: .notDirectory)
   }
 
-  private func validateForFilePersistence(_ checkpoint: CoreAgentCheckpoint) throws {
+  private func validateForFilePersistence(_ checkpoint: FoundationModelsAgentCheckpoint) throws {
     guard case .rejectLossyContent = typeErasurePolicy else {
       return
     }
@@ -138,28 +139,31 @@ public actor FileCheckpointStore: CoreAgentCheckpointStore {
         try validate(segments: instructions.segments, entryID: instructions.id)
       case .prompt(let prompt):
         guard prompt.metadata.isEmpty else {
-          throw CoreAgentCheckpointStoreError.typedMetadataRequiresRehydration(entryID: prompt.id)
+          throw FoundationModelsAgentCheckpointStoreError.typedMetadataRequiresRehydration(
+            entryID: prompt.id)
         }
         try validate(segments: prompt.segments, entryID: prompt.id)
       case .toolCalls(let calls):
         for call in calls where !call.metadata.isEmpty {
-          throw CoreAgentCheckpointStoreError.typedMetadataRequiresRehydration(entryID: call.id)
+          throw FoundationModelsAgentCheckpointStoreError.typedMetadataRequiresRehydration(
+            entryID: call.id)
         }
       case .toolOutput(let output):
         try validate(segments: output.segments, entryID: output.id)
       case .response(let response):
         guard response.metadata.isEmpty else {
-          throw CoreAgentCheckpointStoreError.typedMetadataRequiresRehydration(entryID: response.id)
+          throw FoundationModelsAgentCheckpointStoreError.typedMetadataRequiresRehydration(
+            entryID: response.id)
         }
         try validate(segments: response.segments, entryID: response.id)
       case .reasoning(let reasoning):
         guard reasoning.metadata.isEmpty else {
-          throw CoreAgentCheckpointStoreError.typedMetadataRequiresRehydration(
+          throw FoundationModelsAgentCheckpointStoreError.typedMetadataRequiresRehydration(
             entryID: reasoning.id)
         }
         try validate(segments: reasoning.segments, entryID: reasoning.id)
       @unknown default:
-        throw CoreAgentCheckpointStoreError.unsupportedTranscriptEntry
+        throw FoundationModelsAgentCheckpointStoreError.unsupportedTranscriptEntry
       }
     }
   }
@@ -171,19 +175,20 @@ public actor FileCheckpointStore: CoreAgentCheckpointStore {
         return false
       })
     else {
-      throw CoreAgentCheckpointStoreError.customSegmentRequiresRehydration(entryID: entryID)
+      throw FoundationModelsAgentCheckpointStoreError.customSegmentRequiresRehydration(
+        entryID: entryID)
     }
   }
 }
 
-public enum CoreAgentTranscriptRetention: Sendable {
+public enum FoundationModelsAgentTranscriptRetention: Sendable {
   case complete
   case latestHistoryEntries(Int)
   case custom(@Sendable (Transcript) async throws -> Transcript)
 
   func validate() throws {
     if case .latestHistoryEntries(let count) = self, count < 0 {
-      throw CoreAgentError.invalidHistoryLimit(count)
+      throw FoundationModelsAgentError.invalidHistoryLimit(count)
     }
   }
 
