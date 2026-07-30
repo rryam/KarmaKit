@@ -8,6 +8,7 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
   case invalidRetryAttemptCount(Int)
   case invalidDuration(name: String)
   case invalidToolCallLimit(Int)
+  case invalidPerToolCallLimit(toolName: String, limit: Int)
   case invalidHistoryLimit(Int)
   case invalidObserverQueueLimit(Int)
   case duplicateToolName(String)
@@ -34,6 +35,8 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
       "\(name) must not be negative."
     case .invalidToolCallLimit(let limit):
       "The tool call limit must be zero or greater; received \(limit)."
+    case .invalidPerToolCallLimit(let toolName, let limit):
+      "The call limit for tool '\(toolName)' must be zero or greater; received \(limit)."
     case .invalidHistoryLimit(let limit):
       "The transcript history limit must be zero or greater; received \(limit)."
     case .invalidObserverQueueLimit(let limit):
