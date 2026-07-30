@@ -693,6 +693,47 @@ struct FoundationModelsAgentBackgroundTaskTests {
     #expect(settled.attemptCount == 1)
   }
 
+  @Test("A scheduling write failure reaches the next task's settlement waiter")
+  func schedulingFailureAfterExecutionNotifiesNextTask() async throws {
+    let executionGate = ExecutionGate()
+    let store = FailingSaveBackgroundAgentTaskStore(failingSaveNumbers: [7])
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: store,
+      configuration: .init(maximumConcurrentTasks: 1)
+    ) { task, _ in
+      if task.prompt == "first" {
+        await executionGate.run(task)
+      }
+      return BackgroundAgentTaskOutcome()
+    }
+    let first = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "first",
+        ownerID: "owner",
+        recoveryPolicy: .readOnly
+      )
+    )
+    await executionGate.waitForStartedCount(1)
+    let second = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "second",
+        ownerID: "owner",
+        recoveryPolicy: .readOnly
+      )
+    )
+
+    await executionGate.releaseAll()
+    #expect(try await coordinator.waitForSettlement(of: first).state == .completed)
+    await store.waitForSaveCount(7)
+    await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
+      _ = try await coordinator.waitForSettlement(of: second)
+    }
+    #expect(await coordinator.record(for: second)?.state == .queued)
+
+    try await coordinator.resume()
+    #expect(try await coordinator.waitForSettlement(of: second).state == .completed)
+  }
+
   @Test("Start can be retried after recovery persistence fails")
   func retryStartAfterPersistenceFailure() async throws {
     let now = Date(timeIntervalSince1970: 20_000)

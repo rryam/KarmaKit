@@ -352,7 +352,13 @@ public actor BackgroundAgentTaskCoordinator {
       )
       var updatedRecords = records
       updatedRecords[id] = record
-      try await commit(records: updatedRecords, nextSequence: nextSequence)
+      do {
+        try await commit(records: updatedRecords, nextSequence: nextSequence)
+      } catch {
+        notifySettlementFailure(for: id, error: error)
+        throw error
+      }
+      settlementFailures[id] = nil
       running[id] = Task { [weak self] in
         await self?.execute(id)
       }
