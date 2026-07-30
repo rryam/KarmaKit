@@ -157,6 +157,10 @@ application authorizer all run before execution against the native
 unknown tool, changed manifest, exhausted budget, approval error, or cancellation
 prevents the tool implementation from running.
 
+`profileToolAllowed` records the pre-execution governance decision. Foundation
+Models still performs native schema decoding and tool execution afterward, so
+an allowed call can subsequently fail without entering the tool implementation.
+
 The supplied profile's inner `onToolCall` hooks run before AgentSession's outer
 governance modifier. An inner hook that throws can therefore preempt governance,
 and side effects inside an inner lifecycle callback are outside this boundary.

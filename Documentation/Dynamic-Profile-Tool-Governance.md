@@ -91,7 +91,9 @@ The following run events preserve the native call ID in `native_call_id`:
 Unknown and untrusted tools are recorded as denied. An authorizer error and
 cancellation are recorded as approval failures. Foundation Models may wrap the
 thrown governance error in its native `ToolCallError`; the audited event retains
-the stable classification.
+the stable classification. `profileToolAllowed` means governance authorized the
+pre-execution call; native schema decoding and tool execution happen afterward
+and may still fail.
 
 ## Lifecycle ordering and limits
 
