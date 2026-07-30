@@ -14,6 +14,7 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
   case duplicatePluginIdentifier(String)
   case emptyPluginIdentifier
   case emptyCheckpointCompatibilityID
+  case invalidRoutingDecision
   case concurrentOperation
   case unsafeRetryConfiguration(String)
   case noActiveRun
@@ -46,6 +47,8 @@ public enum FoundationModelsAgentError: Error, LocalizedError, Sendable {
       "FoundationModelsAgent session plugin identifiers must not be empty."
     case .emptyCheckpointCompatibilityID:
       "The dynamic profile checkpoint compatibility ID must not be empty."
+    case .invalidRoutingDecision:
+      "An AgentSession routing decision must identify one selected candidate."
     case .concurrentOperation:
       "AgentSession already has an operation in flight."
     case .unsafeRetryConfiguration(let reason):

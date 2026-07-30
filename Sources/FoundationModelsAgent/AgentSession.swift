@@ -22,6 +22,7 @@ public actor AgentSession {
   private let plugins: [any AgentSessionPlugin]
   private let toolRuntime: FoundationModelsAgentToolRuntime
   private let recorder: FoundationModelsAgentEventRecorder
+  private let routingDecision: FoundationModelsAgentRouteDecision?
 
   private var nativeSession: LanguageModelSession?
   private var mostRecentRun: FoundationModelsAgentRun?
@@ -29,6 +30,7 @@ public actor AgentSession {
 
   public init<Model: LanguageModel>(
     model: Model,
+    routingDecision: FoundationModelsAgentRouteDecision? = nil,
     tools: [any Tool] = [],
     instructions: Instructions? = nil,
     configuration: FoundationModelsAgentConfiguration = .default,
@@ -44,6 +46,9 @@ public actor AgentSession {
     observers: [any FoundationModelsAgentObserver] = [],
     observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default
   ) throws {
+    if let routingDecision, !routingDecision.hasExecutableSelection {
+      throw FoundationModelsAgentError.invalidRoutingDecision
+    }
     try Self.validate(
       configuration: configuration,
       toolConfiguration: toolConfiguration,
@@ -107,7 +112,8 @@ public actor AgentSession {
       sessionMode: .explicitModel,
       plugins: plugins,
       toolRuntime: runtime,
-      recorder: recorder
+      recorder: recorder,
+      routingDecision: routingDecision
     )
   }
 
@@ -196,7 +202,8 @@ public actor AgentSession {
       sessionMode: .dynamicProfile,
       plugins: plugins,
       toolRuntime: runtime,
-      recorder: recorder
+      recorder: recorder,
+      routingDecision: nil
     )
   }
 
@@ -213,7 +220,8 @@ public actor AgentSession {
     sessionMode: AgentSessionMode,
     plugins: [any AgentSessionPlugin],
     toolRuntime: FoundationModelsAgentToolRuntime,
-    recorder: FoundationModelsAgentEventRecorder
+    recorder: FoundationModelsAgentEventRecorder,
+    routingDecision: FoundationModelsAgentRouteDecision?
   ) {
     self.makeSession = makeSession
     self.configuration = configuration
@@ -228,6 +236,7 @@ public actor AgentSession {
     self.plugins = plugins
     self.toolRuntime = toolRuntime
     self.recorder = recorder
+    self.routingDecision = routingDecision
   }
 
   public func prewarm(promptPrefix: Prompt? = nil) async throws {
@@ -528,6 +537,7 @@ public actor AgentSession {
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models run started.")
+    await recordRoutingDecision(runID: runID)
     await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
     var completedModelResponse = false
@@ -566,11 +576,11 @@ public actor AgentSession {
         runID: runID,
         kind: .modelResponseCompleted,
         message: "Native model response completed.",
-        attributes: [
+        attributes: runAttributes([
           "input_tokens": String(usage.inputTokens),
           "output_tokens": String(usage.outputTokens),
           "transcript_entries": String(nativeResponse.transcriptEntries.count),
-        ]
+        ])
       )
       try await persistAfterSuccessfulResponse(transcript: sanitizedTranscript, runID: runID)
       try await completePlugins(
@@ -585,7 +595,11 @@ public actor AgentSession {
         )
       )
       await recorder.record(
-        runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
+        runID: runID,
+        kind: .runCompleted,
+        message: "Foundation Models run completed.",
+        attributes: runAttributes()
+      )
       let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
       await toolRuntime.finish(runID: runID)
       return FoundationModelsAgentResponse(
@@ -623,7 +637,9 @@ public actor AgentSession {
         runID: runID,
         kind: .runFailed,
         message: String(describing: error),
-        attributes: ["error_type": String(reflecting: Swift.type(of: error))]
+        attributes: runAttributes([
+          "error_type": String(reflecting: Swift.type(of: error))
+        ])
       )
       _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
       await toolRuntime.finish(runID: runID)
@@ -703,6 +719,7 @@ public actor AgentSession {
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models streaming run started.")
+    await recordRoutingDecision(runID: runID)
     await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
 
@@ -743,11 +760,11 @@ public actor AgentSession {
         runID: runID,
         kind: .modelResponseCompleted,
         message: "Native model stream completed.",
-        attributes: [
+        attributes: runAttributes([
           "input_tokens": String(usage.inputTokens),
           "output_tokens": String(usage.outputTokens),
           "transcript_entries": String(lastSnapshot.transcriptEntries.count),
-        ]
+        ])
       )
       try await persistAfterSuccessfulResponse(transcript: sanitizedTranscript, runID: runID)
       try await completePlugins(
@@ -762,7 +779,11 @@ public actor AgentSession {
         )
       )
       await recorder.record(
-        runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
+        runID: runID,
+        kind: .runCompleted,
+        message: "Foundation Models run completed.",
+        attributes: runAttributes()
+      )
       let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
       await toolRuntime.finish(runID: runID)
       return FoundationModelsAgentResponse(
@@ -800,7 +821,9 @@ public actor AgentSession {
         runID: runID,
         kind: .runFailed,
         message: String(describing: error),
-        attributes: ["error_type": String(reflecting: Swift.type(of: error))]
+        attributes: runAttributes([
+          "error_type": String(reflecting: Swift.type(of: error))
+        ])
       )
       _ = await finishRun(runID: runID, startedAt: startedAt, usage: nil)
       await toolRuntime.finish(runID: runID)
@@ -1268,6 +1291,47 @@ public actor AgentSession {
     )
   }
 
+  private func recordRoutingDecision(runID: UUID) async {
+    guard let routingDecision else { return }
+    for candidateDecision in routingDecision.candidateDecisions {
+      let descriptor = candidateDecision.candidate
+      let attributes = [
+        "route_id": descriptor.id.rawValue,
+        "privacy_class": descriptor.privacyClass.rawValue,
+        "network_class": descriptor.networkClass.rawValue,
+        "accounting_provenance": descriptor.accountingProvenance.auditValue,
+      ]
+      switch candidateDecision.outcome {
+      case .selected:
+        await recorder.record(
+          runID: runID,
+          kind: .routeSelected,
+          message: "Native language model route selected before execution.",
+          attributes: attributes.merging([
+            "fallback": String(routingDecision.selectedFallback)
+          ]) { current, _ in current }
+        )
+      case .rejected(let reasons):
+        await recorder.record(
+          runID: runID,
+          kind: .routeCandidateRejected,
+          message: reasons.map(\.explanation).joined(separator: " "),
+          attributes: attributes.merging([
+            "reason_codes": reasons.map(\.code.rawValue).joined(separator: ",")
+          ]) { current, _ in current }
+        )
+      }
+    }
+  }
+
+  private func runAttributes(_ attributes: [String: String] = [:]) -> [String: String] {
+    guard let descriptor = routingDecision?.selectedDescriptor else { return attributes }
+    return attributes.merging([
+      "route_id": descriptor.id.rawValue,
+      "accounting_provenance": descriptor.accountingProvenance.auditValue,
+    ]) { current, _ in current }
+  }
+
   private func finishRun(
     runID: UUID,
     startedAt: Date,
@@ -1279,7 +1343,8 @@ public actor AgentSession {
       startedAt: startedAt,
       endedAt: Date(),
       usage: usage,
-      events: events
+      events: events,
+      routingDecision: routingDecision
     )
     mostRecentRun = run
     await recorder.discard(runID: runID)

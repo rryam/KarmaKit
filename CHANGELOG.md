@@ -5,6 +5,11 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added explicit app-policy routing among native `LanguageModel` values with typed
+  availability, privacy/network, context, reasoning, quota, accounting, fallback,
+  and per-candidate decision evidence.
+- Added truthful on-device and Private Cloud Compute snapshots plus routed
+  `AgentSession` provenance on completed and failed runs.
 
 ## 0.4.0 - 2026-07-30
 
