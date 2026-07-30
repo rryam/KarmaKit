@@ -15,6 +15,7 @@ FoundationModelsAgent adds the layer an app still needs around the native sessio
 - optional scoped long-term memory with SQLite FTS, approval, and deletion;
 - toolset validation when restoring a checkpoint;
 - ordered run events, observers, usage, and tamper-evident receipts;
+- execution-agnostic parent/child lineage and structured terminal task results;
 - explicit, evidence-producing selection among native `LanguageModel` values;
 - deterministic, zero-network model fixtures for tests;
 - optional first-party Apple, Anthropic, and Google provider packages.
@@ -563,6 +564,80 @@ into event attributes by default; they remain in the native transcript.
 
 Receipts are SHA-256 hash chains. They detect mutation but do not prove
 authorship; sign the root hash when cryptographic attribution is required.
+
+## Hierarchical execution evidence
+
+FoundationModelsAgent defines lineage and settlement evidence without starting,
+routing, or scheduling another agent. A caller that owns child execution creates
+the lineage before invoking another native `AgentSession`:
+
+```swift
+let parentResponse = try await parent.respond(to: parentPrompt)
+let parentLineage = parentResponse.run.lineage!
+let childLineage = try parentLineage.descendant(
+  taskID: AgentTaskID(),
+  relationship: .child
+)
+
+let childResponse = try await child.respond(
+  to: childPrompt,
+  lineage: childLineage
+)
+let childReceipt = try FoundationModelsAgentRunReceipt(run: childResponse.run)
+
+let result = try AgentTaskResult(
+  lineage: childLineage,
+  status: .succeeded,
+  outputReferences: [
+    AgentEvidenceReference(id: "answer", kind: .output)
+  ],
+  evidenceReferences: childResponse.run.events
+    .filter { $0.kind == .contextBudgetEvaluated || $0.kind == .toolExecutionCompleted }
+    .map(AgentEvidenceReference.event),
+  usage: childResponse.usage,
+  receipt: AgentReceiptReference(
+    runID: childLineage.runID,
+    rootHash: childReceipt.rootHash
+  ),
+  timing: AgentTaskTiming(
+    startedAt: childResponse.run.startedAt,
+    endedAt: childResponse.run.endedAt
+  )
+)
+```
+
+`AgentRunLineage` carries stable run and task IDs, the root and parent run IDs,
+depth, and the `.root`, `.child`, or `.background` relationship. New
+`AgentSession` runs create root lineage automatically. Runs, observer events,
+trace exports, and receipts all preserve it. Legacy decoded traces and receipts
+may omit lineage; a standalone legacy receipt still verifies with the original
+hash-chain seed.
+
+`AgentTaskResult` has terminal states only:
+
+- `.succeeded` has no termination reason;
+- `.denied` requires a failure reason for a policy or approval rejection;
+- `.failed` requires a failure reason;
+- `.cancelled` requires a cancellation reason;
+- `.timedOut` requires a failure reason for a caller-owned terminal deadline;
+- `.ambiguousAfterCrash` requires a failure reason and means external effects
+  may have occurred but cannot be proven after recovery.
+
+Use `AgentReceiptBundle.verify(maximumDepth:)` when verifying a complete
+hierarchy. It verifies every hash chain and rejects missing roots, orphans,
+cycles, inconsistent depths, rewritten lineage, and mismatched task-to-receipt
+or evidence-to-event links. `AgentEvidenceReference.event(_:)` points to the
+existing audited routing, context, governance, or tool event without copying
+its attributes. `AgentEvidenceReference.routingDecision(for:)` points to the
+full route decision already stored on the separately exported run trace.
+`AgentReceiptBundleExporter` provides stable JSON and atomic file round trips.
+Checkpoint format 1 remains transcript-only and is unchanged.
+
+Future `ChildAgentTool` and background-task implementations can adopt these
+types as their public evidence boundary while retaining native
+`LanguageModelSession` as the execution loop. See
+[Hierarchical Execution Evidence](Sources/FoundationModelsAgent/FoundationModelsAgent.docc/HierarchicalExecutionEvidence.md)
+for the full contract.
 
 ## Streaming
 

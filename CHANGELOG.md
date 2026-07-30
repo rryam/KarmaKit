@@ -5,6 +5,11 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added stable hierarchical run/task identifiers, parent-child lineage on runs,
+  observer events and tamper-evident receipts, structured terminal
+  `AgentTaskResult` evidence, canonical run/event evidence references,
+  deterministic denied/timed-out/crash settlement, JSON/file bundle transport,
+  and receipt-bundle graph verification.
 - Added native explicit-model context budgeting with reserved response
   headroom, fractional and absolute input limits, deterministic overflow
   policy, per-component accounting, and fail-before-inference behavior.
