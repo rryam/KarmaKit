@@ -1,8 +1,9 @@
 import Foundation
 import FoundationModels
-import FoundationModelsAgent
 import FoundationModelsAgentTestSupport
 import Testing
+
+@testable import FoundationModelsAgent
 
 @Generable
 private struct BudgetAnswer: Sendable {
@@ -78,6 +79,23 @@ private func fixedMeasurer(
 
 @Suite("AgentSession context budgets")
 struct AgentSessionContextBudgetTests {
+  @Test("Tool definitions cannot be hidden by a smaller instruction-entry count")
+  func materializedToolTokensDoNotUndercount() {
+    let toolsDominate = AgentSessionContextTokenCounts.splitMaterializedInstructionTokens(
+      combinedTokens: 7,
+      toolTokens: 11
+    )
+    #expect(toolsDominate.instructions == 0)
+    #expect(toolsDominate.tools == 11)
+
+    let combinedDominates = AgentSessionContextTokenCounts.splitMaterializedInstructionTokens(
+      combinedTokens: 17,
+      toolTokens: 11
+    )
+    #expect(combinedDominates.instructions == 6)
+    #expect(combinedDominates.tools == 11)
+  }
+
   @Test("SystemLanguageModel selects native measurement automatically")
   func systemModelNativeMeasurement() throws {
     _ = try AgentSession(

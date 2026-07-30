@@ -26,6 +26,10 @@ Preflight sums native token counts for instructions, governed tools, the final
 prompt, an applicable schema, and transcript history. The final prompt is
 measured after session plugins contribute transient context. A schema is
 included unless the request's `ContextOptions` explicitly excludes it.
+Restored instruction entries may already materialize tool definitions; the
+component split uses the larger native aggregate when their separately
+measured tool cost exceeds that entry count, so the preflight cannot undercount
+tools.
 
 The default overflow policy is `.failBeforeInference`. Exact fits are allowed.
 If instructions, tools, prompt, and schema already exceed the limit, failure

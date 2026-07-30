@@ -38,6 +38,16 @@ public struct AgentSessionContextTokenCounts: Equatable, Sendable {
     let (sum, overflow) = lhs.addingReportingOverflow(rhs)
     return overflow ? Int.max : sum
   }
+
+  static func splitMaterializedInstructionTokens(
+    combinedTokens: Int,
+    toolTokens: Int
+  ) -> (instructions: Int, tools: Int) {
+    (
+      instructions: max(0, combinedTokens - toolTokens),
+      tools: toolTokens
+    )
+  }
 }
 
 /// The native values a custom model measurer must account for.
@@ -233,8 +243,12 @@ extension SystemLanguageModel {
     let toolTokens: Int
     if !request.instructionEntries.isEmpty {
       let combinedTokens = try await tokenCount(for: request.instructionEntries)
-      toolTokens = min(measuredToolTokens, combinedTokens)
-      instructionTokens = combinedTokens - toolTokens
+      let split = AgentSessionContextTokenCounts.splitMaterializedInstructionTokens(
+        combinedTokens: combinedTokens,
+        toolTokens: measuredToolTokens
+      )
+      instructionTokens = split.instructions
+      toolTokens = split.tools
     } else {
       toolTokens = measuredToolTokens
       if let instructions = request.instructions {
