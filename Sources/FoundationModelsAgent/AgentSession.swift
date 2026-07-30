@@ -26,6 +26,7 @@ public actor AgentSession {
   private var nativeSession: LanguageModelSession?
   private var mostRecentRun: FoundationModelsAgentRun?
   private var hasActiveOperation = false
+  private var pendingCheckpointRestoreFound: Bool?
 
   public init<Model: LanguageModel>(
     model: Model,
@@ -277,6 +278,7 @@ public actor AgentSession {
     nativeSession?.transcriptErrorHandlingPolicy =
       configuration.transcriptErrorHandlingPolicy.nativeValue
     mostRecentRun = nil
+    pendingCheckpointRestoreFound = nil
     if removingCheckpoint {
       try await checkpointStore?.removeCheckpoint(for: checkpointKey)
     }
@@ -534,6 +536,8 @@ public actor AgentSession {
           message: "Native transcript checkpoint restore completed.",
           attributes: ["checkpoint_found": String(checkpoint != nil)]
         )
+      } else if checkpointStore != nil {
+        pendingCheckpointRestoreFound = checkpoint != nil
       }
       return session
     } catch {
@@ -562,6 +566,7 @@ public actor AgentSession {
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models run started.")
+    await recordPendingCheckpointRestore(runID: runID)
     await toolRuntime.begin(runID: runID)
     let session: LanguageModelSession
     do {
@@ -747,6 +752,7 @@ public actor AgentSession {
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models streaming run started.")
+    await recordPendingCheckpointRestore(runID: runID)
     await toolRuntime.begin(runID: runID)
     let session: LanguageModelSession
     do {
@@ -1330,6 +1336,20 @@ public actor AgentSession {
       kind: .profileToolAuditBestEffort,
       message:
         "Dynamic-profile tool observation is best effort; an earlier failing profile lifecycle hook can preempt FoundationModelsAgent observation."
+    )
+  }
+
+  private func recordPendingCheckpointRestore(runID: UUID) async {
+    guard let checkpointFound = pendingCheckpointRestoreFound else { return }
+    pendingCheckpointRestoreFound = nil
+    await recorder.record(
+      runID: runID,
+      kind: .checkpointRestoreCompleted,
+      message: "Native transcript checkpoint was restored before this run.",
+      attributes: [
+        "checkpoint_found": String(checkpointFound),
+        "restored_before_run": "true",
+      ]
     )
   }
 

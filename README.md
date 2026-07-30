@@ -383,6 +383,11 @@ approval, governed-tool, retry, cancellation, and dynamic-profile signposts to
 explain latency outside the native model. AgentSession does not re-emit Apple's
 token timing or create a separate trace store.
 
+If `prewarm()`, `transcript()`, or `checkpoint()` performs lazy restoration
+before a response run exists, the next run receives a `Checkpoint Restore`
+point event marked `restored_before_run`. This preserves correlation without
+inventing a duration for work that already completed.
+
 For deterministic tests or a private telemetry adapter, inject an
 `AgentSessionInstrumentationSink`. Sink errors are ignored and cannot change a
 run result. The default content policy projects no diagnostic messages and

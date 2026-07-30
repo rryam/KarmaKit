@@ -87,6 +87,11 @@ Retries produce multiple sibling `Model Attempt` spans and a `Retry` event
 between them. Cancellation closes every still-open child span before the run
 span.
 
+If `prewarm()`, `transcript()`, or `checkpoint()` performs lazy checkpoint
+restoration before a response run exists, the next run projects a
+`Checkpoint Restore` point event with `restored_before_run` set to `true`.
+AgentSession does not backdate or invent an interval for already-completed work.
+
 ## Privacy
 
 The default content policy is

@@ -166,6 +166,28 @@ struct AgentSessionInstrumentationTests {
     #expect(!diagnostics.contains("MODEL_OUTPUT_MUST_NOT_BE_LOGGED"))
   }
 
+  @Test("Correlates a checkpoint restored before the response run")
+  func preloadedCheckpointRestore() async throws {
+    let capture = InstrumentationEventCapture()
+    let session = try AgentSession(
+      model: RecordedLanguageModel(steps: [.response(text: "ready")]),
+      checkpointStore: InMemoryCheckpointStore(),
+      instrumentation: .init(sink: capture)
+    )
+
+    try await session.prewarm()
+    let response = try await session.respond(to: "Continue")
+
+    #expect(
+      capture.events.contains {
+        $0.runID == response.run.id
+          && $0.kind == .checkpointRestore
+          && $0.phase == .event
+          && $0.outcome == .succeeded
+          && $0.attributes["restored_before_run"] == "true"
+      })
+  }
+
   @Test("Ends approval and governed-tool spans as denied")
   func approvalDenial() async throws {
     let capture = InstrumentationEventCapture()

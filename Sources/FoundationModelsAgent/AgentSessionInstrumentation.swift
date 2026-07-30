@@ -206,7 +206,16 @@ actor AgentSessionInstrumentationRuntime {
         parent: activeID(for: .run, runID: source.runID)
       )
     case .checkpointRestoreCompleted:
-      endLatest(.checkpointRestore, source: source, outcome: .succeeded)
+      if source.attributes["restored_before_run"] == "true" {
+        emit(
+          .checkpointRestore,
+          source: source,
+          outcome: .succeeded,
+          parent: activeID(for: .run, runID: source.runID)
+        )
+      } else {
+        endLatest(.checkpointRestore, source: source, outcome: .succeeded)
+      }
     case .checkpointRestoreFailed:
       endLatest(.checkpointRestore, source: source, outcome: outcome(for: source))
     case .checkpointWriteStarted:
@@ -462,6 +471,7 @@ actor AgentSessionInstrumentationRuntime {
       "transcript_entries",
       "checkpoint_found",
       "next_attempt",
+      "restored_before_run",
     ]
     return attributes.filter { allowed.contains($0.key) }
   }
