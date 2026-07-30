@@ -494,20 +494,6 @@ public struct ChildAgentTool: Tool {
         startedAt: startedAt
       )
     }
-    guard
-      await childBudget.reserve(
-        identifier: definition.identifier,
-        maximum: limits.maximumChildrenPerParentRun
-      )
-    else {
-      return try failure(
-        lineage: lineage,
-        status: .failed,
-        code: "child_limit_exceeded",
-        message: "The parent run exhausted this child-agent consultation budget.",
-        startedAt: startedAt
-      )
-    }
     if limits.wallClockTimeout == .zero {
       return try failure(
         lineage: lineage,
@@ -544,6 +530,20 @@ public struct ChildAgentTool: Tool {
         }
 
         try Task.checkCancellation()
+        guard
+          await childBudget.reserve(
+            identifier: definition.identifier,
+            maximum: limits.maximumChildrenPerParentRun
+          )
+        else {
+          return try failure(
+            lineage: lineage,
+            status: .failed,
+            code: "child_limit_exceeded",
+            message: "The parent run exhausted this child-agent consultation budget.",
+            startedAt: startedAt
+          )
+        }
         let session = try await definition.session(for: invocation)
         await runCapture.set(session)
         let response = try await AgentSessionExecutionContext.$current.withValue(

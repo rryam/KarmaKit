@@ -57,6 +57,21 @@ private actor ChildResultCapture {
   var results: [ChildAgentResult] { values }
 }
 
+private actor ChildPolicyDecisionSequence {
+  private var decisions: [ChildAgentPolicyDecision]
+
+  init(_ decisions: [ChildAgentPolicyDecision]) {
+    self.decisions = decisions
+  }
+
+  func next() -> ChildAgentPolicyDecision {
+    if decisions.isEmpty {
+      return .allow
+    }
+    return decisions.removeFirst()
+  }
+}
+
 private actor RecursiveChildDefinitionBox {
   private var storage: ChildAgentDefinition?
 
@@ -99,6 +114,30 @@ private struct CountedChildTool: Tool {
   func call(arguments: ChildFailureArguments) async throws -> String {
     await counter.increment()
     return arguments.value
+  }
+}
+
+private struct PreflightBudgetProbeTool: Tool {
+  typealias Arguments = ChildFailureArguments
+  typealias Output = String
+
+  let name = "preflight_budget_probe"
+  let description = "Runs a rejected child call followed by an allowed child call."
+  let rejected: ChildAgentTool
+  let allowed: ChildAgentTool
+  let capture: ChildResultCapture
+
+  @concurrent
+  func call(arguments: ChildFailureArguments) async throws -> String {
+    let rejectedResult = try await rejected.call(
+      arguments: ChildAgentRequest(task: arguments.value)
+    )
+    await capture.append(rejectedResult)
+    let allowedResult = try await allowed.call(
+      arguments: ChildAgentRequest(task: arguments.value)
+    )
+    await capture.append(allowedResult)
+    return "probe complete"
   }
 }
 
@@ -592,6 +631,95 @@ struct ChildAgentToolTests {
     #expect(result.taskResult.failureReason?.code == "policy_denied")
     #expect(result.taskResult.failureReason?.message == "Parent denial must be inherited.")
     #expect(await capture.count == 0)
+  }
+
+  @Test("Policy denial does not consume the parent child budget")
+  func policyDenialPreservesChildBudget() async throws {
+    let decisions = ChildPolicyDecisionSequence([
+      .deny(reason: "Narrowing policy rejected this task."),
+      .allow,
+    ])
+    let sessionCapture = ChildSessionCapture()
+    let resultCapture = ChildResultCapture()
+    let definition = try ChildAgentDefinition(
+      identifier: "policy_budget_child",
+      description: "Allows one accepted consultation.",
+      limits: ChildAgentLimits(maximumChildrenPerParentRun: 1),
+      policy: ClosureChildAgentPolicy { _ in
+        await decisions.next()
+      }
+    ) { _ in
+      let session = try AgentSession(
+        model: RecordedLanguageModel(steps: [.response(text: "accepted")])
+      )
+      await sessionCapture.append(session)
+      return session
+    }
+    let parent = try AgentSession(
+      model: RecordedLanguageModel(steps: [
+        .toolCall(name: "policy_budget_child", argumentsJSON: #"{"task":"Denied."}"#),
+        .toolCall(name: "policy_budget_child", argumentsJSON: #"{"task":"Allowed."}"#),
+        .response(text: "parent done"),
+      ]),
+      tools: [
+        CapturingChildAgentTool(
+          base: ChildAgentTool(definition: definition),
+          capture: resultCapture
+        )
+      ]
+    )
+
+    _ = try await parent.respond(to: "Try both consultations.")
+
+    #expect(await resultCapture.results.map(\.status) == [.denied, .succeeded])
+    #expect(await sessionCapture.count == 1)
+  }
+
+  @Test("Zero timeout does not consume the parent child budget")
+  func zeroTimeoutPreservesChildBudget() async throws {
+    let resultCapture = ChildResultCapture()
+    let sessionCapture = ChildSessionCapture()
+    let rejected = try ChildAgentDefinition(
+      identifier: "timeout_budget_child",
+      description: "Rejects before consultation.",
+      limits: ChildAgentLimits(
+        maximumChildrenPerParentRun: 1,
+        wallClockTimeout: .zero
+      )
+    ) { _ in
+      Issue.record("A zero-timeout child must not construct a session.")
+      return try AgentSession(
+        model: RecordedLanguageModel(steps: [.response(text: "must not run")])
+      )
+    }
+    let allowed = try ChildAgentDefinition(
+      identifier: "timeout_budget_child",
+      description: "Uses the remaining consultation budget.",
+      limits: ChildAgentLimits(maximumChildrenPerParentRun: 1)
+    ) { _ in
+      let session = try AgentSession(
+        model: RecordedLanguageModel(steps: [.response(text: "accepted")])
+      )
+      await sessionCapture.append(session)
+      return session
+    }
+    let probe = PreflightBudgetProbeTool(
+      rejected: ChildAgentTool(definition: rejected),
+      allowed: ChildAgentTool(definition: allowed),
+      capture: resultCapture
+    )
+    let parent = try AgentSession(
+      model: RecordedLanguageModel(steps: [
+        .toolCall(name: probe.name, argumentsJSON: #"{"value":"Probe."}"#),
+        .response(text: "parent done"),
+      ]),
+      tools: [probe]
+    )
+
+    _ = try await parent.respond(to: "Run the preflight probe.")
+
+    #expect(await resultCapture.results.map(\.status) == [.timedOut, .succeeded])
+    #expect(await sessionCapture.count == 1)
   }
 
   @Test("Bounds policy denial details before returning them to the parent")
