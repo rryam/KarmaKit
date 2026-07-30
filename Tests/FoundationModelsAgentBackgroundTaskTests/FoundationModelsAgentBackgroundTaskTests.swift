@@ -177,6 +177,46 @@ struct FoundationModelsAgentBackgroundTaskTests {
     #expect(terminalStates.allSatisfy { $0 == .cancelled })
   }
 
+  @Test("Cancelling a scheduled task releases its slot to queued work")
+  func cancelledScheduledTaskReschedulesQueue() async throws {
+    let gate = ExecutionGate()
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: InMemoryBackgroundAgentTaskStore(),
+      configuration: .init(maximumConcurrentTasks: 1)
+    ) { task, _ in
+      if task.prompt == "first" {
+        await gate.run(task)
+      }
+      return BackgroundAgentTaskOutcome()
+    }
+    let first = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "first",
+        ownerID: "owner",
+        recoveryPolicy: .readOnly
+      )
+    )
+    let second = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "second",
+        ownerID: "owner",
+        recoveryPolicy: .readOnly
+      )
+    )
+
+    try await coordinator.cancel(first)
+    await gate.releaseAll()
+    for _ in 0..<1_000 {
+      if await coordinator.record(for: second)?.state.isTerminal == true {
+        break
+      }
+      await Task.yield()
+    }
+
+    #expect(await coordinator.record(for: first)?.state == .cancelled)
+    #expect(await coordinator.record(for: second)?.state == .completed)
+  }
+
   @Test("Bounds global concurrency, per-parent concurrency, fan-out, and depth")
   func hierarchyAndConcurrencyBounds() async throws {
     let gate = ExecutionGate()

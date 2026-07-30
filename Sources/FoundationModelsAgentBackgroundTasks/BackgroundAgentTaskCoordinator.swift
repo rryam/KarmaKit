@@ -282,6 +282,7 @@ public actor BackgroundAgentTaskCoordinator {
   private func execute(_ id: BackgroundAgentTaskID) async {
     guard let record = records[id], !record.state.isTerminal else {
       running[id] = nil
+      try? await scheduleEligibleTasks()
       return
     }
     let context = BackgroundAgentTaskExecutionContext(taskID: id) { [weak self] id, update in
