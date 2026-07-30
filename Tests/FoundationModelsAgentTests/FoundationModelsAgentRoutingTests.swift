@@ -291,10 +291,7 @@ struct FoundationModelsAgentRoutingTests {
       decidedAt: routingDecisionDate
     )
     let selection = try #require(result.selection)
-    let session = try AgentSession(
-      model: selection.model,
-      routingDecision: selection.decision
-    )
+    let session = try AgentSession(selection: selection)
 
     let response = try await session.respond(to: "Use the selected route.")
 
@@ -321,10 +318,7 @@ struct FoundationModelsAgentRoutingTests {
       decidedAt: routingDecisionDate
     )
     let selection = try #require(result.selection)
-    let session = try AgentSession(
-      model: selection.model,
-      routingDecision: selection.decision
-    )
+    let session = try AgentSession(selection: selection)
 
     await #expect(throws: RecordedLanguageModelError.self) {
       try await session.respond(to: "Fail truthfully.")

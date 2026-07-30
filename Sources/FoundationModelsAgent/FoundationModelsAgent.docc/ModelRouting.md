@@ -17,9 +17,9 @@ and a serializable ``FoundationModelsAgentRouteDescriptor`` covering:
 - the system responsible for accounting or billing.
 
 The router does not invoke the model and does not define a response, message, transcript,
-or provider protocol. A selected ``FoundationModelsAgentRouteSelection/model`` remains an
-`any LanguageModel` value that can be passed directly to
-``AgentSession/init(model:routingDecision:tools:instructions:configuration:toolConfiguration:checkpointStore:checkpointKey:transcriptRetention:requiresMatchingToolset:instructionRestorationPolicy:plugins:redactionPolicy:observers:observerDeliveryConfiguration:)``.
+or provider protocol. Pass the complete selection to
+``AgentSession/init(selection:tools:instructions:configuration:contextMeasurer:toolConfiguration:checkpointStore:checkpointKey:transcriptRetention:requiresMatchingToolset:instructionRestorationPolicy:plugins:redactionPolicy:observers:observerDeliveryConfiguration:)``
+so its native model and routing evidence cannot diverge.
 
 ## Supply deterministic application policy
 
@@ -84,10 +84,7 @@ guard case .selected(let selection) = router.select(
   return
 }
 
-let session = try AgentSession(
-  model: selection.model,
-  routingDecision: selection.decision
-)
+let session = try AgentSession(selection: selection)
 ```
 
 The session records `routeSelected` and every `routeCandidateRejected` event before its

@@ -23,9 +23,13 @@ public actor AgentSession {
   private let plugins: [any AgentSessionPlugin]
   private let toolRuntime: FoundationModelsAgentToolRuntime
   private let recorder: FoundationModelsAgentEventRecorder
+  private let contextInstructions: Instructions?
+  private let contextTools: [any Tool]
+  private let contextMeasurer: ErasedAgentSessionContextMeasurer?
   private let routingDecision: FoundationModelsAgentRouteDecision?
 
   private var nativeSession: LanguageModelSession?
+  private var authoritativeTranscript: Transcript?
   private var mostRecentRun: FoundationModelsAgentRun?
   private var hasActiveOperation = false
 
@@ -35,6 +39,7 @@ public actor AgentSession {
     tools: [any Tool] = [],
     instructions: Instructions? = nil,
     configuration: FoundationModelsAgentConfiguration = .default,
+    contextMeasurer: AgentSessionContextMeasurer? = nil,
     toolConfiguration: FoundationModelsAgentToolConfiguration = .default,
     checkpointStore: (any FoundationModelsAgentCheckpointStore)? = nil,
     checkpointKey: String = "default",
@@ -57,6 +62,12 @@ public actor AgentSession {
       observerDeliveryConfiguration: observerDeliveryConfiguration
     )
     try Self.validate(plugins: plugins)
+    if configuration.contextBudget != nil,
+      contextMeasurer == nil,
+      !(model is SystemLanguageModel)
+    {
+      throw FoundationModelsAgentError.contextMeasurementRequired
+    }
 
     let recorder = FoundationModelsAgentEventRecorder(
       observers: observers,
@@ -115,7 +126,56 @@ public actor AgentSession {
       plugins: plugins,
       toolRuntime: runtime,
       recorder: recorder,
+      contextInstructions: instructions,
+      contextTools: governedTools,
+      contextMeasurer: ErasedAgentSessionContextMeasurer(
+        model: model,
+        custom: contextMeasurer
+      ),
       routingDecision: routingDecision
+    )
+  }
+
+  /// Creates a session from one atomic native routing selection.
+  ///
+  /// Context preflight measures `selection.model`, the same value materialized
+  /// by the native `LanguageModelSession`. The route descriptor's declared
+  /// context size is audit evidence and is never used as token accounting.
+  public init(
+    selection: FoundationModelsAgentRouteSelection,
+    tools: [any Tool] = [],
+    instructions: Instructions? = nil,
+    configuration: FoundationModelsAgentConfiguration = .default,
+    contextMeasurer: AgentSessionContextMeasurer? = nil,
+    toolConfiguration: FoundationModelsAgentToolConfiguration = .default,
+    checkpointStore: (any FoundationModelsAgentCheckpointStore)? = nil,
+    checkpointKey: String = "default",
+    transcriptRetention: FoundationModelsAgentTranscriptRetention = .complete,
+    requiresMatchingToolset: Bool = true,
+    instructionRestorationPolicy: FoundationModelsAgentInstructionRestorationPolicy =
+      .replaceWithCurrent,
+    plugins: [any AgentSessionPlugin] = [],
+    redactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
+    observers: [any FoundationModelsAgentObserver] = [],
+    observerDeliveryConfiguration: FoundationModelsAgentObserverDeliveryConfiguration = .default
+  ) throws {
+    try self.init(
+      model: selection.model,
+      routingDecision: selection.decision,
+      tools: tools,
+      instructions: instructions,
+      configuration: configuration,
+      contextMeasurer: contextMeasurer,
+      toolConfiguration: toolConfiguration,
+      checkpointStore: checkpointStore,
+      checkpointKey: checkpointKey,
+      transcriptRetention: transcriptRetention,
+      requiresMatchingToolset: requiresMatchingToolset,
+      instructionRestorationPolicy: instructionRestorationPolicy,
+      plugins: plugins,
+      redactionPolicy: redactionPolicy,
+      observers: observers,
+      observerDeliveryConfiguration: observerDeliveryConfiguration
     )
   }
 
@@ -144,6 +204,9 @@ public actor AgentSession {
       observerDeliveryConfiguration: observerDeliveryConfiguration
     )
     try Self.validate(plugins: plugins)
+    if configuration.contextBudget != nil {
+      throw FoundationModelsAgentError.contextBudgetUnsupportedForDynamicProfile
+    }
     guard !checkpointCompatibilityID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     else {
       throw FoundationModelsAgentError.emptyCheckpointCompatibilityID
@@ -245,6 +308,9 @@ public actor AgentSession {
       plugins: plugins,
       toolRuntime: runtime,
       recorder: recorder,
+      contextInstructions: nil,
+      contextTools: [],
+      contextMeasurer: nil,
       routingDecision: nil
     )
   }
@@ -264,6 +330,9 @@ public actor AgentSession {
     plugins: [any AgentSessionPlugin],
     toolRuntime: FoundationModelsAgentToolRuntime,
     recorder: FoundationModelsAgentEventRecorder,
+    contextInstructions: Instructions?,
+    contextTools: [any Tool],
+    contextMeasurer: ErasedAgentSessionContextMeasurer?,
     routingDecision: FoundationModelsAgentRouteDecision?
   ) {
     self.makeSession = makeSession
@@ -280,6 +349,9 @@ public actor AgentSession {
     self.plugins = plugins
     self.toolRuntime = toolRuntime
     self.recorder = recorder
+    self.contextInstructions = contextInstructions
+    self.contextTools = contextTools
+    self.contextMeasurer = contextMeasurer
     self.routingDecision = routingDecision
   }
 
@@ -293,7 +365,8 @@ public actor AgentSession {
   public func transcript() async throws -> Transcript {
     try acquireSessionLease()
     defer { releaseSessionLease() }
-    return try await resolveSession().transcript
+    let session = try await resolveSession()
+    return authoritativeTranscript ?? session.transcript
   }
 
   public func lastRun() -> FoundationModelsAgentRun? {
@@ -314,7 +387,10 @@ public actor AgentSession {
     try acquireSessionLease()
     defer { releaseSessionLease() }
     let session = try await resolveSession()
-    return try await persist(transcript: session.transcript, runID: nil)
+    return try await persist(
+      transcript: authoritativeTranscript ?? session.transcript,
+      runID: nil
+    )
   }
 
   public func reset(removingCheckpoint: Bool = false) async throws {
@@ -323,6 +399,7 @@ public actor AgentSession {
     nativeSession = makeSession(nil)
     nativeSession?.transcriptErrorHandlingPolicy =
       configuration.transcriptErrorHandlingPolicy.nativeValue
+    authoritativeTranscript = nativeSession?.transcript
     mostRecentRun = nil
     if removingCheckpoint {
       try await checkpointStore?.removeCheckpoint(for: checkpointKey)
@@ -337,7 +414,12 @@ public actor AgentSession {
     metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil
   ) async throws -> FoundationModelsAgentResponse<String> {
-    try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
+    try await performResponse(
+      prompt: prompt,
+      schema: nil,
+      contextQuery: contextQuery,
+      metadata: metadata
+    ) {
       try await $0.respond(
         to: $1,
         options: options,
@@ -373,7 +455,12 @@ public actor AgentSession {
     metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil
   ) async throws -> FoundationModelsAgentResponse<Content> {
-    try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
+    try await performResponse(
+      prompt: prompt,
+      schema: contextOptions.includeSchemaInPrompt == false ? nil : Content.generationSchema,
+      contextQuery: contextQuery,
+      metadata: metadata
+    ) {
       try await $0.respond(
         to: $1,
         generating: type,
@@ -412,7 +499,12 @@ public actor AgentSession {
     metadata: FoundationModelsAgentRequestMetadata = [:],
     contextQuery: String? = nil
   ) async throws -> FoundationModelsAgentResponse<GeneratedContent> {
-    try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
+    try await performResponse(
+      prompt: prompt,
+      schema: contextOptions.includeSchemaInPrompt == false ? nil : schema,
+      contextQuery: contextQuery,
+      metadata: metadata
+    ) {
       try await $0.respond(
         to: $1,
         schema: schema,
@@ -453,6 +545,7 @@ public actor AgentSession {
   ) async throws -> FoundationModelsAgentResponse<String> {
     try await performStream(
       prompt: prompt,
+      schema: nil,
       contextQuery: contextQuery,
       metadata: metadata
     ) { session, preparedPrompt in
@@ -499,6 +592,7 @@ public actor AgentSession {
   where Content.PartiallyGenerated: Sendable {
     try await performStream(
       prompt: prompt,
+      schema: contextOptions.includeSchemaInPrompt == false ? nil : Content.generationSchema,
       contextQuery: contextQuery,
       metadata: metadata
     ) { session, preparedPrompt in
@@ -538,6 +632,9 @@ public actor AgentSession {
 
   private func resolveSession() async throws -> LanguageModelSession {
     if let nativeSession {
+      if authoritativeTranscript == nil {
+        authoritativeTranscript = nativeSession.transcript
+      }
       return nativeSession
     }
 
@@ -563,11 +660,13 @@ public actor AgentSession {
     let session = makeSession(transcript)
     session.transcriptErrorHandlingPolicy = configuration.transcriptErrorHandlingPolicy.nativeValue
     nativeSession = session
+    authoritativeTranscript = session.transcript
     return session
   }
 
   private func performResponse<Content: Generable & Sendable>(
     prompt: Prompt,
+    schema: GenerationSchema?,
     contextQuery: String?,
     metadata: FoundationModelsAgentRequestMetadata,
     _ operation:
@@ -576,8 +675,12 @@ public actor AgentSession {
   ) async throws -> FoundationModelsAgentResponse<Content> {
     try acquireSessionLease()
     defer { releaseSessionLease() }
-    let session = try await resolveSession()
-    let transcriptBeforeRun = session.transcript
+    let initialSession = try await resolveSession()
+    var runContext = PreparedRunContext(
+      session: initialSession,
+      activeTranscript: initialSession.transcript,
+      authoritativeTranscript: authoritativeTranscript ?? initialSession.transcript
+    )
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models run started.")
@@ -585,7 +688,8 @@ public actor AgentSession {
     await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
     await profileToolGovernanceRuntime?.begin(runID: runID, recorder: recorder)
-    var completedModelResponse = false
+    var committedTranscript = false
+    var startedInference = false
     var pluginContext = PreparedPluginContext.empty
 
     do {
@@ -596,24 +700,36 @@ public actor AgentSession {
         metadata: metadata
       )
       let preparedPrompt = makePrompt(prompt, contextBlocks: pluginContext.contextBlocks)
+      runContext = try await prepareContextBudget(
+        session: initialSession,
+        prompt: preparedPrompt,
+        schema: schema,
+        runID: runID
+      )
+      startedInference = true
       let nativeResponse = try await responseWithRetry(
-        session: session,
+        session: runContext.session,
         runID: runID,
         operation: { try await operation($0, preparedPrompt) }
       )
-      completedModelResponse = true
       let usage = FoundationModelsAgentUsage(nativeResponse.usage)
       let sanitizedTranscript = try await sanitizeCompletedTranscript(
-        session.transcript,
-        fallback: transcriptBeforeRun,
+        runContext.session.transcript,
+        fallback: runContext.activeTranscript,
         context: pluginContext,
         runID: runID
       )
       let runTranscriptEntries = transcriptEntries(
         addedTo: sanitizedTranscript,
-        after: transcriptBeforeRun
+        after: runContext.activeTranscript
       )
+      let updatedAuthoritativeTranscript = appending(
+        runTranscriptEntries,
+        to: runContext.authoritativeTranscript
+      )
+      authoritativeTranscript = updatedAuthoritativeTranscript
       installSession(transcript: sanitizedTranscript, ifNeededFor: pluginContext)
+      committedTranscript = true
       if !recordsProfileToolLifecycle {
         await recordNativeToolEntries(nativeResponse.transcriptEntries, runID: runID)
       }
@@ -627,7 +743,10 @@ public actor AgentSession {
           "transcript_entries": String(nativeResponse.transcriptEntries.count),
         ])
       )
-      try await persistAfterSuccessfulResponse(transcript: sanitizedTranscript, runID: runID)
+      try await persistAfterSuccessfulResponse(
+        transcript: updatedAuthoritativeTranscript,
+        runID: runID
+      )
       try await completePlugins(
         FoundationModelsAgentPluginCompletion(
           runID: runID,
@@ -656,19 +775,34 @@ public actor AgentSession {
         run: run
       )
     } catch {
-      if !pluginContext.contextBlocks.isEmpty {
-        let sanitized = await sanitizeFailedTranscript(
-          session.transcript,
-          fallback: transcriptBeforeRun,
-          context: pluginContext,
-          runID: runID
+      if !committedTranscript {
+        let sanitized =
+          if startedInference {
+            await sanitizeFailedTranscript(
+              runContext.session.transcript,
+              fallback: runContext.activeTranscript,
+              context: pluginContext,
+              runID: runID
+            )
+          } else {
+            runContext.activeTranscript
+          }
+        let failedEntries = transcriptEntries(
+          addedTo: sanitized,
+          after: runContext.activeTranscript
         )
+        let updatedAuthoritativeTranscript = appending(
+          failedEntries,
+          to: runContext.authoritativeTranscript
+        )
+        authoritativeTranscript = updatedAuthoritativeTranscript
         installSession(transcript: sanitized, ifNeededFor: pluginContext)
         if configuration.savesTranscriptAfterFailedResponse {
-          await persistAfterFailedResponse(transcript: sanitized, runID: runID)
+          await persistAfterFailedResponse(
+            transcript: updatedAuthoritativeTranscript,
+            runID: runID
+          )
         }
-      } else if configuration.savesTranscriptAfterFailedResponse, !completedModelResponse {
-        await persistAfterFailedResponse(transcript: session.transcript, runID: runID)
       }
       await failPlugins(
         FoundationModelsAgentPluginFailure(
@@ -692,6 +826,364 @@ public actor AgentSession {
       await toolRuntime.finish(runID: runID)
       throw error
     }
+  }
+
+  private func prepareContextBudget(
+    session: LanguageModelSession,
+    prompt: Prompt,
+    schema: GenerationSchema?,
+    runID: UUID
+  ) async throws -> PreparedRunContext {
+    let activeTranscript = session.transcript
+    let authoritative = authoritativeTranscript ?? activeTranscript
+    let unchanged = PreparedRunContext(
+      session: session,
+      activeTranscript: activeTranscript,
+      authoritativeTranscript: authoritative
+    )
+    guard let budget = configuration.contextBudget else {
+      return unchanged
+    }
+
+    var failureAttributes = [
+      "selected_policy": contextPolicyName(budget.overflowPolicy)
+    ]
+    do {
+      guard let contextMeasurer else {
+        throw FoundationModelsAgentError.contextMeasurementRequired
+      }
+      try Task.checkCancellation()
+      let before = try await contextMeasurer.measure(
+        contextMeasurementRequest(
+          transcript: activeTranscript,
+          prompt: prompt,
+          schema: schema
+        )
+      )
+      try validateContextCounts(before)
+      try Task.checkCancellation()
+      let usableTokens = budget.usableInputTokens(contextSize: before.contextSize)
+      failureAttributes.merge(
+        contextAttributes(
+          counts: before,
+          usableTokens: usableTokens,
+          policy: contextPolicyName(budget.overflowPolicy),
+          prefix: "before"
+        )
+      ) { _, new in new }
+      await recorder.record(
+        runID: runID,
+        kind: .contextBudgetEvaluated,
+        message: "Native context budget evaluated before inference.",
+        attributes: contextAttributes(
+          counts: before,
+          usableTokens: usableTokens,
+          policy: contextPolicyName(budget.overflowPolicy),
+          prefix: "before"
+        )
+      )
+
+      guard before.fixedInputTokens <= usableTokens else {
+        throw FoundationModelsAgentError.contextBudgetFixedComponentsExceeded(
+          required: before.fixedInputTokens,
+          limit: usableTokens
+        )
+      }
+      guard before.totalInputTokens > usableTokens else {
+        return unchanged
+      }
+
+      switch budget.overflowPolicy {
+      case .failBeforeInference:
+        throw FoundationModelsAgentError.contextBudgetExceeded(
+          required: before.totalInputTokens,
+          limit: usableTokens
+        )
+
+      case .transform(let transform):
+        let originalHistory = Array(activeTranscript.history)
+        let result = try await transform.transform(
+          AgentSessionContextTransformRequest(
+            transcript: activeTranscript,
+            prompt: prompt,
+            schema: schema,
+            counts: before,
+            usableInputTokens: usableTokens
+          )
+        )
+        try Task.checkCancellation()
+        try validateContextTransformMetadata(
+          result,
+          originalTranscript: activeTranscript
+        )
+        failureAttributes["affected_history_range"] =
+          "\(result.affectedHistoryRange.lowerBound)..<\(result.affectedHistoryRange.upperBound)"
+        failureAttributes["affected_entry_ids"] =
+          originalHistory[result.affectedHistoryRange].map(\.id).joined(separator: ",")
+        failureAttributes["provenance"] = result.provenance
+        failureAttributes["authoritative_transcript_policy"] =
+          result.authoritativeTranscriptPolicy.rawValue
+        try validateCompleteHistory(result.transcript.history)
+        let invalidatesCache = result.transcript != activeTranscript
+        let rewrittenSession: LanguageModelSession
+        if invalidatesCache {
+          let replacement = makeSession(result.transcript)
+          replacement.transcriptErrorHandlingPolicy =
+            configuration.transcriptErrorHandlingPolicy.nativeValue
+          rewrittenSession = replacement
+        } else {
+          rewrittenSession = session
+        }
+        let rewrittenTranscript = rewrittenSession.transcript
+        let after = try await contextMeasurer.measure(
+          contextMeasurementRequest(
+            transcript: rewrittenTranscript,
+            prompt: prompt,
+            schema: schema
+          )
+        )
+        try validateContextCounts(after)
+        try Task.checkCancellation()
+        let transformedUsableTokens = budget.usableInputTokens(contextSize: after.contextSize)
+        failureAttributes.merge(
+          contextAttributes(
+            counts: after,
+            usableTokens: transformedUsableTokens,
+            policy: "transform:\(transform.identifier)",
+            prefix: "after"
+          )
+        ) { _, new in new }
+        guard after.totalInputTokens <= transformedUsableTokens else {
+          throw FoundationModelsAgentError.contextTransformStillExceedsBudget(
+            required: after.totalInputTokens,
+            limit: transformedUsableTokens
+          )
+        }
+
+        if invalidatesCache {
+          nativeSession = rewrittenSession
+        }
+        let authoritativeAfterTransform: Transcript
+        switch result.authoritativeTranscriptPolicy {
+        case .preserve:
+          authoritativeAfterTransform = authoritative
+        case .replace:
+          authoritativeAfterTransform = rewrittenTranscript
+          authoritativeTranscript = rewrittenTranscript
+        }
+        let affectedIDs = originalHistory[result.affectedHistoryRange].map(\.id)
+        var attributes = contextAttributes(
+          counts: before,
+          usableTokens: usableTokens,
+          policy: "transform:\(transform.identifier)",
+          prefix: "before"
+        )
+        attributes.merge(
+          contextAttributes(
+            counts: after,
+            usableTokens: transformedUsableTokens,
+            policy: "transform:\(transform.identifier)",
+            prefix: "after"
+          )
+        ) { _, new in new }
+        attributes["affected_history_range"] =
+          "\(result.affectedHistoryRange.lowerBound)..<\(result.affectedHistoryRange.upperBound)"
+        attributes["affected_entry_ids"] = affectedIDs.joined(separator: ",")
+        attributes["provenance"] = result.provenance
+        attributes["authoritative_transcript_policy"] =
+          result.authoritativeTranscriptPolicy.rawValue
+        attributes["cache_invalidated"] = String(invalidatesCache)
+        await recorder.record(
+          runID: runID,
+          kind: .contextBudgetTransformed,
+          message: "App-owned context transform was validated and installed.",
+          attributes: attributes
+        )
+        return PreparedRunContext(
+          session: rewrittenSession,
+          activeTranscript: rewrittenTranscript,
+          authoritativeTranscript: authoritativeAfterTransform
+        )
+      }
+    } catch {
+      await recorder.record(
+        runID: runID,
+        kind: .contextBudgetFailed,
+        message: String(describing: error),
+        attributes: failureAttributes.merging(
+          ["error_type": String(reflecting: Swift.type(of: error))]
+        ) { _, new in new }
+      )
+      throw error
+    }
+  }
+
+  private func contextMeasurementRequest(
+    transcript: Transcript,
+    prompt: Prompt,
+    schema: GenerationSchema?
+  ) -> AgentSessionContextMeasurementRequest {
+    AgentSessionContextMeasurementRequest(
+      instructions: contextInstructions,
+      instructionEntries: transcript.compactMap { entry in
+        if case .instructions = entry { return entry }
+        return nil
+      },
+      tools: contextTools,
+      prompt: prompt,
+      schema: schema,
+      transcriptEntries: Array(transcript.history)
+    )
+  }
+
+  private func validateContextCounts(_ counts: AgentSessionContextTokenCounts) throws {
+    guard counts.contextSize > 0 else {
+      throw FoundationModelsAgentError.invalidContextMeasurement(
+        "The measured context size must be greater than zero.")
+    }
+    let components = [
+      counts.instructions,
+      counts.tools,
+      counts.prompt,
+      counts.schema,
+      counts.transcript,
+    ]
+    guard components.allSatisfy({ $0 >= 0 }) else {
+      throw FoundationModelsAgentError.invalidContextMeasurement(
+        "Measured component token counts must not be negative.")
+    }
+  }
+
+  private func validateContextTransformMetadata(
+    _ result: AgentSessionContextTransformResult,
+    originalTranscript: Transcript
+  ) throws {
+    let originalHistory = Array(originalTranscript.history)
+    let range = result.affectedHistoryRange
+    guard range.lowerBound >= 0,
+      range.upperBound <= originalHistory.count,
+      !range.isEmpty
+    else {
+      throw FoundationModelsAgentError.invalidContextTransform(
+        "The affected history range must identify at least one original history entry.")
+    }
+    guard !result.provenance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw FoundationModelsAgentError.invalidContextTransform(
+        "Transform provenance must not be empty.")
+    }
+
+    let originalInstructions = originalTranscript.compactMap { entry -> Transcript.Entry? in
+      if case .instructions = entry { return entry }
+      return nil
+    }
+    let transformedInstructions = result.transcript.compactMap { entry -> Transcript.Entry? in
+      if case .instructions = entry { return entry }
+      return nil
+    }
+    guard transformedInstructions == originalInstructions else {
+      throw FoundationModelsAgentError.invalidContextTransform(
+        "A history transform must preserve the session's instruction entries.")
+    }
+
+    let transformedHistory = Array(result.transcript.history)
+    let unchangedSuffixCount = originalHistory.count - range.upperBound
+    guard transformedHistory.count >= range.lowerBound + unchangedSuffixCount,
+      transformedHistory.prefix(range.lowerBound) == originalHistory.prefix(range.lowerBound),
+      transformedHistory.suffix(unchangedSuffixCount)
+        == originalHistory.suffix(unchangedSuffixCount)
+    else {
+      throw FoundationModelsAgentError.invalidContextTransform(
+        "The affected history range must cover every rewritten entry.")
+    }
+  }
+
+  private func validateCompleteHistory(
+    _ history: some Collection<Transcript.Entry>
+  ) throws {
+    let history = Array(history)
+    guard let first = history.first else { return }
+    guard case .prompt = first else {
+      throw FoundationModelsAgentError.invalidContextTransform(
+        "Transformed history must start at a prompt boundary.")
+    }
+
+    var pendingCalls: [String: String] = [:]
+    for entry in history {
+      switch entry {
+      case .prompt:
+        guard pendingCalls.isEmpty else {
+          throw FoundationModelsAgentError.invalidContextTransform(
+            "A prompt cannot begin while transformed tool calls are incomplete.")
+        }
+      case .toolCalls(let calls):
+        for call in calls {
+          guard pendingCalls.updateValue(call.toolName, forKey: call.id) == nil else {
+            throw FoundationModelsAgentError.invalidContextTransform(
+              "Transformed history contains duplicate tool call ID '\(call.id)'.")
+          }
+        }
+      case .toolOutput(let output):
+        guard pendingCalls.removeValue(forKey: output.id) == output.toolName else {
+          throw FoundationModelsAgentError.invalidContextTransform(
+            "Tool output '\(output.id)' is orphaned from its originating call.")
+        }
+      case .response:
+        guard pendingCalls.isEmpty else {
+          throw FoundationModelsAgentError.invalidContextTransform(
+            "A response cannot complete while transformed tool calls are missing outputs.")
+        }
+      case .reasoning, .instructions:
+        continue
+      @unknown default:
+        throw FoundationModelsAgentError.invalidContextTransform(
+          "Transformed history contains an unknown transcript entry.")
+      }
+    }
+    guard pendingCalls.isEmpty else {
+      throw FoundationModelsAgentError.invalidContextTransform(
+        "Transformed history ends with incomplete tool calls.")
+    }
+    guard case .response = history.last else {
+      throw FoundationModelsAgentError.invalidContextTransform(
+        "Transformed history must end at a completed response boundary.")
+    }
+  }
+
+  private func contextPolicyName(_ policy: AgentSessionContextOverflowPolicy) -> String {
+    switch policy {
+    case .failBeforeInference:
+      "fail_before_inference"
+    case .transform(let transform):
+      "transform:\(transform.identifier)"
+    }
+  }
+
+  private func contextAttributes(
+    counts: AgentSessionContextTokenCounts,
+    usableTokens: Int,
+    policy: String,
+    prefix: String
+  ) -> [String: String] {
+    [
+      "\(prefix)_context_size": String(counts.contextSize),
+      "\(prefix)_instructions_tokens": String(counts.instructions),
+      "\(prefix)_tools_tokens": String(counts.tools),
+      "\(prefix)_prompt_tokens": String(counts.prompt),
+      "\(prefix)_schema_tokens": String(counts.schema),
+      "\(prefix)_transcript_tokens": String(counts.transcript),
+      "\(prefix)_total_input_tokens": String(counts.totalInputTokens),
+      "\(prefix)_usable_input_tokens": String(usableTokens),
+      "selected_policy": policy,
+    ]
+  }
+
+  private func appending(
+    _ entries: [Transcript.Entry],
+    to transcript: Transcript
+  ) -> Transcript {
+    var transcript = transcript
+    transcript.append(contentsOf: entries)
+    return transcript
   }
 
   private func responseWithRetry<Content: Generable & Sendable>(
@@ -750,6 +1242,7 @@ public actor AgentSession {
 
   private func performStream<Content: Generable & Sendable>(
     prompt: Prompt,
+    schema: GenerationSchema?,
     contextQuery: String?,
     metadata: FoundationModelsAgentRequestMetadata,
     _ makeStream:
@@ -761,8 +1254,12 @@ public actor AgentSession {
   where Content.PartiallyGenerated: Sendable {
     try acquireSessionLease()
     defer { releaseSessionLease() }
-    let session = try await resolveSession()
-    let transcriptBeforeRun = session.transcript
+    let initialSession = try await resolveSession()
+    var runContext = PreparedRunContext(
+      session: initialSession,
+      activeTranscript: initialSession.transcript,
+      authoritativeTranscript: authoritativeTranscript ?? initialSession.transcript
+    )
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models streaming run started.")
@@ -771,7 +1268,8 @@ public actor AgentSession {
     await toolRuntime.begin(runID: runID)
     await profileToolGovernanceRuntime?.begin(runID: runID, recorder: recorder)
 
-    var completedModelResponse = false
+    var committedTranscript = false
+    var startedInference = false
     var pluginContext = PreparedPluginContext.empty
     do {
       pluginContext = try await preparePlugins(
@@ -781,26 +1279,38 @@ public actor AgentSession {
         metadata: metadata
       )
       let preparedPrompt = makePrompt(prompt, contextBlocks: pluginContext.contextBlocks)
+      runContext = try await prepareContextBudget(
+        session: initialSession,
+        prompt: preparedPrompt,
+        schema: schema,
+        runID: runID
+      )
+      startedInference = true
       let lastSnapshot = try await streamWithRetry(
-        session: session,
+        session: runContext.session,
         runID: runID,
         makeStream: { makeStream($0, preparedPrompt) },
         onPartialResponse: onPartialResponse
       )
-      completedModelResponse = true
       let content = try Content(lastSnapshot.rawContent)
       let usage = FoundationModelsAgentUsage(lastSnapshot.usage)
       let sanitizedTranscript = try await sanitizeCompletedTranscript(
-        session.transcript,
-        fallback: transcriptBeforeRun,
+        runContext.session.transcript,
+        fallback: runContext.activeTranscript,
         context: pluginContext,
         runID: runID
       )
       let runTranscriptEntries = transcriptEntries(
         addedTo: sanitizedTranscript,
-        after: transcriptBeforeRun
+        after: runContext.activeTranscript
       )
+      let updatedAuthoritativeTranscript = appending(
+        runTranscriptEntries,
+        to: runContext.authoritativeTranscript
+      )
+      authoritativeTranscript = updatedAuthoritativeTranscript
       installSession(transcript: sanitizedTranscript, ifNeededFor: pluginContext)
+      committedTranscript = true
       if !recordsProfileToolLifecycle {
         await recordNativeToolEntries(lastSnapshot.transcriptEntries, runID: runID)
       }
@@ -814,7 +1324,10 @@ public actor AgentSession {
           "transcript_entries": String(lastSnapshot.transcriptEntries.count),
         ])
       )
-      try await persistAfterSuccessfulResponse(transcript: sanitizedTranscript, runID: runID)
+      try await persistAfterSuccessfulResponse(
+        transcript: updatedAuthoritativeTranscript,
+        runID: runID
+      )
       try await completePlugins(
         FoundationModelsAgentPluginCompletion(
           runID: runID,
@@ -843,19 +1356,34 @@ public actor AgentSession {
         run: run
       )
     } catch {
-      if !pluginContext.contextBlocks.isEmpty {
-        let sanitized = await sanitizeFailedTranscript(
-          session.transcript,
-          fallback: transcriptBeforeRun,
-          context: pluginContext,
-          runID: runID
+      if !committedTranscript {
+        let sanitized =
+          if startedInference {
+            await sanitizeFailedTranscript(
+              runContext.session.transcript,
+              fallback: runContext.activeTranscript,
+              context: pluginContext,
+              runID: runID
+            )
+          } else {
+            runContext.activeTranscript
+          }
+        let failedEntries = transcriptEntries(
+          addedTo: sanitized,
+          after: runContext.activeTranscript
         )
+        let updatedAuthoritativeTranscript = appending(
+          failedEntries,
+          to: runContext.authoritativeTranscript
+        )
+        authoritativeTranscript = updatedAuthoritativeTranscript
         installSession(transcript: sanitized, ifNeededFor: pluginContext)
         if configuration.savesTranscriptAfterFailedResponse {
-          await persistAfterFailedResponse(transcript: sanitized, runID: runID)
+          await persistAfterFailedResponse(
+            transcript: updatedAuthoritativeTranscript,
+            runID: runID
+          )
         }
-      } else if configuration.savesTranscriptAfterFailedResponse, !completedModelResponse {
-        await persistAfterFailedResponse(transcript: session.transcript, runID: runID)
       }
       await failPlugins(
         FoundationModelsAgentPluginFailure(
@@ -1470,6 +1998,7 @@ public actor AgentSession {
         "Preserved partial transcripts cannot be retried safely. Use .revert or one attempt."
       )
     }
+    try configuration.contextBudget?.validate()
     try transcriptRetention.validate()
   }
 
@@ -1494,6 +2023,12 @@ public actor AgentSession {
       }
     }
   }
+}
+
+private struct PreparedRunContext {
+  let session: LanguageModelSession
+  let activeTranscript: Transcript
+  let authoritativeTranscript: Transcript
 }
 
 private struct PreparedPluginContext: Sendable {

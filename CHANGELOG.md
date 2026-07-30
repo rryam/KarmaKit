@@ -5,6 +5,14 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added native explicit-model context budgeting with reserved response
+  headroom, fractional and absolute input limits, deterministic overflow
+  policy, per-component accounting, and fail-before-inference behavior.
+- Added audited app-owned history transforms with authoritative-checkpoint
+  preservation, tool-turn validation, cancellation, and a documented
+  dynamic-profile boundary that composes with Apple's history utilities.
+- Added atomic routed-session construction so context measurement receives the
+  actual selected native model without treating route metadata as token counts.
 - Added explicit app-policy routing among native `LanguageModel` values with typed
   availability, privacy/network, context, reasoning, quota, accounting, fallback,
   and per-candidate decision evidence.

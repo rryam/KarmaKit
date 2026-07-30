@@ -8,6 +8,9 @@ public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable
   case modelAttemptStarted
   case modelAttemptFailed
   case modelResponseCompleted
+  case contextBudgetEvaluated
+  case contextBudgetTransformed
+  case contextBudgetFailed
   case pluginPreparationStarted
   case pluginPreparationCompleted
   case pluginPreparationFailed
@@ -168,7 +171,30 @@ public struct FoundationModelsAgentRedactionPolicy: Sendable {
   fileprivate func redact(attributes: [String: String]) -> [String: String] {
     let sensitiveMarkers = ["authorization", "api_key", "apikey", "token", "secret", "password"]
     return attributes.mapValues { redactor($0) }.reduce(into: [:]) { result, pair in
-      if sensitiveMarkers.contains(where: { pair.key.lowercased().contains($0) }) {
+      let key = pair.key.lowercased()
+      let usageTokenCountKeys = [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+      ]
+      let contextTokenCountSuffixes = [
+        "_instructions_tokens",
+        "_tools_tokens",
+        "_prompt_tokens",
+        "_schema_tokens",
+        "_transcript_tokens",
+        "_total_input_tokens",
+        "_usable_input_tokens",
+      ]
+      let isNumericTokenCount =
+        (usageTokenCountKeys.contains(key)
+          || contextTokenCountSuffixes.contains(where: {
+            (key.hasPrefix("before_") || key.hasPrefix("after_"))
+              && key.hasSuffix($0)
+          }))
+        && Int(pair.value) != nil
+      if sensitiveMarkers.contains(where: { key.contains($0) }), !isNumericTokenCount {
         result[pair.key] = "[REDACTED]"
       } else {
         result[pair.key] = pair.value
