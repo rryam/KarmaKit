@@ -61,8 +61,12 @@ The valid settlements are:
 
 - ``AgentTaskSettlementStatus/succeeded`` with no failure or cancellation
   reason;
+- ``AgentTaskSettlementStatus/denied`` with a failure reason when policy or
+  approval rejects the task;
 - ``AgentTaskSettlementStatus/failed`` with a failure reason;
 - ``AgentTaskSettlementStatus/cancelled`` with a cancellation reason;
+- ``AgentTaskSettlementStatus/timedOut`` with a failure reason when a
+  caller-owned deadline settles the task;
 - ``AgentTaskSettlementStatus/ambiguousAfterCrash`` with a failure reason when
   recovery cannot prove whether an external effect happened.
 
@@ -71,9 +75,27 @@ must not retry a possibly escaped side effect merely because its local receipt
 was not durably settled.
 
 ``AgentEvidenceReference`` keeps output bodies and evidence storage
-application-owned. Use `AgentTaskResult/redacted(using:)` before disclosure
-when identifiers, locations, attributes, or termination messages may contain
-credentials.
+application-owned. Its stable ``AgentEvidenceReferenceID`` and
+``AgentEvidenceReferenceKind`` values can point to:
+
+- the complete ``FoundationModelsAgentRun`` trace with
+  ``AgentEvidenceReference/run(_:)``;
+- its existing ``FoundationModelsAgentRouteDecision`` with
+  ``AgentEvidenceReference/routingDecision(for:)``; or
+- an existing routing, context-budget, governance, or tool event with
+  ``AgentEvidenceReference/event(_:)``.
+
+These links do not copy routing decisions, context counts, tool arguments, or
+event attributes into the task envelope. Bundle verification resolves linked
+runs and receipt events, and rejects missing runs, missing events, event/run
+mismatches, and duplicate reference IDs. A route-decision reference resolves
+against the separately retained run trace because event receipts intentionally
+do not duplicate the full route decision.
+
+Use `AgentTaskResult/redacted(using:)` before disclosure when external
+identifiers, locations, attributes, or termination messages may contain
+credentials. Typed run and event identifiers are not redacted, so the graph
+remains verifiable.
 
 ### Adopt from child and background work
 
@@ -83,7 +105,8 @@ A future child or background implementation should:
 2. pass that lineage to the child `AgentSession`;
 3. export the child run receipt;
 4. settle exactly one ``AgentTaskResult``;
-5. persist or transmit the receipt bundle using application-owned storage.
+5. persist or transmit the receipt bundle using
+   ``AgentReceiptBundleExporter`` or application-owned storage.
 
 It should not add a provider, message, transcript, routing, context-management,
 or scheduler abstraction to these evidence types.

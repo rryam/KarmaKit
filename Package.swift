@@ -92,6 +92,10 @@ let package = Package(
       dependencies: ["FoundationModelsAgent", "FoundationModelsAgentTestSupport"]
     ),
     .testTarget(
+      name: "FoundationModelsAgentPublicAPITests",
+      dependencies: ["FoundationModelsAgent", "FoundationModelsAgentTestSupport"]
+    ),
+    .testTarget(
       name: "FoundationModelsAgentProviderTests",
       dependencies: ["FoundationModelsAgent", "FoundationModelsAgentProviders"],
       swiftSettings: [

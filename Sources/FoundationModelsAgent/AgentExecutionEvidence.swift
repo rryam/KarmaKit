@@ -216,6 +216,10 @@ public enum AgentExecutionEvidenceError: Error, LocalizedError, Equatable, Senda
   case duplicateTaskID(AgentTaskID)
   case missingTaskReceipt(AgentTaskID)
   case taskReceiptMismatch(AgentTaskID)
+  case duplicateEvidenceReferenceID(AgentEvidenceReferenceID)
+  case missingEvidenceRun(referenceID: AgentEvidenceReferenceID, runID: AgentRunID)
+  case missingEvidenceEvent(referenceID: AgentEvidenceReferenceID, eventID: UUID)
+  case evidenceEventRunMismatch(referenceID: AgentEvidenceReferenceID)
 
   public var errorDescription: String? {
     switch self {
@@ -255,8 +259,88 @@ public enum AgentExecutionEvidenceError: Error, LocalizedError, Equatable, Senda
       "Task \(taskID) references a run that is absent from the receipt bundle."
     case .taskReceiptMismatch(let taskID):
       "Task \(taskID) does not match its linked run receipt."
+    case .duplicateEvidenceReferenceID(let referenceID):
+      "Task result contains evidence reference '\(referenceID)' more than once."
+    case .missingEvidenceRun(let referenceID, let runID):
+      "Evidence reference '\(referenceID)' links to missing run \(runID)."
+    case .missingEvidenceEvent(let referenceID, let eventID):
+      "Evidence reference '\(referenceID)' links to missing event \(eventID)."
+    case .evidenceEventRunMismatch(let referenceID):
+      "Evidence reference '\(referenceID)' links an event to the wrong run."
     }
   }
+}
+
+/// A stable, application-defined identifier for an output or evidence attachment.
+public struct AgentEvidenceReferenceID:
+  RawRepresentable, Codable, Hashable, Sendable, CustomStringConvertible,
+  ExpressibleByStringLiteral
+{
+  public let rawValue: String
+
+  public init(rawValue: String) {
+    self.rawValue = rawValue
+  }
+
+  public init(_ rawValue: String) {
+    self.init(rawValue: rawValue)
+  }
+
+  public init(stringLiteral value: String) {
+    self.init(value)
+  }
+
+  public var description: String { rawValue }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    self.init(try container.decode(String.self))
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+}
+
+/// The canonical record an ``AgentEvidenceReference`` resolves to.
+public struct AgentEvidenceReferenceKind:
+  RawRepresentable, Codable, Hashable, Sendable, ExpressibleByStringLiteral
+{
+  public let rawValue: String
+
+  public init(rawValue: String) {
+    self.rawValue = rawValue
+  }
+
+  public init(_ rawValue: String) {
+    self.init(rawValue: rawValue)
+  }
+
+  public init(stringLiteral value: String) {
+    self.init(value)
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    self.init(try container.decode(String.self))
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+
+  /// A complete ``FoundationModelsAgentRun`` trace record.
+  public static let run = Self("run")
+  /// The ``FoundationModelsAgentRouteDecision`` stored on a run trace.
+  public static let routingDecision = Self("routing-decision")
+  /// One ``FoundationModelsAgentEvent`` in a run receipt.
+  public static let event = Self("event")
+  /// Application-owned generated output.
+  public static let output = Self("output")
+  /// Another application-owned artifact.
+  public static let artifact = Self("artifact")
 }
 
 /// A URI-like reference to output or supporting evidence.
@@ -264,27 +348,66 @@ public enum AgentExecutionEvidenceError: Error, LocalizedError, Equatable, Senda
 /// The referenced content remains application-owned. The envelope does not introduce a message,
 /// transcript, or provider abstraction.
 public struct AgentEvidenceReference: Codable, Equatable, Sendable, Identifiable {
-  public let id: String
-  public let kind: String
+  public let id: AgentEvidenceReferenceID
+  public let kind: AgentEvidenceReferenceKind
+  /// The run containing canonical routing, context, tool, or lifecycle evidence.
+  public let runID: AgentRunID?
+  /// The event containing canonical context, tool, or lifecycle evidence.
+  public let eventID: UUID?
   public let location: String?
   public let attributes: [String: String]
 
   public init(
-    id: String,
-    kind: String,
+    id: AgentEvidenceReferenceID,
+    kind: AgentEvidenceReferenceKind,
+    runID: AgentRunID? = nil,
+    eventID: UUID? = nil,
     location: String? = nil,
     attributes: [String: String] = [:]
   ) {
     self.id = id
     self.kind = kind
+    self.runID = runID
+    self.eventID = eventID
     self.location = location
     self.attributes = attributes
   }
 
+  /// References the complete trace for a run.
+  public static func run(_ runID: AgentRunID) -> Self {
+    Self(
+      id: AgentEvidenceReferenceID("run:\(runID)"),
+      kind: .run,
+      runID: runID
+    )
+  }
+
+  /// References the canonical route decision already stored on a run trace.
+  public static func routingDecision(for runID: AgentRunID) -> Self {
+    Self(
+      id: AgentEvidenceReferenceID("run:\(runID):routing-decision"),
+      kind: .routingDecision,
+      runID: runID
+    )
+  }
+
+  /// References a canonical run event without copying its routing, context, or tool attributes.
+  public static func event(_ event: FoundationModelsAgentEvent) -> Self {
+    let runID = AgentRunID(rawValue: event.runID)
+    return Self(
+      id: AgentEvidenceReferenceID("run:\(runID):event:\(event.id.uuidString.lowercased())"),
+      kind: .event,
+      runID: runID,
+      eventID: event.id
+    )
+  }
+
   public func redacted(using policy: FoundationModelsAgentRedactionPolicy) -> Self {
     Self(
-      id: policy.redact(id),
-      kind: policy.redact(kind),
+      id: AgentEvidenceReferenceID(policy.redact(id.rawValue)),
+      kind: AgentEvidenceReferenceKind(policy.redact(kind.rawValue)),
+      runID: runID,
+      eventID: eventID,
       location: location.map(policy.redact),
       attributes: policy.redact(attributes: attributes)
     )
@@ -333,8 +456,12 @@ public struct AgentTaskTiming: Codable, Equatable, Sendable {
 /// Deterministic terminal settlement for a child or background task.
 public enum AgentTaskSettlementStatus: String, Codable, Equatable, Sendable {
   case succeeded
+  /// Policy or approval rejected the task before its requested work could complete.
+  case denied
   case failed
   case cancelled
+  /// The task reached its caller-owned terminal deadline.
+  case timedOut
   /// The process crashed after work may have escaped, and external effects cannot be proven.
   case ambiguousAfterCrash
 }
@@ -384,7 +511,7 @@ public struct AgentTaskResult: Codable, Equatable, Sendable {
       guard failureReason == nil, cancellationReason == nil else {
         throw AgentExecutionEvidenceError.invalidTaskSettlement(status)
       }
-    case .failed, .ambiguousAfterCrash:
+    case .denied, .failed, .timedOut, .ambiguousAfterCrash:
       guard failureReason != nil, cancellationReason == nil else {
         throw AgentExecutionEvidenceError.invalidTaskSettlement(status)
       }
@@ -570,6 +697,81 @@ public struct AgentReceiptBundle: Codable, Equatable, Sendable {
       else {
         throw AgentExecutionEvidenceError.taskReceiptMismatch(taskID)
       }
+
+      var evidenceReferenceIDs: Set<AgentEvidenceReferenceID> = []
+      for reference in result.outputReferences + result.evidenceReferences {
+        guard evidenceReferenceIDs.insert(reference.id).inserted else {
+          throw AgentExecutionEvidenceError.duplicateEvidenceReferenceID(reference.id)
+        }
+        guard let referencedRunID = reference.runID else {
+          continue
+        }
+        guard let referencedReceipt = byID[referencedRunID] else {
+          throw AgentExecutionEvidenceError.missingEvidenceRun(
+            referenceID: reference.id,
+            runID: referencedRunID
+          )
+        }
+        guard let eventID = reference.eventID else {
+          continue
+        }
+        guard
+          let event = referencedReceipt.receipts.lazy.map(\.event).first(where: {
+            $0.id == eventID
+          })
+        else {
+          if byID.values.lazy
+            .flatMap(\.receipts)
+            .contains(where: { $0.event.id == eventID })
+          {
+            throw AgentExecutionEvidenceError.evidenceEventRunMismatch(
+              referenceID: reference.id
+            )
+          }
+          throw AgentExecutionEvidenceError.missingEvidenceEvent(
+            referenceID: reference.id,
+            eventID: eventID
+          )
+        }
+        guard event.runID == referencedRunID.rawValue else {
+          throw AgentExecutionEvidenceError.evidenceEventRunMismatch(
+            referenceID: reference.id
+          )
+        }
+      }
     }
+  }
+}
+
+/// Deterministic JSON and atomic-file transport for a complete receipt bundle.
+public struct AgentReceiptBundleExporter: Sendable {
+  public init() {}
+
+  public func data(
+    for bundle: AgentReceiptBundle,
+    prettyPrinted: Bool = true
+  ) throws -> Data {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .millisecondsSince1970
+    encoder.outputFormatting = prettyPrinted ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
+    return try encoder.encode(bundle)
+  }
+
+  public func write(
+    _ bundle: AgentReceiptBundle,
+    to url: URL,
+    prettyPrinted: Bool = true
+  ) throws {
+    try data(for: bundle, prettyPrinted: prettyPrinted).write(to: url, options: .atomic)
+  }
+
+  public func decode(_ data: Data) throws -> AgentReceiptBundle {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .millisecondsSince1970
+    return try decoder.decode(AgentReceiptBundle.self, from: data)
+  }
+
+  public func decode(contentsOf url: URL) throws -> AgentReceiptBundle {
+    try decode(Data(contentsOf: url))
   }
 }

@@ -168,6 +168,17 @@ struct AgentExecutionEvidenceTests {
     }
   }
 
+  @Test("Receipt bundles reject duplicate run identifiers")
+  func duplicateRunRejection() throws {
+    let root = AgentRunLineage.root()
+    let receipt = try makeReceipt(lineage: root)
+    let bundle = AgentReceiptBundle(receipts: [receipt, receipt])
+
+    expectEvidenceError(.duplicateRunID(root.runID)) {
+      try bundle.verify()
+    }
+  }
+
   @Test("Lineage changes invalidate the receipt hash chain")
   func lineageTamperDetection() throws {
     let root = AgentRunLineage.root()
@@ -322,6 +333,95 @@ struct AgentExecutionEvidenceTests {
     }
   }
 
+  @Test("Receipt bundles validate canonical run and event evidence links")
+  func evidenceLinkValidation() throws {
+    let root = AgentRunLineage.root()
+    let child = try root.descendant()
+    let rootReceipt = try makeReceipt(
+      lineage: root,
+      eventID: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!
+    )
+    let childReceipt = try makeReceipt(
+      lineage: child,
+      eventID: UUID(uuidString: "00000000-0000-0000-0000-000000000012")!
+    )
+    let childEvent = try #require(childReceipt.receipts.first?.event)
+    let timing = try AgentTaskTiming(startedAt: start, endedAt: start)
+
+    let duplicate = AgentEvidenceReference.event(childEvent)
+    let duplicateResult = try AgentTaskResult(
+      lineage: child,
+      status: .succeeded,
+      outputReferences: [duplicate],
+      evidenceReferences: [duplicate],
+      timing: timing
+    )
+    expectEvidenceError(.duplicateEvidenceReferenceID(duplicate.id)) {
+      try AgentReceiptBundle(
+        receipts: [rootReceipt, childReceipt],
+        taskResults: [duplicateResult]
+      ).verify()
+    }
+
+    let missingRunID = AgentRunID()
+    let missingRun = AgentEvidenceReference.routingDecision(for: missingRunID)
+    let missingRunResult = try AgentTaskResult(
+      lineage: child,
+      status: .succeeded,
+      evidenceReferences: [missingRun],
+      timing: timing
+    )
+    expectEvidenceError(
+      .missingEvidenceRun(referenceID: missingRun.id, runID: missingRunID)
+    ) {
+      try AgentReceiptBundle(
+        receipts: [rootReceipt, childReceipt],
+        taskResults: [missingRunResult]
+      ).verify()
+    }
+
+    let missingEventID = UUID()
+    let missingEvent = AgentEvidenceReference(
+      id: "missing-event",
+      kind: .event,
+      runID: child.runID,
+      eventID: missingEventID
+    )
+    let missingEventResult = try AgentTaskResult(
+      lineage: child,
+      status: .succeeded,
+      evidenceReferences: [missingEvent],
+      timing: timing
+    )
+    expectEvidenceError(
+      .missingEvidenceEvent(referenceID: missingEvent.id, eventID: missingEventID)
+    ) {
+      try AgentReceiptBundle(
+        receipts: [rootReceipt, childReceipt],
+        taskResults: [missingEventResult]
+      ).verify()
+    }
+
+    let wrongRun = AgentEvidenceReference(
+      id: "wrong-run-event",
+      kind: .event,
+      runID: root.runID,
+      eventID: childEvent.id
+    )
+    let wrongRunResult = try AgentTaskResult(
+      lineage: child,
+      status: .succeeded,
+      evidenceReferences: [wrongRun],
+      timing: timing
+    )
+    expectEvidenceError(.evidenceEventRunMismatch(referenceID: wrongRun.id)) {
+      try AgentReceiptBundle(
+        receipts: [rootReceipt, childReceipt],
+        taskResults: [wrongRunResult]
+      ).verify()
+    }
+  }
+
   @Test("Legacy receipt fixtures without lineage still decode and verify")
   func legacyReceiptFixture() throws {
     let fixture = Data(
@@ -382,11 +482,32 @@ struct AgentExecutionEvidenceTests {
     #expect(FoundationModelsAgentCheckpoint.currentFormatVersion == 1)
   }
 
-  private func makeReceipt(lineage: AgentRunLineage) throws
+  @Test("Lineage does not change transcript checkpoint version or payload")
+  func checkpointV1RemainsTranscriptOnly() async throws {
+    let session = try AgentSession(
+      model: RecordedLanguageModel(steps: [.response(text: "checkpoint")])
+    )
+    let root = AgentRunLineage.root()
+    _ = try await session.respond(to: "Checkpoint", lineage: root)
+    let checkpoint = try await session.checkpoint()
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    encoder.outputFormatting = [.sortedKeys]
+    let json = try #require(String(data: encoder.encode(checkpoint), encoding: .utf8))
+
+    #expect(checkpoint.formatVersion == 1)
+    #expect(!json.contains("lineage"))
+    #expect(!json.contains(root.runID.description))
+  }
+
+  private func makeReceipt(
+    lineage: AgentRunLineage,
+    eventID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000010")!
+  ) throws
     -> FoundationModelsAgentRunReceipt
   {
     let event = FoundationModelsAgentEvent(
-      id: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!,
+      id: eventID,
       runID: lineage.runID.rawValue,
       timestamp: start,
       kind: .runCompleted,

@@ -3,9 +3,14 @@ import Foundation
 
 public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable {
   case runStarted
+  case routeSelected
+  case routeCandidateRejected
   case modelAttemptStarted
   case modelAttemptFailed
   case modelResponseCompleted
+  case contextBudgetEvaluated
+  case contextBudgetTransformed
+  case contextBudgetFailed
   case pluginPreparationStarted
   case pluginPreparationCompleted
   case pluginPreparationFailed
@@ -14,6 +19,10 @@ public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable
   case pluginCompletionFailed
   case pluginEvent
   case profileToolAuditBestEffort
+  case profileToolAllowed
+  case profileToolDenied
+  case profileToolApprovalFailed
+  case profileToolBudgetExhausted
   case toolAuthorizationStarted
   case toolAuthorizationSucceeded
   case toolAuthorizationDenied
@@ -166,7 +175,30 @@ public struct FoundationModelsAgentRedactionPolicy: Sendable {
   func redact(attributes: [String: String]) -> [String: String] {
     let sensitiveMarkers = ["authorization", "api_key", "apikey", "token", "secret", "password"]
     return attributes.mapValues { redactor($0) }.reduce(into: [:]) { result, pair in
-      if sensitiveMarkers.contains(where: { pair.key.lowercased().contains($0) }) {
+      let key = pair.key.lowercased()
+      let usageTokenCountKeys = [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+      ]
+      let contextTokenCountSuffixes = [
+        "_instructions_tokens",
+        "_tools_tokens",
+        "_prompt_tokens",
+        "_schema_tokens",
+        "_transcript_tokens",
+        "_total_input_tokens",
+        "_usable_input_tokens",
+      ]
+      let isNumericTokenCount =
+        (usageTokenCountKeys.contains(key)
+          || contextTokenCountSuffixes.contains(where: {
+            (key.hasPrefix("before_") || key.hasPrefix("after_"))
+              && key.hasSuffix($0)
+          }))
+        && Int(pair.value) != nil
+      if sensitiveMarkers.contains(where: { key.contains($0) }), !isNumericTokenCount {
         result[pair.key] = "[REDACTED]"
       } else {
         result[pair.key] = pair.value
@@ -183,6 +215,8 @@ public struct FoundationModelsAgentRun: Codable, Equatable, Sendable, Identifiab
   public let events: [FoundationModelsAgentEvent]
   /// Present for new runs and absent when decoding legacy trace exports.
   public let lineage: AgentRunLineage?
+  /// The pre-execution route evidence, present for routed explicit-model runs.
+  public let routingDecision: FoundationModelsAgentRouteDecision?
 
   public init(
     id: UUID,
@@ -190,7 +224,8 @@ public struct FoundationModelsAgentRun: Codable, Equatable, Sendable, Identifiab
     endedAt: Date,
     usage: FoundationModelsAgentUsage?,
     events: [FoundationModelsAgentEvent],
-    lineage: AgentRunLineage? = nil
+    lineage: AgentRunLineage? = nil,
+    routingDecision: FoundationModelsAgentRouteDecision? = nil
   ) {
     self.id = id
     self.startedAt = startedAt
@@ -198,10 +233,49 @@ public struct FoundationModelsAgentRun: Codable, Equatable, Sendable, Identifiab
     self.usage = usage
     self.events = events
     self.lineage = lineage
+    self.routingDecision = routingDecision
   }
 
   public var duration: TimeInterval {
     endedAt.timeIntervalSince(startedAt)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case startedAt
+    case endedAt
+    case usage
+    case events
+    case lineage
+    case routingDecision
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.id = try container.decode(UUID.self, forKey: .id)
+    self.startedAt = try container.decode(Date.self, forKey: .startedAt)
+    self.endedAt = try container.decode(Date.self, forKey: .endedAt)
+    self.usage = try container.decodeIfPresent(
+      FoundationModelsAgentUsage.self,
+      forKey: .usage
+    )
+    self.events = try container.decode([FoundationModelsAgentEvent].self, forKey: .events)
+    self.lineage = try container.decodeIfPresent(AgentRunLineage.self, forKey: .lineage)
+    self.routingDecision = try container.decodeIfPresent(
+      FoundationModelsAgentRouteDecision.self,
+      forKey: .routingDecision
+    )
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(id, forKey: .id)
+    try container.encode(startedAt, forKey: .startedAt)
+    try container.encode(endedAt, forKey: .endedAt)
+    try container.encodeIfPresent(usage, forKey: .usage)
+    try container.encode(events, forKey: .events)
+    try container.encodeIfPresent(lineage, forKey: .lineage)
+    try container.encodeIfPresent(routingDecision, forKey: .routingDecision)
   }
 }
 
