@@ -47,6 +47,49 @@ private actor ChildToolInvocationCount {
   }
 }
 
+private actor ChildResultCapture {
+  private var values: [ChildAgentResult] = []
+
+  func append(_ value: ChildAgentResult) {
+    values.append(value)
+  }
+
+  var results: [ChildAgentResult] { values }
+}
+
+private actor RecursiveChildDefinitionBox {
+  private var storage: ChildAgentDefinition?
+
+  func set(_ definition: ChildAgentDefinition) {
+    storage = definition
+  }
+
+  func value() throws -> ChildAgentDefinition {
+    guard let storage else {
+      throw ChildFailureFixture.intentional
+    }
+    return storage
+  }
+}
+
+private struct CapturingChildAgentTool: Tool {
+  typealias Arguments = ChildAgentRequest
+  typealias Output = ChildAgentResult
+
+  let base: ChildAgentTool
+  let capture: ChildResultCapture
+
+  var name: String { base.name }
+  var description: String { base.description }
+
+  @concurrent
+  func call(arguments: ChildAgentRequest) async throws -> ChildAgentResult {
+    let result = try await base.call(arguments: arguments)
+    await capture.append(result)
+    return result
+  }
+}
+
 private struct CountedChildTool: Tool {
   let counter: ChildToolInvocationCount
   let name = "counted_child_tool"
@@ -100,11 +143,16 @@ struct ChildAgentToolTests {
     )
 
     #expect(result.identifier == "research_child")
-    #expect(result.status == .success)
+    #expect(result.status == .succeeded)
     #expect(result.content == "child finding")
-    #expect(result.failure == nil)
+    #expect(result.taskResult.failureReason == nil)
     #expect(result.turnsUsed == 1)
     #expect(!result.wasTruncated)
+    let decoded = try JSONDecoder().decode(
+      ChildAgentResult.self,
+      from: JSONEncoder().encode(result)
+    )
+    #expect(decoded == result)
   }
 
   @Test("Returns child tool failure as a structured model-safe result")
@@ -129,7 +177,7 @@ struct ChildAgentToolTests {
     )
 
     #expect(result.status == .failed)
-    #expect(result.failure?.kind == .childFailure)
+    #expect(result.taskResult.failureReason?.code == "child_failure")
     #expect(result.content == nil)
   }
 
@@ -160,10 +208,10 @@ struct ChildAgentToolTests {
     let result = try await consultation.value
 
     #expect(result.status == .cancelled)
-    #expect(result.failure?.kind == .childCancelled)
+    #expect(result.taskResult.cancellationReason?.code == "child_cancelled")
     let child = try #require(await capture.last)
     let run = try #require(await child.lastRun())
-    #expect(run.events.last?.kind == .runFailed)
+    #expect(run.events.last?.kind == .runCancelled)
   }
 
   @Test("Applies a wall-clock timeout to the whole child consultation")
@@ -185,7 +233,7 @@ struct ChildAgentToolTests {
     )
 
     #expect(result.status == .timedOut)
-    #expect(result.failure?.kind == .wallClockTimeout)
+    #expect(result.taskResult.failureReason?.code == "wall_clock_timeout")
   }
 
   @Test("Parent cancellation cascades through the foreground child")
@@ -225,7 +273,7 @@ struct ChildAgentToolTests {
     }
     let child = try #require(await capture.last)
     let childRun = try #require(await child.lastRun())
-    #expect(childRun.events.last?.kind == .runFailed)
+    #expect(childRun.events.last?.kind == .runCancelled)
   }
 
   @Test("Rejects a consultation at the configured depth boundary")
@@ -247,8 +295,8 @@ struct ChildAgentToolTests {
       arguments: ChildAgentRequest(task: "Recurse.")
     )
 
-    #expect(result.status == .depthLimitExceeded)
-    #expect(result.failure?.kind == .depthLimit)
+    #expect(result.status == .failed)
+    #expect(result.taskResult.failureReason?.code == "depth_limit_exceeded")
     #expect(await capture.count == 0)
   }
 
@@ -288,9 +336,41 @@ struct ChildAgentToolTests {
       arguments: ChildAgentRequest(task: "Consult another child.")
     )
 
-    #expect(result.status == .success)
+    #expect(result.status == .succeeded)
     #expect(result.content == "nested rejection handled")
     #expect(await nestedCapture.count == 0)
+  }
+
+  @Test("Recursive self-delegation cannot widen its canonical depth")
+  func recursiveSelfDelegation() async throws {
+    let box = RecursiveChildDefinitionBox()
+    let model = RecordedLanguageModel(steps: [
+      .toolCall(
+        name: "self_child",
+        argumentsJSON: #"{"task":"Delegate to yourself."}"#
+      ),
+      .response(text: "self-delegation rejected"),
+    ])
+    let definition = try ChildAgentDefinition(
+      identifier: "self_child",
+      description: "Attempts to call itself.",
+      limits: ChildAgentLimits(maximumDepth: 1)
+    ) { _ in
+      let recursiveDefinition = try await box.value()
+      return try AgentSession(
+        model: model,
+        tools: [ChildAgentTool(definition: recursiveDefinition)]
+      )
+    }
+    await box.set(definition)
+
+    let result = try await ChildAgentTool(definition: definition).call(
+      arguments: ChildAgentRequest(task: "Start recursion.")
+    )
+
+    #expect(result.status == .succeeded)
+    #expect(result.content == "self-delegation rejected")
+    #expect(model.recorder.capturedTranscripts().count == 2)
   }
 
   @Test("Rejects a consultation when no child turn is permitted")
@@ -312,8 +392,8 @@ struct ChildAgentToolTests {
       arguments: ChildAgentRequest(task: "Use a turn.")
     )
 
-    #expect(result.status == .turnLimitExceeded)
-    #expect(result.failure?.kind == .turnLimit)
+    #expect(result.status == .failed)
+    #expect(result.taskResult.failureReason?.code == "turn_limit_exceeded")
     #expect(await capture.count == 0)
   }
 
@@ -372,7 +452,7 @@ struct ChildAgentToolTests {
       arguments: ChildAgentRequest(task: "Return Unicode.")
     )
 
-    #expect(result.status == .success)
+    #expect(result.status == .succeeded)
     #expect(result.content == "é")
     #expect(result.content?.utf8.count == 2)
     #expect(result.wasTruncated)
@@ -430,8 +510,8 @@ struct ChildAgentToolTests {
       arguments: ChildAgentRequest(task: "Try the tool.")
     )
 
-    #expect(result.status == .toolCallLimitExceeded)
-    #expect(result.failure?.kind == .toolCallLimit)
+    #expect(result.status == .failed)
+    #expect(result.taskResult.failureReason?.code == "tool_call_limit_exceeded")
     #expect(await counter.value == 0)
   }
 
@@ -449,7 +529,7 @@ struct ChildAgentToolTests {
       arguments: ChildAgentRequest(task: "Use the profile.")
     )
 
-    #expect(result.status == .success)
+    #expect(result.status == .succeeded)
     #expect(result.content == "profile child answer")
     #expect(model.recorder.capturedTranscripts().count == 1)
   }
@@ -457,6 +537,9 @@ struct ChildAgentToolTests {
   @Test("Enforces child tool-call limits for dynamic profiles")
   func dynamicProfileToolCallLimit() async throws {
     let counter = ChildToolInvocationCount()
+    let childTool = CountedChildTool(counter: counter)
+    let registry = try DynamicProfileToolRegistry(tools: [childTool])
+    let governance = try DynamicProfileToolGovernanceConfiguration(trusting: registry)
     let model = RecordedLanguageModel(steps: [
       .toolCall(
         name: "counted_child_tool",
@@ -466,11 +549,12 @@ struct ChildAgentToolTests {
     let definition = try ChildAgentDefinition(
       identifier: "limited_profile_child",
       description: "Uses a tool-limited native dynamic profile.",
-      limits: ChildAgentLimits(maximumToolCalls: 0)
+      limits: ChildAgentLimits(maximumToolCalls: 0),
+      toolGovernance: governance
     ) { _ in
       RecordedToolChildProfile(
         model: model,
-        tool: CountedChildTool(counter: counter)
+        tool: childTool
       )
     }
 
@@ -478,8 +562,8 @@ struct ChildAgentToolTests {
       arguments: ChildAgentRequest(task: "Try the profile tool.")
     )
 
-    #expect(result.status == .toolCallLimitExceeded)
-    #expect(result.failure?.kind == .toolCallLimit)
+    #expect(result.status == .failed)
+    #expect(result.taskResult.failureReason?.code == "tool_call_limit_exceeded")
     #expect(await counter.value == 0)
   }
 
@@ -505,8 +589,8 @@ struct ChildAgentToolTests {
     )
 
     #expect(result.status == .denied)
-    #expect(result.failure?.kind == .policyDenied)
-    #expect(result.failure?.message == "Parent denial must be inherited.")
+    #expect(result.taskResult.failureReason?.code == "policy_denied")
+    #expect(result.taskResult.failureReason?.message == "Parent denial must be inherited.")
     #expect(await capture.count == 0)
   }
 
@@ -530,7 +614,188 @@ struct ChildAgentToolTests {
     )
 
     #expect(result.status == .denied)
-    #expect(result.failure?.message == "abc")
+    #expect(result.taskResult.failureReason?.message == "abc")
     #expect(result.wasTruncated)
+  }
+
+  @Test("Maps malformed or failed child generation without leaking its text")
+  func malformedChildOutput() async throws {
+    let definition = try ChildAgentDefinition(
+      identifier: "malformed_child",
+      description: "Returns a structured failure for malformed generation."
+    ) { _ in
+      try AgentSession(
+        model: RecordedLanguageModel(steps: [.failure("secret malformed payload")])
+      )
+    }
+
+    let result = try await ChildAgentTool(definition: definition).call(
+      arguments: ChildAgentRequest(task: "Produce malformed output.")
+    )
+
+    #expect(result.status == .failed)
+    #expect(result.taskResult.failureReason?.code == "child_failure")
+    #expect(result.taskResult.failureReason?.message == "The child-agent consultation failed.")
+    #expect(result.content == nil)
+  }
+
+  @Test("Redacts sensitive child content before bounding and model projection")
+  func sensitiveOutputRedaction() async throws {
+    let definition = try ChildAgentDefinition(
+      identifier: "redacting_child",
+      description: "Redacts sensitive findings."
+    ) { _ in
+      try AgentSession(
+        model: RecordedLanguageModel(steps: [.response(text: "token=super-secret")])
+      )
+    }
+
+    let result = try await ChildAgentTool(definition: definition).call(
+      arguments: ChildAgentRequest(task: "Return a sensitive value.")
+    )
+
+    #expect(result.content == "token=[REDACTED]")
+    #expect(!String(describing: result.promptRepresentation).contains("super-secret"))
+  }
+
+  @Test("Concurrent calls create fresh sessions and distinct canonical tasks")
+  func concurrentChildren() async throws {
+    let capture = ChildSessionCapture()
+    let model = RecordedLanguageModel(steps: [
+      .response(text: "first"),
+      .response(text: "second"),
+    ])
+    let definition = try ChildAgentDefinition(
+      identifier: "concurrent_child",
+      description: "Runs independent consultations."
+    ) { _ in
+      let session = try AgentSession(model: model)
+      await capture.append(session)
+      return session
+    }
+    let tool = ChildAgentTool(definition: definition)
+
+    async let first = tool.call(arguments: ChildAgentRequest(task: "First."))
+    async let second = tool.call(arguments: ChildAgentRequest(task: "Second."))
+    let results = try await [first, second]
+
+    #expect(results.allSatisfy { $0.status == .succeeded })
+    #expect(Set(results.map(\.taskResult.lineage.runID)).count == 2)
+    #expect(Set(results.compactMap(\.taskResult.lineage.taskID)).count == 2)
+    #expect(await capture.count == 2)
+  }
+
+  @Test("Parent timeout cancels an in-flight foreground child")
+  func parentTimeoutCascades() async throws {
+    let capture = ChildSessionCapture()
+    let childModel = RecordedLanguageModel(steps: [
+      .delayedResponse(text: "late", delay: .seconds(1))
+    ])
+    let definition = try ChildAgentDefinition(
+      identifier: "parent_timeout_child",
+      description: "Is cancelled by the parent deadline.",
+      limits: ChildAgentLimits(wallClockTimeout: .seconds(5))
+    ) { _ in
+      let session = try AgentSession(model: childModel)
+      await capture.append(session)
+      return session
+    }
+    let parent = try AgentSession(
+      model: RecordedLanguageModel(steps: [
+        .toolCall(
+          name: "parent_timeout_child",
+          argumentsJSON: #"{"task":"Wait."}"#
+        )
+      ]),
+      tools: [ChildAgentTool(definition: definition)],
+      configuration: FoundationModelsAgentConfiguration(
+        responseTimeout: .milliseconds(10)
+      )
+    )
+
+    await #expect(throws: FoundationModelsAgentError.self) {
+      _ = try await parent.respond(to: "Consult.")
+    }
+    let child = try #require(await capture.last)
+    let run = try #require(await child.lastRun())
+    #expect(run.events.last?.kind == .runCancelled)
+  }
+
+  @Test("Child count is enforced per tool in one parent run")
+  func childCountLimit() async throws {
+    let capture = ChildSessionCapture()
+    let childModel = RecordedLanguageModel(steps: [
+      .response(text: "one"),
+      .response(text: "two"),
+    ])
+    let definition = try ChildAgentDefinition(
+      identifier: "count_limited_child",
+      description: "Allows two consultations.",
+      limits: ChildAgentLimits(maximumChildrenPerParentRun: 2)
+    ) { _ in
+      let session = try AgentSession(model: childModel)
+      await capture.append(session)
+      return session
+    }
+    let resultCapture = ChildResultCapture()
+    let parent = try AgentSession(
+      model: RecordedLanguageModel(steps: [
+        .toolCall(name: "count_limited_child", argumentsJSON: #"{"task":"One."}"#),
+        .toolCall(name: "count_limited_child", argumentsJSON: #"{"task":"Two."}"#),
+        .toolCall(name: "count_limited_child", argumentsJSON: #"{"task":"Three."}"#),
+        .response(text: "parent done"),
+      ]),
+      tools: [
+        CapturingChildAgentTool(
+          base: ChildAgentTool(definition: definition),
+          capture: resultCapture
+        )
+      ]
+    )
+
+    _ = try await parent.respond(to: "Consult three times.")
+    let results = await resultCapture.results
+    #expect(results.map(\.status) == [.succeeded, .succeeded, .failed])
+    #expect(results.last?.taskResult.failureReason?.code == "child_limit_exceeded")
+    #expect(await capture.count == 2)
+  }
+
+  @Test("Child result, run, receipt, and parent share canonical lineage")
+  func canonicalLineageAndReceipt() async throws {
+    let capture = ChildResultCapture()
+    let definition = try ChildAgentDefinition(
+      identifier: "lineage_child",
+      description: "Produces canonical child evidence."
+    ) { _ in
+      try AgentSession(model: RecordedLanguageModel(steps: [.response(text: "evidence")]))
+    }
+    let parent = try AgentSession(
+      model: RecordedLanguageModel(steps: [
+        .toolCall(name: "lineage_child", argumentsJSON: #"{"task":"Investigate."}"#),
+        .response(text: "parent answer"),
+      ]),
+      tools: [
+        CapturingChildAgentTool(
+          base: ChildAgentTool(definition: definition),
+          capture: capture
+        )
+      ]
+    )
+
+    let parentResponse = try await parent.respond(to: "Use evidence.")
+    let childResult = try #require(await capture.results.first)
+    let childReceipt = try #require(childResult.receipt)
+    let parentReceipt = try FoundationModelsAgentRunReceipt(run: parentResponse.run)
+    let parentLineage = try #require(parentResponse.run.lineage)
+    let childLineage = childResult.taskResult.lineage
+
+    #expect(childLineage.parentRunID == parentLineage.runID)
+    #expect(childLineage.rootRunID == parentLineage.rootRunID)
+    #expect(childReceipt.lineage == childLineage)
+    let bundle = AgentReceiptBundle(
+      receipts: [parentReceipt, childReceipt],
+      taskResults: [childResult.taskResult]
+    )
+    try bundle.verify(maximumDepth: AgentRunDepth(1))
   }
 }

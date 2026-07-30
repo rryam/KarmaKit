@@ -16,6 +16,7 @@ let definition = try ChildAgentDefinition(
   identifier: "review_child",
   description: "Review one proposed change and return concise findings.",
   limits: ChildAgentLimits(
+    maximumChildrenPerParentRun: 2,
     maximumDepth: 1,
     maximumTurns: 1,
     maximumToolCalls: 2,
@@ -51,19 +52,27 @@ child session with a narrower `FoundationModelsAgentToolConfiguration`.
 ``ClosureChildAgentPolicy`` is the adapter seam for an application policy
 system; FoundationModelsAgent does not define a parallel capability hierarchy.
 
-Policy denial and child tool denial are returned as
-``ChildAgentResultStatus/denied`` with a bounded ``ChildAgentFailure``. Child
-cancellation, timeout, tool-call exhaustion, depth rejection, and other
-failures also have distinct structured statuses. The parent model sees the
-result as stable JSON and decides how to use it.
+Policy denial, child tool denial, cancellation, timeout, tool-call exhaustion,
+depth rejection, and other failures are returned as canonical
+``AgentTaskResult`` settlements inside ``ChildAgentResult``. Successful results
+include a tamper-evident child receipt and an ``AgentRunLineage`` descendant of
+the parent run. The parent model sees a bounded JSON projection, without the
+full receipt payload, and decides how to use it.
 
 ## Understand the limits
 
 One tool call performs one foreground child turn. A zero turn limit rejects the
-call. ``ChildAgentLimits/maximumDepth`` is carried through task-local child
-calls, and ``ChildAgentLimits/maximumToolCalls`` narrows the child
-`AgentSession` run budget. Dynamic-profile child tools are counted by the
-profile's pre-execution tool-call lifecycle hook.
+call. ``ChildAgentLimits/maximumChildrenPerParentRun`` bounds consultations
+from the same tool in a parent run. ``ChildAgentLimits/maximumDepth`` is
+carried through canonical task-local lineage and cannot be widened by a nested
+definition. ``ChildAgentLimits/maximumToolCalls`` narrows an explicit-model
+child run budget.
+
+For profile-owned tools, pass a
+``DynamicProfileToolGovernanceConfiguration`` to `toolGovernance:`. The child
+definition narrows the canonical governance total-call budget. Without that
+configuration, an opaque dynamic profile remains observable but the package
+cannot truthfully limit its tool execution.
 
 The wall-clock timeout covers policy, session construction, and generation.
 It propagates Swift cancellation into the child, so custom factories, models,
@@ -71,8 +80,11 @@ and tools must cooperate with cancellation. Successful content and failure
 messages are independently bounded by UTF-8 size without splitting extended
 grapheme clusters.
 
-This API intentionally has no background queue, detached execution, durable
-child handle, generic task-result schema, or receipt-lineage model.
+Routing, context budgeting, tool governance, plugins, checkpoint and memory
+scope, and instrumentation are explicit choices in the fresh session factory.
+The canonical lineage supplied to the child correlates its receipts and
+Instruments projection automatically. This API intentionally has no background
+queue, detached execution, durable child handle, or workflow DSL.
 
 ## Choose baton pass or phone a friend
 

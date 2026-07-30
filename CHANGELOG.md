@@ -5,10 +5,37 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added opt-in OSLog signposts and a deterministic injectable event projection
+  for canonically correlated run, routing, context, checkpoint, approval,
+  governed-tool, retry, cancellation, and dynamic-profile observability.
+- Added stable hierarchical run/task identifiers, parent-child lineage on runs,
+  observer events and tamper-evident receipts, structured terminal
+  `AgentTaskResult` evidence, canonical run/event evidence references,
+  deterministic denied/timed-out/crash settlement, JSON/file bundle transport,
+  and receipt-bundle graph verification.
+- Added native explicit-model context budgeting with reserved response
+  headroom, fractional and absolute input limits, deterministic overflow
+  policy, per-component accounting, and fail-before-inference behavior.
+- Added audited app-owned history transforms with authoritative-checkpoint
+  preservation, tool-turn validation, cancellation, and a documented
+  dynamic-profile boundary that composes with Apple's history utilities.
+- Added atomic routed-session construction so context measurement receives the
+  actual selected native model without treating route metadata as token counts.
+- Added explicit app-policy routing among native `LanguageModel` values with typed
+  availability, privacy/network, context, reasoning, quota, accounting, fallback,
+  and per-candidate decision evidence.
+- Added truthful on-device and Private Cloud Compute snapshots plus routed
+  `AgentSession` provenance on completed and failed runs.
+- Added Xcode 27 dynamic-profile tool governance with explicit manifest
+  registries, fail-closed unknown and changed-tool handling, canonical native
+  arguments, async approval, total and per-tool call budgets, and audited
+  pre-execution outcomes carrying native tool-call IDs.
 - Added `ChildAgentTool` and `ChildAgentDefinition` for bounded, foreground
   phone-a-friend consultations using fresh native `AgentSession` instances,
-  structured failures, explicit policy narrowing, cancellation propagation,
-  and depth, turn, tool-call, timeout, and output limits.
+  canonical child lineage and task evidence, explicit policy narrowing,
+  correlated instrumentation, cancellation propagation, and child, depth,
+  turn, tool-call, timeout, and output limits. Child factories retain explicit
+  ownership of routing, context, governance, checkpoint, and memory scope.
 
 ## 0.4.0 - 2026-07-30
 

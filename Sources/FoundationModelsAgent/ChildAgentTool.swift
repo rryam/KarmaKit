@@ -15,6 +15,9 @@ public struct ChildAgentRequest: Sendable {
 
 /// Limits applied to one foreground child-agent consultation.
 public struct ChildAgentLimits: Equatable, Sendable {
+  /// Maximum consultations started by this child tool in one parent run.
+  public var maximumChildrenPerParentRun: Int
+
   /// Maximum recursive child depth. Zero rejects the consultation.
   public var maximumDepth: Int
 
@@ -34,6 +37,7 @@ public struct ChildAgentLimits: Equatable, Sendable {
   public var maximumFailureBytes: Int
 
   public init(
+    maximumChildrenPerParentRun: Int = 4,
     maximumDepth: Int = 1,
     maximumTurns: Int = 1,
     maximumToolCalls: Int? = 4,
@@ -41,6 +45,7 @@ public struct ChildAgentLimits: Equatable, Sendable {
     maximumOutputBytes: Int = 8_192,
     maximumFailureBytes: Int = 512
   ) {
+    self.maximumChildrenPerParentRun = maximumChildrenPerParentRun
     self.maximumDepth = maximumDepth
     self.maximumTurns = maximumTurns
     self.maximumToolCalls = maximumToolCalls
@@ -56,18 +61,21 @@ public struct ChildAgentLimits: Equatable, Sendable {
 public struct ChildAgentInvocation: Sendable {
   public let identifier: String
   public let task: String
-  public let depth: Int
+  /// Canonical lineage assigned before policy or session construction.
+  public let lineage: AgentRunLineage
   public let limits: ChildAgentLimits
+
+  public var depth: Int { lineage.depth.rawValue }
 
   public init(
     identifier: String,
     task: String,
-    depth: Int,
+    lineage: AgentRunLineage,
     limits: ChildAgentLimits
   ) {
     self.identifier = identifier
     self.task = task
-    self.depth = depth
+    self.lineage = lineage
     self.limits = limits
   }
 }
@@ -123,6 +131,7 @@ public enum ChildAgentDefinitionError: Error, LocalizedError, Sendable {
   case emptyIdentifier
   case invalidIdentifier(String)
   case emptyDescription
+  case invalidMaximumChildrenPerParentRun(Int)
   case invalidMaximumDepth(Int)
   case invalidMaximumTurns(Int)
   case invalidMaximumToolCalls(Int)
@@ -138,6 +147,8 @@ public enum ChildAgentDefinitionError: Error, LocalizedError, Sendable {
       "The child-agent identifier '\(value)' must contain 1–64 ASCII letters, digits, underscores, or hyphens."
     case .emptyDescription:
       "A child-agent description must not be empty."
+    case .invalidMaximumChildrenPerParentRun(let value):
+      "The per-parent child limit must be zero or greater; received \(value)."
     case .invalidMaximumDepth(let value):
       "The child-agent maximum depth must be zero or greater; received \(value)."
     case .invalidMaximumTurns(let value):
@@ -160,6 +171,7 @@ public struct ChildAgentDefinition: Sendable {
   public let description: String
   public let limits: ChildAgentLimits
   public let policy: any ChildAgentPolicy
+  public let resultRedactionPolicy: FoundationModelsAgentRedactionPolicy
 
   private let makeSession:
     nonisolated(nonsending) @Sendable (ChildAgentInvocation) async throws -> AgentSession
@@ -173,6 +185,7 @@ public struct ChildAgentDefinition: Sendable {
     description: String,
     limits: ChildAgentLimits = .default,
     policy: any ChildAgentPolicy = AllowChildAgentPolicy(),
+    resultRedactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
     sessionFactory:
       nonisolated(nonsending) @escaping @Sendable (ChildAgentInvocation) async throws
       -> AgentSession
@@ -182,6 +195,7 @@ public struct ChildAgentDefinition: Sendable {
     self.description = description
     self.limits = limits
     self.policy = policy
+    self.resultRedactionPolicy = resultRedactionPolicy
     self.makeSession = sessionFactory
   }
 
@@ -198,6 +212,8 @@ public struct ChildAgentDefinition: Sendable {
     checkpointCompatibilityID: String? = nil,
     limits: ChildAgentLimits = .default,
     policy: any ChildAgentPolicy = AllowChildAgentPolicy(),
+    resultRedactionPolicy: FoundationModelsAgentRedactionPolicy = .standard,
+    toolGovernance: DynamicProfileToolGovernanceConfiguration? = nil,
     profile makeProfile:
       @escaping @Sendable (ChildAgentInvocation) -> sending Profile
   ) throws {
@@ -206,11 +222,14 @@ public struct ChildAgentDefinition: Sendable {
       identifier: identifier,
       description: description,
       limits: limits,
-      policy: policy
+      policy: policy,
+      resultRedactionPolicy: resultRedactionPolicy
     ) { invocation in
       try makeChildProfileSession(
         checkpointCompatibilityID: compatibilityID,
         invocation: invocation,
+        limits: limits,
+        toolGovernance: toolGovernance,
         makeProfile: makeProfile
       )
     }
@@ -239,6 +258,10 @@ public struct ChildAgentDefinition: Sendable {
     guard !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw ChildAgentDefinitionError.emptyDescription
     }
+    guard limits.maximumChildrenPerParentRun >= 0 else {
+      throw ChildAgentDefinitionError.invalidMaximumChildrenPerParentRun(
+        limits.maximumChildrenPerParentRun)
+    }
     guard limits.maximumDepth >= 0 else {
       throw ChildAgentDefinitionError.invalidMaximumDepth(limits.maximumDepth)
     }
@@ -260,87 +283,134 @@ public struct ChildAgentDefinition: Sendable {
   }
 }
 
-public enum ChildAgentResultStatus: String, Codable, Equatable, Sendable {
-  case success
-  case denied
-  case cancelled
-  case timedOut = "timed_out"
-  case depthLimitExceeded = "depth_limit_exceeded"
-  case turnLimitExceeded = "turn_limit_exceeded"
-  case toolCallLimitExceeded = "tool_call_limit_exceeded"
-  case failed
-}
+/// Structured tool output returned to the parent model.
+///
+/// `taskResult` is the package's canonical settlement/evidence model. The
+/// receipt is available to application code, while the parent model receives a
+/// bounded JSON projection containing only the settlement and bounded content.
+public enum ChildAgentResultError: Error, LocalizedError, Equatable, Sendable {
+  case invalidTurnsUsed(Int)
 
-public enum ChildAgentFailureKind: String, Codable, Equatable, Sendable {
-  case policyDenied = "policy_denied"
-  case childCancelled = "child_cancelled"
-  case wallClockTimeout = "wall_clock_timeout"
-  case childTimeout = "child_timeout"
-  case depthLimit = "depth_limit"
-  case turnLimit = "turn_limit"
-  case toolCallLimit = "tool_call_limit"
-  case childFailure = "child_failure"
-}
-
-public struct ChildAgentFailure: Codable, Equatable, Sendable {
-  public let kind: ChildAgentFailureKind
-  public let message: String
-
-  public init(kind: ChildAgentFailureKind, message: String) {
-    self.kind = kind
-    self.message = message
+  public var errorDescription: String? {
+    switch self {
+    case .invalidTurnsUsed(let turns):
+      "A foreground child result must use zero or one turn; received \(turns)."
+    }
   }
 }
 
-/// Structured tool output returned to the parent model.
-///
-/// The parent receives this value as bounded JSON and remains responsible for
-/// deciding how to answer the user.
 public struct ChildAgentResult: Codable, Equatable, Sendable, PromptRepresentable {
   public let identifier: String
-  public let status: ChildAgentResultStatus
+  public let taskResult: AgentTaskResult
   public let content: String?
-  public let failure: ChildAgentFailure?
+  public let receipt: FoundationModelsAgentRunReceipt?
   public let wasTruncated: Bool
   public let turnsUsed: Int
 
+  public var status: AgentTaskSettlementStatus { taskResult.status }
+
+  private enum CodingKeys: String, CodingKey {
+    case identifier
+    case taskResult
+    case content
+    case receipt
+    case wasTruncated
+    case turnsUsed
+  }
+
   public init(
     identifier: String,
-    status: ChildAgentResultStatus,
+    taskResult: AgentTaskResult,
     content: String? = nil,
-    failure: ChildAgentFailure? = nil,
+    receipt: FoundationModelsAgentRunReceipt? = nil,
     wasTruncated: Bool = false,
     turnsUsed: Int = 0
-  ) {
+  ) throws {
+    guard let taskID = taskResult.lineage.taskID else {
+      throw AgentExecutionEvidenceError.invalidDescendantLineage
+    }
+    guard (0...1).contains(turnsUsed) else {
+      throw ChildAgentResultError.invalidTurnsUsed(turnsUsed)
+    }
+    switch (receipt, taskResult.receipt) {
+    case (.none, .none):
+      break
+    case (.some(let receipt), .some(let reference)):
+      guard receipt.verify(),
+        receipt.runID == taskResult.lineage.runID.rawValue,
+        receipt.lineage == taskResult.lineage,
+        reference.runID == taskResult.lineage.runID,
+        reference.rootHash == receipt.rootHash
+      else {
+        throw AgentExecutionEvidenceError.taskReceiptMismatch(taskID)
+      }
+    case (.none, .some), (.some, .none):
+      throw AgentExecutionEvidenceError.taskReceiptMismatch(taskID)
+    }
     self.identifier = identifier
-    self.status = status
+    self.taskResult = taskResult
     self.content = content
-    self.failure = failure
+    self.receipt = receipt
     self.wasTruncated = wasTruncated
     self.turnsUsed = turnsUsed
   }
 
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      identifier: container.decode(String.self, forKey: .identifier),
+      taskResult: container.decode(AgentTaskResult.self, forKey: .taskResult),
+      content: container.decodeIfPresent(String.self, forKey: .content),
+      receipt: container.decodeIfPresent(FoundationModelsAgentRunReceipt.self, forKey: .receipt),
+      wasTruncated: container.decode(Bool.self, forKey: .wasTruncated),
+      turnsUsed: container.decode(Int.self, forKey: .turnsUsed)
+    )
+  }
+
   public var promptRepresentation: Prompt {
+    struct Projection: Encodable {
+      let identifier: String
+      let taskResult: AgentTaskResult
+      let content: String?
+      let wasTruncated: Bool
+      let turnsUsed: Int
+    }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let fallback =
-      #"{"status":"failed","failure":{"kind":"child_failure","message":"Unable to encode child result."}}"#
     let encoded =
-      (try? encoder.encode(self)).map { String(decoding: $0, as: UTF8.self) }
-      ?? fallback
+      (try? encoder.encode(
+        Projection(
+          identifier: identifier,
+          taskResult: taskResult,
+          content: content,
+          wasTruncated: wasTruncated,
+          turnsUsed: turnsUsed
+        )
+      )).map { String(decoding: $0, as: UTF8.self) }
+      ?? #"{"identifier":"\#(identifier)","status":"failed"}"#
     return Prompt(encoded)
   }
 }
 
-private struct ChildAgentExecutionState: Sendable {
-  let depth: Int
-  let maximumDepth: Int
+actor ChildAgentInvocationBudget {
+  private var countsByIdentifier: [String: Int] = [:]
 
-  static let root = ChildAgentExecutionState(depth: 0, maximumDepth: .max)
+  func reserve(identifier: String, maximum: Int) -> Bool {
+    let count = countsByIdentifier[identifier, default: 0]
+    guard count < maximum else { return false }
+    countsByIdentifier[identifier] = count + 1
+    return true
+  }
 }
 
-private enum ChildAgentExecutionContext {
-  @TaskLocal static var state = ChildAgentExecutionState.root
+struct AgentSessionExecutionContextValue: Sendable {
+  let lineage: AgentRunLineage
+  let childBudget: ChildAgentInvocationBudget
+  let maximumChildDepth: Int
+}
+
+enum AgentSessionExecutionContext {
+  @TaskLocal static var current: AgentSessionExecutionContextValue?
 }
 
 private func makeChildProfileSession<
@@ -348,9 +418,33 @@ private func makeChildProfileSession<
 >(
   checkpointCompatibilityID: String,
   invocation: ChildAgentInvocation,
+  limits: ChildAgentLimits,
+  toolGovernance: DynamicProfileToolGovernanceConfiguration?,
   makeProfile: @escaping @Sendable (ChildAgentInvocation) -> sending Profile
 ) throws -> AgentSession {
-  try AgentSession(checkpointCompatibilityID: checkpointCompatibilityID) {
+  let governance: DynamicProfileToolGovernanceConfiguration?
+  if let toolGovernance {
+    let narrowedMaximum: Int? =
+      switch (toolGovernance.maximumCallsPerRun, limits.maximumToolCalls) {
+      case (.some(let configured), .some(let child)): Swift.min(configured, child)
+      case (.some(let configured), .none): configured
+      case (.none, .some(let child)): child
+      case (.none, .none): nil
+      }
+    governance = try DynamicProfileToolGovernanceConfiguration(
+      registry: toolGovernance.registry,
+      trustedManifestDigests: toolGovernance.trustedManifestDigests,
+      authorizer: toolGovernance.authorizer,
+      maximumCallsPerRun: narrowedMaximum,
+      maximumCallsPerToolPerRun: toolGovernance.maximumCallsPerToolPerRun
+    )
+  } else {
+    governance = nil
+  }
+  return try AgentSession(
+    checkpointCompatibilityID: checkpointCompatibilityID,
+    toolGovernance: governance
+  ) {
     makeProfile(invocation)
   }
 }
@@ -371,32 +465,56 @@ public struct ChildAgentTool: Tool {
 
   @concurrent
   public func call(arguments: ChildAgentRequest) async throws -> ChildAgentResult {
-    let executionState = ChildAgentExecutionContext.state
+    let startedAt = Date()
     let limits = definition.limits
+    let inheritedContext = AgentSessionExecutionContext.current
+    let parentLineage = inheritedContext?.lineage ?? .root()
+    let childBudget = inheritedContext?.childBudget ?? ChildAgentInvocationBudget()
     let effectiveMaximumDepth = Swift.min(
-      executionState.maximumDepth,
+      inheritedContext?.maximumChildDepth ?? .max,
       limits.maximumDepth
     )
+    let lineage = try parentLineage.descendant()
 
-    guard executionState.depth < effectiveMaximumDepth else {
-      return failure(
-        status: .depthLimitExceeded,
-        kind: .depthLimit,
-        message: "The child-agent depth limit was reached."
+    guard lineage.depth.rawValue <= effectiveMaximumDepth else {
+      return try failure(
+        lineage: lineage,
+        status: .failed,
+        code: "depth_limit_exceeded",
+        message: "The child-agent depth limit was reached.",
+        startedAt: startedAt
       )
     }
     guard limits.maximumTurns >= 1 else {
-      return failure(
-        status: .turnLimitExceeded,
-        kind: .turnLimit,
-        message: "The child-agent turn limit does not permit a foreground consultation."
+      return try failure(
+        lineage: lineage,
+        status: .failed,
+        code: "turn_limit_exceeded",
+        message: "The child-agent turn limit does not permit a foreground consultation.",
+        startedAt: startedAt
+      )
+    }
+    guard
+      await childBudget.reserve(
+        identifier: definition.identifier,
+        maximum: limits.maximumChildrenPerParentRun
+      )
+    else {
+      return try failure(
+        lineage: lineage,
+        status: .failed,
+        code: "child_limit_exceeded",
+        message: "The parent run exhausted this child-agent consultation budget.",
+        startedAt: startedAt
       )
     }
     if limits.wallClockTimeout == .zero {
-      return failure(
+      return try failure(
+        lineage: lineage,
         status: .timedOut,
-        kind: .wallClockTimeout,
-        message: "The child-agent consultation has no available wall-clock time."
+        code: "wall_clock_timeout",
+        message: "The child-agent consultation has no available wall-clock time.",
+        startedAt: startedAt
       )
     }
 
@@ -405,9 +523,10 @@ public struct ChildAgentTool: Tool {
     let invocation = ChildAgentInvocation(
       identifier: definition.identifier,
       task: arguments.task,
-      depth: executionState.depth + 1,
+      lineage: lineage,
       limits: effectiveLimits
     )
+    let runCapture = ChildAgentRunCapture()
 
     do {
       let operation: @Sendable () async throws -> ChildAgentResult = {
@@ -415,35 +534,32 @@ public struct ChildAgentTool: Tool {
         case .allow:
           break
         case .deny(let reason):
-          return failure(
+          return try failure(
+            lineage: lineage,
             status: .denied,
-            kind: .policyDenied,
-            message: reason
+            code: "policy_denied",
+            message: reason,
+            startedAt: startedAt
           )
         }
 
         try Task.checkCancellation()
         let session = try await definition.session(for: invocation)
-        let childExecutionState = ChildAgentExecutionState(
-          depth: invocation.depth,
-          maximumDepth: effectiveMaximumDepth
-        )
-        let response = try await ChildAgentExecutionContext.$state.withValue(
-          childExecutionState
+        await runCapture.set(session)
+        let response = try await AgentSessionExecutionContext.$current.withValue(
+          AgentSessionExecutionContextValue(
+            lineage: lineage,
+            childBudget: ChildAgentInvocationBudget(),
+            maximumChildDepth: effectiveMaximumDepth
+          )
         ) {
           try await session.respondForChild(
             to: invocation.task,
+            lineage: lineage,
             maximumToolCalls: limits.maximumToolCalls
           )
         }
-        let bounded = boundedUTF8(response.content, maximumBytes: limits.maximumOutputBytes)
-        return ChildAgentResult(
-          identifier: definition.identifier,
-          status: .success,
-          content: bounded.value,
-          wasTruncated: bounded.truncated,
-          turnsUsed: 1
-        )
+        return try success(response: response, lineage: lineage, startedAt: startedAt)
       }
 
       guard let timeout = limits.wallClockTimeout else {
@@ -452,81 +568,228 @@ public struct ChildAgentTool: Tool {
       do {
         return try await withFoundationModelsAgentTimeout(timeout, operation: operation)
       } catch is FoundationModelsAgentTimeoutMarker {
-        return failure(
+        return try await failure(
+          lineage: lineage,
           status: .timedOut,
-          kind: .wallClockTimeout,
-          message: "The child-agent consultation exceeded its wall-clock limit."
+          code: "wall_clock_timeout",
+          message: "The child-agent consultation exceeded its wall-clock limit.",
+          startedAt: startedAt,
+          run: runCapture.run()
         )
       }
     } catch is CancellationError {
-      return failure(
+      return try await failure(
+        lineage: lineage,
         status: .cancelled,
-        kind: .childCancelled,
-        message: "The child-agent consultation was cancelled."
+        code: "child_cancelled",
+        message: "The child-agent consultation was cancelled.",
+        startedAt: startedAt,
+        run: runCapture.run()
       )
     } catch {
-      return result(for: error)
+      return try await result(
+        for: error,
+        lineage: lineage,
+        startedAt: startedAt,
+        run: runCapture.run()
+      )
     }
   }
 
-  private func result(for error: any Error) -> ChildAgentResult {
+  private func success(
+    response: FoundationModelsAgentResponse<String>,
+    lineage: AgentRunLineage,
+    startedAt: Date
+  ) throws -> ChildAgentResult {
+    let redacted = definition.resultRedactionPolicy.redact(response.content)
+    let bounded = boundedUTF8(redacted, maximumBytes: definition.limits.maximumOutputBytes)
+    let receipt = try FoundationModelsAgentRunReceipt(run: response.run)
+    let timing = try AgentTaskTiming(
+      startedAt: startedAt,
+      endedAt: response.run.endedAt
+    )
+    guard let taskID = lineage.taskID else {
+      throw AgentExecutionEvidenceError.invalidDescendantLineage
+    }
+    let taskResult = try AgentTaskResult(
+      lineage: lineage,
+      status: .succeeded,
+      outputReferences: [
+        AgentEvidenceReference(
+          id: AgentEvidenceReferenceID("task:\(taskID):output"),
+          kind: .output,
+          runID: lineage.runID,
+          attributes: ["truncated": String(bounded.truncated)]
+        )
+      ],
+      evidenceReferences: [.run(lineage.runID)],
+      usage: response.usage,
+      receipt: AgentReceiptReference(runID: lineage.runID, rootHash: receipt.rootHash),
+      timing: timing
+    )
+    return try ChildAgentResult(
+      identifier: definition.identifier,
+      taskResult: taskResult,
+      content: bounded.value,
+      receipt: receipt,
+      wasTruncated: bounded.truncated,
+      turnsUsed: 1
+    )
+  }
+
+  private func result(
+    for error: any Error,
+    lineage: AgentRunLineage,
+    startedAt: Date,
+    run: FoundationModelsAgentRun?
+  ) throws -> ChildAgentResult {
     if let toolCallError = error as? LanguageModelSession.ToolCallError {
-      return result(for: toolCallError.underlyingError)
+      return try result(
+        for: toolCallError.underlyingError,
+        lineage: lineage,
+        startedAt: startedAt,
+        run: run
+      )
     }
     if error is CancellationError {
-      return failure(
+      return try failure(
+        lineage: lineage,
         status: .cancelled,
-        kind: .childCancelled,
-        message: "The child-agent consultation was cancelled."
+        code: "child_cancelled",
+        message: "The child-agent consultation was cancelled.",
+        startedAt: startedAt,
+        run: run
       )
     }
     if let agentError = error as? FoundationModelsAgentError {
       switch agentError {
       case .responseTimedOut, .toolExecutionTimedOut:
-        return failure(
+        return try failure(
+          lineage: lineage,
           status: .timedOut,
-          kind: .childTimeout,
-          message: "The child-agent model or tool response timed out."
+          code: "child_timeout",
+          message: "The child-agent model or tool response timed out.",
+          startedAt: startedAt,
+          run: run
         )
       case .toolCallBudgetExceeded:
-        return failure(
-          status: .toolCallLimitExceeded,
-          kind: .toolCallLimit,
-          message: "The child-agent tool-call limit was reached."
+        return try failure(
+          lineage: lineage,
+          status: .failed,
+          code: "tool_call_limit_exceeded",
+          message: "The child-agent tool-call limit was reached.",
+          startedAt: startedAt,
+          run: run
         )
       default:
         break
       }
     }
     if let policyError = error as? FoundationModelsAgentPolicyError {
-      return failure(
+      return try failure(
+        lineage: lineage,
         status: .denied,
-        kind: .policyDenied,
-        message: policyError.localizedDescription
+        code: "tool_policy_denied",
+        message: policyError.localizedDescription,
+        startedAt: startedAt,
+        run: run
       )
     }
-    return failure(
+    if let governanceError = error as? DynamicProfileToolGovernanceError {
+      return try failure(
+        lineage: lineage,
+        status: governanceError.isDenial ? .denied : .failed,
+        code: governanceError.resultCode,
+        message: governanceError.localizedDescription,
+        startedAt: startedAt,
+        run: run
+      )
+    }
+    return try failure(
+      lineage: lineage,
       status: .failed,
-      kind: .childFailure,
-      message: "The child-agent consultation failed."
+      code: "child_failure",
+      message: "The child-agent consultation failed.",
+      startedAt: startedAt,
+      run: run
     )
   }
 
   private func failure(
-    status: ChildAgentResultStatus,
-    kind: ChildAgentFailureKind,
-    message: String
-  ) -> ChildAgentResult {
+    lineage: AgentRunLineage,
+    status: AgentTaskSettlementStatus,
+    code: String,
+    message: String,
+    startedAt: Date,
+    run: FoundationModelsAgentRun? = nil
+  ) throws -> ChildAgentResult {
+    let redacted = definition.resultRedactionPolicy.redact(message)
     let bounded = boundedUTF8(
-      message,
+      redacted,
       maximumBytes: definition.limits.maximumFailureBytes
     )
-    return ChildAgentResult(
-      identifier: definition.identifier,
+    let endedAt = run?.endedAt ?? Date()
+    let evidenceRun =
+      run
+      ?? FoundationModelsAgentRun(
+        id: lineage.runID.rawValue,
+        startedAt: startedAt,
+        endedAt: endedAt,
+        usage: nil,
+        events: [],
+        lineage: lineage
+      )
+    let receipt = try FoundationModelsAgentRunReceipt(run: evidenceRun)
+    let reason = AgentTaskSettlementReason(code: code, message: bounded.value)
+    let taskResult = try AgentTaskResult(
+      lineage: lineage,
       status: status,
-      failure: ChildAgentFailure(kind: kind, message: bounded.value),
-      wasTruncated: bounded.truncated
+      evidenceReferences: [.run(lineage.runID)],
+      usage: run?.usage,
+      receipt: AgentReceiptReference(runID: lineage.runID, rootHash: receipt.rootHash),
+      failureReason: status == .cancelled ? nil : reason,
+      cancellationReason: status == .cancelled ? reason : nil,
+      timing: AgentTaskTiming(
+        startedAt: startedAt,
+        endedAt: endedAt
+      )
     )
+    return try ChildAgentResult(
+      identifier: definition.identifier,
+      taskResult: taskResult,
+      receipt: receipt,
+      wasTruncated: bounded.truncated,
+      turnsUsed: run == nil ? 0 : 1
+    )
+  }
+}
+
+private actor ChildAgentRunCapture {
+  private var session: AgentSession?
+
+  func set(_ session: AgentSession) {
+    self.session = session
+  }
+
+  func run() async -> FoundationModelsAgentRun? {
+    await session?.lastRun()
+  }
+}
+
+extension DynamicProfileToolGovernanceError {
+  fileprivate var isDenial: Bool {
+    if case .denied = self { return true }
+    return false
+  }
+
+  fileprivate var resultCode: String {
+    switch self {
+    case .unknownTool: "profile_unknown_tool"
+    case .untrustedManifest: "profile_untrusted_manifest"
+    case .denied: "profile_tool_denied"
+    case .totalBudgetExhausted: "tool_call_limit_exceeded"
+    case .toolBudgetExhausted: "tool_call_limit_exceeded"
+    }
   }
 }
 

@@ -396,7 +396,10 @@ struct FoundationModelsAgentGovernedTool: Tool {
         runID: runID,
         kind: .toolExecutionFailed,
         message: String(describing: error),
-        attributes: attributes.merging(["duration": String(describing: duration)]) { _, new in new }
+        attributes: attributes.merging([
+          "duration": String(describing: duration),
+          "error_type": String(reflecting: Swift.type(of: error)),
+        ]) { _, new in new }
       )
       throw error
     }
