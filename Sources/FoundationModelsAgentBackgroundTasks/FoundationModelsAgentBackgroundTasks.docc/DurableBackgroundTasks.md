@@ -29,6 +29,12 @@ Settlement ignores a late second result. This matters when cancellation and a
 factory return race: the first actor-isolated terminal transition wins and the
 stored record never moves to a different terminal state.
 
+A terminal record becomes visible to settlement waiters only after the store
+accepts its snapshot. If that write fails after factory success, the task stays
+nonterminal and recovery applies the same replay rules described below. The
+coordinator does not report successful work as failed or completed without a
+durable terminal record.
+
 `shutdown()` settles every open record as cancelled. `cancel(_:includingDescendants:)`
 does the same for one subtree. Active Swift tasks receive cooperative
 cancellation; an external API that ignores cancellation can still finish its

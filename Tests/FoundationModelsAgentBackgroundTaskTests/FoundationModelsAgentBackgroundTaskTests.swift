@@ -520,6 +520,64 @@ struct FoundationModelsAgentBackgroundTaskTests {
       _ = try await store.loadSnapshot()
     }
   }
+
+  @Test(
+    "Successful execution stays nonterminal when settlement persistence fails",
+    arguments: [4, 5]
+  )
+  func successfulExecutionPersistenceFailure(failingSave: Int) async throws {
+    let store = FailingSaveBackgroundAgentTaskStore(failingSaveNumbers: [failingSave])
+    let coordinator = try BackgroundAgentTaskCoordinator(store: store) { _, _ in
+      BackgroundAgentTaskOutcome()
+    }
+    let id = try await coordinator.submit(
+      BackgroundAgentTaskRequest(
+        prompt: "complete once",
+        ownerID: "owner",
+        recoveryPolicy: .readOnly
+      )
+    )
+
+    await store.waitForSaveCount(failingSave)
+    for _ in 0..<100 { await Task.yield() }
+    let record = try #require(await coordinator.record(for: id))
+    let durable = try #require(await store.loadSnapshot())
+
+    #expect(record.state == .settling)
+    #expect(!record.state.isTerminal)
+    #expect(record.terminalReason == nil)
+    #expect(durable.records.first?.state != .completed)
+  }
+
+  @Test("Start can be retried after recovery persistence fails")
+  func retryStartAfterPersistenceFailure() async throws {
+    let now = Date(timeIntervalSince1970: 20_000)
+    let record = makeRecord(
+      submittedAt: now.addingTimeInterval(-5),
+      state: .preparing,
+      recoveryPolicy: .readOnly,
+      attemptCount: 1,
+      lease: lease(expiresAt: now.addingTimeInterval(-1))
+    )
+    let store = FailingSaveBackgroundAgentTaskStore(
+      snapshot: snapshot(records: [record]),
+      failingSaveNumbers: [1]
+    )
+    let coordinator = try BackgroundAgentTaskCoordinator(
+      store: store,
+      now: { now },
+      executionFactory: { _, _ in BackgroundAgentTaskOutcome() }
+    )
+
+    await #expect(throws: BackgroundAgentTaskCoordinatorError.self) {
+      try await coordinator.start()
+    }
+    try await coordinator.start()
+    let settled = try await coordinator.waitForSettlement(of: record.id)
+
+    #expect(settled.state == .completed)
+    #expect(settled.attemptCount == 2)
+  }
 }
 
 private func makeRecord(
@@ -636,3 +694,46 @@ private actor ExecutionGate {
     }
   }
 }
+
+private actor FailingSaveBackgroundAgentTaskStore: BackgroundAgentTaskStore {
+  private var snapshot: BackgroundAgentTaskStoreSnapshot?
+  private let failingSaveNumbers: Set<Int>
+  private var saveCount = 0
+  private var saveWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+  init(
+    snapshot: BackgroundAgentTaskStoreSnapshot? = nil,
+    failingSaveNumbers: Set<Int>
+  ) {
+    self.snapshot = snapshot
+    self.failingSaveNumbers = failingSaveNumbers
+  }
+
+  func loadSnapshot() -> BackgroundAgentTaskStoreSnapshot? {
+    snapshot
+  }
+
+  func saveSnapshot(_ snapshot: BackgroundAgentTaskStoreSnapshot) throws {
+    saveCount += 1
+    let ready = saveWaiters.filter { saveCount >= $0.count }
+    saveWaiters.removeAll { saveCount >= $0.count }
+    for waiter in ready {
+      waiter.continuation.resume()
+    }
+    if failingSaveNumbers.contains(saveCount) {
+      throw TestStoreFailure()
+    }
+    self.snapshot = snapshot
+  }
+
+  func waitForSaveCount(_ count: Int) async {
+    if saveCount >= count {
+      return
+    }
+    await withCheckedContinuation { continuation in
+      saveWaiters.append((count, continuation))
+    }
+  }
+}
+
+private struct TestStoreFailure: Error {}

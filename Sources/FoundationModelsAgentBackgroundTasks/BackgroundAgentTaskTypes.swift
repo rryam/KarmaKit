@@ -310,6 +310,7 @@ public enum BackgroundAgentTaskCoordinatorError: Error, LocalizedError, Equatabl
   case invalidStateTransition(from: BackgroundAgentTaskState, to: BackgroundAgentTaskState)
   case mutationDeclarationRequired
   case idempotencyKeyMismatch
+  case persistenceFailed(String)
   case unsupportedRecordVersion(Int)
 
   public var errorDescription: String? {
@@ -338,6 +339,8 @@ public enum BackgroundAgentTaskCoordinatorError: Error, LocalizedError, Equatabl
       "The task must declare a mutation recovery policy before executing a mutation."
     case .idempotencyKeyMismatch:
       "The mutation idempotency key does not match the task recovery declaration."
+    case .persistenceFailed(let detail):
+      "Task state could not be persisted: \(detail)"
     case .unsupportedRecordVersion(let version):
       "Task record version \(version) is unsupported."
     }
