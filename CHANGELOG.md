@@ -5,6 +5,20 @@
 - Renamed the primary runtime APIs to `AgentSession`, `AgentSessionPlugin`, and
   `AgentSessionMode`. This is a source-breaking change with no compatibility
   aliases.
+- Added the optional `FoundationModelsAgentBackgroundTasks` product with a
+  versioned atomic file store, priority-aware scheduling, hierarchy and budget
+  bounds, cooperative cancellation, and deterministic terminal settlement.
+- Added crash recovery that replays only read-only or explicitly idempotent
+  work and marks a possibly completed non-idempotent mutation as
+  `ambiguousAfterCrash`.
+- Serialized coordinator snapshot writes so concurrent submission, execution,
+  cancellation, and settlement cannot overwrite newer durable state.
+- Linked each durable task to canonical `AgentTaskID`, `AgentRunLineage`, and
+  `AgentTaskResult` evidence, with a separate persisted lineage and stop reason
+  for every retry attempt.
+- Added exclusive file ownership, semantic snapshot validation, overflow-safe
+  usage accounting, cancellation-aware waiters, and fail-closed mutation
+  recovery for timeout, cancellation, persistence failure, and restart.
 - Added stable native-transcript trajectories projected from verified
   `AgentReceiptBundle` graphs, including child/task lineage, terminal
   settlements, and routing/context/tool evidence links; deterministic redacted

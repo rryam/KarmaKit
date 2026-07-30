@@ -13,6 +13,10 @@ let package = Package(
     .library(name: "FoundationModelsAgent", targets: ["FoundationModelsAgent"]),
     .library(name: "FoundationModelsAgentMemory", targets: ["FoundationModelsAgentMemory"]),
     .library(
+      name: "FoundationModelsAgentBackgroundTasks",
+      targets: ["FoundationModelsAgentBackgroundTasks"]
+    ),
+    .library(
       name: "FoundationModelsAgentTestSupport", targets: ["FoundationModelsAgentTestSupport"]),
     .library(name: "FoundationModelsAgentProviders", targets: ["FoundationModelsAgentProviders"]),
   ],
@@ -58,6 +62,11 @@ let package = Package(
       linkerSettings: [.linkedLibrary("sqlite3")]
     ),
     .target(
+      name: "FoundationModelsAgentBackgroundTasks",
+      dependencies: ["FoundationModelsAgent"],
+      exclude: ["FoundationModelsAgentBackgroundTasks.docc"]
+    ),
+    .target(
       name: "FoundationModelsAgentTestSupport",
       dependencies: ["FoundationModelsAgent"]
     ),
@@ -93,7 +102,11 @@ let package = Package(
     ),
     .testTarget(
       name: "FoundationModelsAgentPublicAPITests",
-      dependencies: ["FoundationModelsAgent", "FoundationModelsAgentTestSupport"]
+      dependencies: [
+        "FoundationModelsAgent",
+        "FoundationModelsAgentBackgroundTasks",
+        "FoundationModelsAgentTestSupport",
+      ]
     ),
     .testTarget(
       name: "FoundationModelsAgentProviderTests",
@@ -113,6 +126,10 @@ let package = Package(
       dependencies: [
         "FoundationModelsAgent", "FoundationModelsAgentMemory", "FoundationModelsAgentTestSupport",
       ]
+    ),
+    .testTarget(
+      name: "FoundationModelsAgentBackgroundTaskTests",
+      dependencies: ["FoundationModelsAgent", "FoundationModelsAgentBackgroundTasks"]
     ),
   ]
 )

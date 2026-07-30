@@ -26,7 +26,3 @@ transcript.
 ### Apple Evaluations adapters
 
 - ``FoundationModelsAgentEvaluationsError``
-- ``FoundationModelsAgent/FoundationModelsAgentTrajectory/Step/exactToolExpectation()``
-- ``Evaluations/TrajectoryExpectation/init(foundationModelsAgentTrajectory:disallowedToolNames:allowsAdditionalToolCalls:)``
-- ``Evaluations/ModelSubject/init(foundationModelsAgentValue:transcript:)``
-- ``Evaluations/ToolCallEvaluator/init(foundationModelsAgentMetricPrefix:)``
