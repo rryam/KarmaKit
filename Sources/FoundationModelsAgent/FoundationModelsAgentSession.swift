@@ -16,6 +16,7 @@ public actor FoundationModelsAgentSession {
   private let retention: FoundationModelsAgentTranscriptRetention
   private let requiresMatchingCheckpointConfiguration: Bool
   private let checkpointCompatibilityRevision: String
+  private let acceptedCheckpointCompatibilityRevisions: Set<String>
   private let recordsProfileToolLifecycle: Bool
   private let sessionMode: FoundationModelsAgentSessionMode
   private let plugins: [any FoundationModelsAgentSessionPlugin]
@@ -101,6 +102,7 @@ public actor FoundationModelsAgentSession {
       transcriptRetention: transcriptRetention,
       requiresMatchingCheckpointConfiguration: requiresMatchingToolset,
       checkpointCompatibilityRevision: revision,
+      acceptedCheckpointCompatibilityRevisions: [revision],
       recordsProfileToolLifecycle: false,
       sessionMode: .explicitModel,
       plugins: plugins,
@@ -149,6 +151,7 @@ public actor FoundationModelsAgentSession {
     )
     let runtime = FoundationModelsAgentToolRuntime(maximumCallsPerRun: nil)
     let revision = Self.makeProfileRevision(checkpointCompatibilityID)
+    let previousRevision = Self.makePreviousProfileRevision(checkpointCompatibilityID)
     let makeSession: SessionFactory = { transcript in
       let profile = makeProfile()
         .onToolCall { call in
@@ -188,6 +191,7 @@ public actor FoundationModelsAgentSession {
       transcriptRetention: transcriptRetention,
       requiresMatchingCheckpointConfiguration: true,
       checkpointCompatibilityRevision: revision,
+      acceptedCheckpointCompatibilityRevisions: [revision, previousRevision],
       recordsProfileToolLifecycle: true,
       sessionMode: .dynamicProfile,
       plugins: plugins,
@@ -204,6 +208,7 @@ public actor FoundationModelsAgentSession {
     transcriptRetention: FoundationModelsAgentTranscriptRetention,
     requiresMatchingCheckpointConfiguration: Bool,
     checkpointCompatibilityRevision: String,
+    acceptedCheckpointCompatibilityRevisions: Set<String>,
     recordsProfileToolLifecycle: Bool,
     sessionMode: FoundationModelsAgentSessionMode,
     plugins: [any FoundationModelsAgentSessionPlugin],
@@ -217,6 +222,7 @@ public actor FoundationModelsAgentSession {
     self.retention = transcriptRetention
     self.requiresMatchingCheckpointConfiguration = requiresMatchingCheckpointConfiguration
     self.checkpointCompatibilityRevision = checkpointCompatibilityRevision
+    self.acceptedCheckpointCompatibilityRevisions = acceptedCheckpointCompatibilityRevisions
     self.recordsProfileToolLifecycle = recordsProfileToolLifecycle
     self.sessionMode = sessionMode
     self.plugins = plugins
@@ -489,7 +495,7 @@ public actor FoundationModelsAgentSession {
         throw FoundationModelsAgentError.unsupportedCheckpointVersion(checkpoint.formatVersion)
       }
       if requiresMatchingCheckpointConfiguration,
-        checkpoint.compatibilityRevision != checkpointCompatibilityRevision
+        !acceptedCheckpointCompatibilityRevisions.contains(checkpoint.compatibilityRevision)
       {
         throw FoundationModelsAgentError.checkpointCompatibilityMismatch(
           expected: checkpointCompatibilityRevision,
@@ -1300,6 +1306,13 @@ public actor FoundationModelsAgentSession {
 
   private static func makeProfileRevision(_ compatibilityID: String) -> String {
     SHA256.hash(data: Data("foundationmodelsagent-profile-v1\u{0}\(compatibilityID)".utf8))
+      .map { String(format: "%02x", $0) }
+      .joined()
+  }
+
+  private static func makePreviousProfileRevision(_ compatibilityID: String) -> String {
+    let salt = ["core", "agent-profile-v1"].joined()
+    return SHA256.hash(data: Data("\(salt)\u{0}\(compatibilityID)".utf8))
       .map { String(format: "%02x", $0) }
       .joined()
   }

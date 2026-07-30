@@ -101,24 +101,24 @@ public actor FileCheckpointStore: FoundationModelsAgentCheckpointStore {
   public func loadCheckpoint(for key: String) throws -> FoundationModelsAgentCheckpoint? {
     let currentURL = fileURL(for: key, filenameSuffix: Self.currentFilenameSuffix)
     let legacyURL = fileURL(for: key, filenameSuffix: Self.legacyFilenameSuffix)
-    let sourceURL: URL
+
     if fileManager.fileExists(atPath: currentURL.path) {
-      sourceURL = currentURL
-    } else if fileManager.fileExists(atPath: legacyURL.path) {
-      sourceURL = legacyURL
-    } else {
+      do {
+        return try decodeCheckpoint(at: currentURL).checkpoint
+      } catch {
+        guard fileManager.fileExists(atPath: legacyURL.path) else {
+          throw error
+        }
+      }
+    }
+
+    guard fileManager.fileExists(atPath: legacyURL.path) else {
       return nil
     }
 
-    let data = try Data(contentsOf: sourceURL)
-    let checkpoint = try decoder.decode(FoundationModelsAgentCheckpoint.self, from: data)
-    try validateForFilePersistence(checkpoint)
-
-    if sourceURL == legacyURL {
-      try data.write(to: currentURL, options: .atomic)
-      try fileManager.removeItem(at: legacyURL)
-    }
-
+    let (checkpoint, data) = try decodeCheckpoint(at: legacyURL)
+    try data.write(to: currentURL, options: .atomic)
+    try fileManager.removeItem(at: legacyURL)
     return checkpoint
   }
 
@@ -151,6 +151,15 @@ public actor FileCheckpointStore: FoundationModelsAgentCheckpointStore {
     let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
     return directory.appending(
       path: "\(digest).\(filenameSuffix)", directoryHint: .notDirectory)
+  }
+
+  private func decodeCheckpoint(
+    at url: URL
+  ) throws -> (checkpoint: FoundationModelsAgentCheckpoint, data: Data) {
+    let data = try Data(contentsOf: url)
+    let checkpoint = try decoder.decode(FoundationModelsAgentCheckpoint.self, from: data)
+    try validateForFilePersistence(checkpoint)
+    return (checkpoint, data)
   }
 
   private func validateForFilePersistence(_ checkpoint: FoundationModelsAgentCheckpoint) throws {

@@ -1,4 +1,5 @@
 import CoreGraphics
+import CryptoKit
 import Foundation
 import FoundationModels
 import FoundationModelsAgent
@@ -762,6 +763,47 @@ struct FoundationModelsAgentTests {
     }
   }
 
+  @Test("Restores a dynamic profile checkpoint from the previous revision salt")
+  func dynamicProfilePreviousRevisionRestore() async throws {
+    let compatibilityID = "assistant-profile-v1"
+    let previousSalt = ["core", "agent-profile-v1"].joined()
+    let previousRevision = SHA256.hash(
+      data: Data("\(previousSalt)\u{0}\(compatibilityID)".utf8)
+    )
+    .map { String(format: "%02x", $0) }
+    .joined()
+    let checkpoint = FoundationModelsAgentCheckpoint(
+      compatibilityRevision: previousRevision,
+      transcript: Transcript(entries: [
+        .prompt(.init(segments: [.text(.init(content: "Previous conversation"))]))
+      ])
+    )
+    let store = InMemoryCheckpointStore(checkpoints: ["previous-profile": checkpoint])
+    let model = RecordedLanguageModel(steps: [.response(text: "restored")])
+    let session = try FoundationModelsAgentSession(
+      checkpointCompatibilityID: compatibilityID,
+      checkpointStore: store,
+      checkpointKey: "previous-profile"
+    ) {
+      TestDynamicProfile(model: model)
+    }
+
+    _ = try await session.respond(to: "Continue")
+
+    let restored = try #require(model.recorder.capturedTranscripts().first)
+    #expect(
+      restored.contains { entry in
+        guard case .prompt(let prompt) = entry else { return false }
+        return prompt.segments.contains { segment in
+          guard case .text(let text) = segment else { return false }
+          return text.content == "Previous conversation"
+        }
+      }
+    )
+    let migrated = try #require(await store.loadCheckpoint(for: "previous-profile"))
+    #expect(migrated.compatibilityRevision != previousRevision)
+  }
+
   @Test("Creates fresh non-Sendable profile state when rebuilding on reset")
   func dynamicProfileSendingFactory() async throws {
     let counter = ProfileFactoryCounter()
@@ -1015,6 +1057,42 @@ struct FoundationModelsAgentTests {
         ).path
       )
     )
+  }
+
+  @Test("File checkpoints fall back to a valid previous file")
+  func fileCheckpointPreviousFilenameFallback() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = FileCheckpointStore(directory: directory)
+    let checkpoint = FoundationModelsAgentCheckpoint(
+      compatibilityRevision: "revision",
+      transcript: Transcript(entries: [
+        .prompt(.init(segments: [.text(.init(content: "persisted"))]))
+      ])
+    )
+    let key = "conversation"
+
+    try await store.saveCheckpoint(checkpoint, for: key)
+    let currentURL = try #require(
+      FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+      ).first
+    )
+    let digest = try #require(currentURL.lastPathComponent.split(separator: ".").first)
+    let legacyURL = directory.appending(
+      path: "\(digest).\(["core", "agent-transcript.json"].joined())",
+      directoryHint: .notDirectory
+    )
+    try FileManager.default.copyItem(at: currentURL, to: legacyURL)
+    try Data("invalid".utf8).write(to: currentURL, options: .atomic)
+
+    let restored = try #require(try await store.loadCheckpoint(for: key))
+
+    #expect(restored.transcript == checkpoint.transcript)
+    #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+    #expect(try Data(contentsOf: currentURL) != Data("invalid".utf8))
   }
 
   @Test("File checkpoints reject typed metadata instead of silently erasing its type")
