@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import FoundationModels
 
-public enum CoreAgentPolicyError: Error, LocalizedError, Sendable {
+public enum FoundationModelsAgentPolicyError: Error, LocalizedError, Sendable {
   case denied(toolName: String, reason: String)
   case untrustedManifest(toolName: String, digest: String)
 
@@ -16,7 +16,7 @@ public enum CoreAgentPolicyError: Error, LocalizedError, Sendable {
   }
 }
 
-public struct CoreAgentToolManifest: Codable, Equatable, Hashable, Sendable {
+public struct FoundationModelsAgentToolManifest: Codable, Equatable, Hashable, Sendable {
   public let name: String
   public let description: String
   public let schemaJSON: String
@@ -66,16 +66,16 @@ public struct CoreAgentToolManifest: Codable, Equatable, Hashable, Sendable {
   }
 }
 
-public struct CoreAgentToolRequest: Sendable {
+public struct FoundationModelsAgentToolRequest: Sendable {
   public let runID: UUID
   public let invocationID: UUID
-  public let manifest: CoreAgentToolManifest
+  public let manifest: FoundationModelsAgentToolManifest
   public let arguments: GeneratedContent
 
   public init(
     runID: UUID,
     invocationID: UUID,
-    manifest: CoreAgentToolManifest,
+    manifest: FoundationModelsAgentToolManifest,
     arguments: GeneratedContent
   ) {
     self.runID = runID
@@ -89,39 +89,39 @@ public struct CoreAgentToolRequest: Sendable {
   }
 }
 
-public protocol CoreAgentToolPolicy: Sendable {
-  func authorize(_ request: CoreAgentToolRequest) async throws
+public protocol FoundationModelsAgentToolPolicy: Sendable {
+  func authorize(_ request: FoundationModelsAgentToolRequest) async throws
 }
 
-public struct AllowAllCoreAgentToolPolicy: CoreAgentToolPolicy {
+public struct AllowAllFoundationModelsAgentToolPolicy: FoundationModelsAgentToolPolicy {
   public init() {}
-  public func authorize(_ request: CoreAgentToolRequest) async throws {}
+  public func authorize(_ request: FoundationModelsAgentToolRequest) async throws {}
 }
 
-public struct CompositeCoreAgentToolPolicy: CoreAgentToolPolicy {
-  private let policies: [any CoreAgentToolPolicy]
+public struct CompositeFoundationModelsAgentToolPolicy: FoundationModelsAgentToolPolicy {
+  private let policies: [any FoundationModelsAgentToolPolicy]
 
-  public init(_ policies: [any CoreAgentToolPolicy]) {
+  public init(_ policies: [any FoundationModelsAgentToolPolicy]) {
     self.policies = policies
   }
 
-  public func authorize(_ request: CoreAgentToolRequest) async throws {
+  public func authorize(_ request: FoundationModelsAgentToolRequest) async throws {
     for policy in policies {
       try await policy.authorize(request)
     }
   }
 }
 
-public struct ToolNameAllowlistPolicy: CoreAgentToolPolicy {
+public struct ToolNameAllowlistPolicy: FoundationModelsAgentToolPolicy {
   private let allowedNames: Set<String>
 
   public init(_ allowedNames: Set<String>) {
     self.allowedNames = allowedNames
   }
 
-  public func authorize(_ request: CoreAgentToolRequest) async throws {
+  public func authorize(_ request: FoundationModelsAgentToolRequest) async throws {
     guard allowedNames.contains(request.manifest.name) else {
-      throw CoreAgentPolicyError.denied(
+      throw FoundationModelsAgentPolicyError.denied(
         toolName: request.manifest.name,
         reason: "The tool is not in the configured allowlist."
       )
@@ -129,20 +129,20 @@ public struct ToolNameAllowlistPolicy: CoreAgentToolPolicy {
   }
 }
 
-public struct TrustedToolManifestPolicy: CoreAgentToolPolicy {
+public struct TrustedToolManifestPolicy: FoundationModelsAgentToolPolicy {
   private let approvedDigests: Set<String>
 
   public init(approvedDigests: Set<String>) {
     self.approvedDigests = approvedDigests
   }
 
-  public init(approvedManifests: [CoreAgentToolManifest]) {
+  public init(approvedManifests: [FoundationModelsAgentToolManifest]) {
     self.approvedDigests = Set(approvedManifests.map(\.digest))
   }
 
-  public func authorize(_ request: CoreAgentToolRequest) async throws {
+  public func authorize(_ request: FoundationModelsAgentToolRequest) async throws {
     guard approvedDigests.contains(request.manifest.digest) else {
-      throw CoreAgentPolicyError.untrustedManifest(
+      throw FoundationModelsAgentPolicyError.untrustedManifest(
         toolName: request.manifest.name,
         digest: request.manifest.digest
       )
@@ -150,43 +150,49 @@ public struct TrustedToolManifestPolicy: CoreAgentToolPolicy {
   }
 }
 
-public enum CoreAgentApprovalDecision: Equatable, Sendable {
+public enum FoundationModelsAgentApprovalDecision: Equatable, Sendable {
   case approve
   case deny(reason: String)
 }
 
-public protocol CoreAgentApprovalProvider: Sendable {
-  func decision(for request: CoreAgentToolRequest) async throws -> CoreAgentApprovalDecision
+public protocol FoundationModelsAgentApprovalProvider: Sendable {
+  func decision(for request: FoundationModelsAgentToolRequest) async throws
+    -> FoundationModelsAgentApprovalDecision
 }
 
-public struct ClosureCoreAgentApprovalProvider: CoreAgentApprovalProvider {
-  private let handler: @Sendable (CoreAgentToolRequest) async throws -> CoreAgentApprovalDecision
+public struct ClosureFoundationModelsAgentApprovalProvider: FoundationModelsAgentApprovalProvider {
+  private let handler:
+    @Sendable (FoundationModelsAgentToolRequest) async throws ->
+      FoundationModelsAgentApprovalDecision
 
   public init(
-    _ handler: @escaping @Sendable (CoreAgentToolRequest) async throws -> CoreAgentApprovalDecision
+    _ handler:
+      @escaping @Sendable (FoundationModelsAgentToolRequest) async throws ->
+      FoundationModelsAgentApprovalDecision
   ) {
     self.handler = handler
   }
 
-  public func decision(for request: CoreAgentToolRequest) async throws -> CoreAgentApprovalDecision
+  public func decision(for request: FoundationModelsAgentToolRequest) async throws
+    -> FoundationModelsAgentApprovalDecision
   {
     try await handler(request)
   }
 }
 
-public struct ApprovalRequiredToolPolicy: CoreAgentToolPolicy {
+public struct ApprovalRequiredToolPolicy: FoundationModelsAgentToolPolicy {
   private let requiredNames: Set<String>?
-  private let provider: any CoreAgentApprovalProvider
+  private let provider: any FoundationModelsAgentApprovalProvider
 
   public init(
     requiredNames: Set<String>? = nil,
-    provider: any CoreAgentApprovalProvider
+    provider: any FoundationModelsAgentApprovalProvider
   ) {
     self.requiredNames = requiredNames
     self.provider = provider
   }
 
-  public func authorize(_ request: CoreAgentToolRequest) async throws {
+  public func authorize(_ request: FoundationModelsAgentToolRequest) async throws {
     if let requiredNames, !requiredNames.contains(request.manifest.name) {
       return
     }
@@ -194,18 +200,18 @@ public struct ApprovalRequiredToolPolicy: CoreAgentToolPolicy {
     case .approve:
       return
     case .deny(let reason):
-      throw CoreAgentPolicyError.denied(toolName: request.manifest.name, reason: reason)
+      throw FoundationModelsAgentPolicyError.denied(toolName: request.manifest.name, reason: reason)
     }
   }
 }
 
-public struct CoreAgentToolConfiguration: Sendable {
-  public var policy: any CoreAgentToolPolicy
+public struct FoundationModelsAgentToolConfiguration: Sendable {
+  public var policy: any FoundationModelsAgentToolPolicy
   public var executionTimeout: Duration?
   public var maximumCallsPerRun: Int?
 
   public init(
-    policy: any CoreAgentToolPolicy = AllowAllCoreAgentToolPolicy(),
+    policy: any FoundationModelsAgentToolPolicy = AllowAllFoundationModelsAgentToolPolicy(),
     executionTimeout: Duration? = nil,
     maximumCallsPerRun: Int? = nil
   ) {
@@ -214,10 +220,10 @@ public struct CoreAgentToolConfiguration: Sendable {
     self.maximumCallsPerRun = maximumCallsPerRun
   }
 
-  public static let `default` = CoreAgentToolConfiguration()
+  public static let `default` = FoundationModelsAgentToolConfiguration()
 }
 
-actor CoreAgentToolRuntime {
+actor FoundationModelsAgentToolRuntime {
   private var currentRunID: UUID?
   private var callCount = 0
   private var beganToolInvocation = false
@@ -242,10 +248,10 @@ actor CoreAgentToolRuntime {
 
   func reserveCall() throws -> UUID {
     guard let currentRunID else {
-      throw CoreAgentError.noActiveRun
+      throw FoundationModelsAgentError.noActiveRun
     }
     if let maximumCallsPerRun, callCount >= maximumCallsPerRun {
-      throw CoreAgentError.toolCallBudgetExceeded(maximum: maximumCallsPerRun)
+      throw FoundationModelsAgentError.toolCallBudgetExceeded(maximum: maximumCallsPerRun)
     }
     callCount += 1
     beganToolInvocation = true
@@ -261,15 +267,15 @@ actor CoreAgentToolRuntime {
   }
 }
 
-struct CoreAgentGovernedTool: Tool {
+struct FoundationModelsAgentGovernedTool: Tool {
   typealias Arguments = GeneratedContent
   typealias Output = Prompt
 
-  let base: CoreAgentAnyTool
-  let manifest: CoreAgentToolManifest
-  let configuration: CoreAgentToolConfiguration
-  let runtime: CoreAgentToolRuntime
-  let recorder: CoreAgentEventRecorder
+  let base: FoundationModelsAgentAnyTool
+  let manifest: FoundationModelsAgentToolManifest
+  let configuration: FoundationModelsAgentToolConfiguration
+  let runtime: FoundationModelsAgentToolRuntime
+  let recorder: FoundationModelsAgentEventRecorder
 
   var name: String { base.name }
   var description: String { base.description }
@@ -280,7 +286,7 @@ struct CoreAgentGovernedTool: Tool {
   func call(arguments: GeneratedContent) async throws -> Prompt {
     let runID = try await runtime.reserveCall()
     let invocationID = UUID()
-    let request = CoreAgentToolRequest(
+    let request = FoundationModelsAgentToolRequest(
       runID: runID,
       invocationID: invocationID,
       manifest: manifest,
@@ -315,7 +321,7 @@ struct CoreAgentGovernedTool: Tool {
         attributes: attributes
       )
       throw CancellationError()
-    } catch let error as CoreAgentPolicyError {
+    } catch let error as FoundationModelsAgentPolicyError {
       await recorder.record(
         runID: runID,
         kind: .toolAuthorizationDenied,
@@ -346,12 +352,12 @@ struct CoreAgentGovernedTool: Tool {
       let output: Prompt
       if let timeout = configuration.executionTimeout {
         do {
-          output = try await withCoreAgentTimeout(timeout) {
+          output = try await withFoundationModelsAgentTimeout(timeout) {
             try Task.checkCancellation()
             return try await base.call(arguments: arguments)
           }
-        } catch is CoreAgentTimeoutMarker {
-          throw CoreAgentError.toolExecutionTimedOut(toolName: name)
+        } catch is FoundationModelsAgentTimeoutMarker {
+          throw FoundationModelsAgentError.toolExecutionTimedOut(toolName: name)
         }
       } else {
         try Task.checkCancellation()
@@ -378,7 +384,7 @@ struct CoreAgentGovernedTool: Tool {
   }
 }
 
-struct CoreAgentAnyTool: Sendable {
+struct FoundationModelsAgentAnyTool: Sendable {
   let name: String
   let description: String
   let parameters: GenerationSchema
@@ -400,9 +406,9 @@ struct CoreAgentAnyTool: Sendable {
   }
 }
 
-struct CoreAgentTimeoutMarker: Error, Sendable {}
+struct FoundationModelsAgentTimeoutMarker: Error, Sendable {}
 
-func withCoreAgentTimeout<Value: Sendable>(
+func withFoundationModelsAgentTimeout<Value: Sendable>(
   _ duration: Duration,
   operation: @escaping @Sendable () async throws -> Value
 ) async throws -> Value {
@@ -410,10 +416,10 @@ func withCoreAgentTimeout<Value: Sendable>(
     group.addTask { try await operation() }
     group.addTask {
       try await Task.sleep(for: duration)
-      throw CoreAgentTimeoutMarker()
+      throw FoundationModelsAgentTimeoutMarker()
     }
     guard let result = try await group.next() else {
-      throw CoreAgentTimeoutMarker()
+      throw FoundationModelsAgentTimeoutMarker()
     }
     group.cancelAll()
     return result

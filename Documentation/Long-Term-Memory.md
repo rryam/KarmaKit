@@ -1,6 +1,6 @@
 # Long-Term Memory
 
-`CoreAgentMemory` adds local, inspectable memory without changing Foundation
+`FoundationModelsAgentMemory` adds local, inspectable memory without changing Foundation
 Models' `LanguageModel`, `Prompt`, `Transcript`, `Tool`, or `Generable` types.
 It is optional and has no embedding, vector-database, graph, or cloud
 dependency.
@@ -10,8 +10,8 @@ dependency.
 | Concern | Transcript checkpoint | Long-term memory |
 | --- | --- | --- |
 | Purpose | Resume one native session | Recall durable evidence across sessions |
-| Canonical value | Foundation Models `Transcript` | `CoreAgentMemoryRecord` |
-| Default store | `FileCheckpointStore` | `SQLiteCoreAgentMemoryStore` |
+| Canonical value | Foundation Models `Transcript` | `FoundationModelsAgentMemoryRecord` |
+| Default store | `FileCheckpointStore` | `SQLiteFoundationModelsAgentMemoryStore` |
 | Retrieval | Restore full retained history | Scoped FTS5 plus an optional index |
 | Deletion | Remove the checkpoint key | Tombstone first, then purge derivatives |
 
@@ -25,30 +25,30 @@ approval, correction, export, and deletion never fall back across a missing
 scope component.
 
 ```swift
-import CoreAgent
-import CoreAgentMemory
+import FoundationModelsAgent
+import FoundationModelsAgentMemory
 
-let scope = try CoreAgentMemoryScope(
+let scope = try FoundationModelsAgentMemoryScope(
   applicationID: "com.example.assistant",
   userID: user.id,
   agentID: "research"
 )
 
-let store = try SQLiteCoreAgentMemoryStore(
+let store = try SQLiteFoundationModelsAgentMemoryStore(
   databaseURL: URL.applicationSupportDirectory
     .appending(path: "Memory/research.sqlite")
 )
 
-let memory = CoreAgentMemoryCoordinator(
+let memory = FoundationModelsAgentMemoryCoordinator(
   scope: scope,
   store: store,
   disclosurePolicy: .init(destination: .onDevice)
 )
 
-let session = try CoreAgentSession(model: model, plugins: [memory])
+let session = try FoundationModelsAgentSession(model: model, plugins: [memory])
 ```
 
-`SQLiteCoreAgentMemoryStore` enables WAL, foreign keys, and an FTS5 index. Its
+`SQLiteFoundationModelsAgentMemoryStore` enables WAL, foreign keys, and an FTS5 index. Its
 default protection is `completeUntilFirstUserAuthentication`; database, WAL,
 and shared-memory files are excluded from backup by default. These settings are
 configurable when an app has a different data-protection or backup policy.
@@ -81,18 +81,18 @@ ordering. The default prompt budget is eight records and 6,000 characters.
 Record boundaries and provenance are preserved, and truncation is labeled.
 
 The injected block is explicitly marked untrusted evidence. It is placed before
-the original prompt, never in instructions. CoreAgent verifies and removes the
+the original prompt, never in instructions. FoundationModelsAgent verifies and removes the
 exact injected segments after the run, checkpoints only the sanitized
 transcript, and rebuilds the explicit native session from that transcript. Raw
-response entries remain on `CoreAgentResponse` for audit.
+response entries remain on `FoundationModelsAgentResponse` for audit.
 
-The coordinator also exposes a read-only `coreagent_search_memory` tool. In an
-explicit-model session the plugin contributes this tool to CoreAgent's normal
+The coordinator also exposes a read-only `foundationmodelsagent_search_memory` tool. In an
+explicit-model session the plugin contributes this tool to FoundationModelsAgent's normal
 manifest, duplicate-name validation, policy, audit, and checkpoint revision.
 
 ## Capture and consolidation
 
-After a successful run, CoreAgent transactionally stores an immutable episode
+After a successful run, FoundationModelsAgent transactionally stores an immutable episode
 and its durable consolidation job before returning the model response. Episode
 content excludes instructions, hidden reasoning, automatically injected
 evidence, and memory-search tool output. Image and custom inputs retain source
@@ -103,12 +103,12 @@ Consolidation is optional:
 ```swift
 let consolidator = FoundationModelsMemoryConsolidator(model: consolidationModel)
 
-let memory = CoreAgentMemoryCoordinator(
+let memory = FoundationModelsAgentMemoryCoordinator(
   scope: scope,
   store: store,
   disclosurePolicy: .init(destination: .remote),
   consolidator: consolidator,
-  approvalProvider: DeferCoreAgentMemoryApprovalProvider()
+  approvalProvider: DeferFoundationModelsAgentMemoryApprovalProvider()
 )
 ```
 
@@ -166,13 +166,13 @@ backup by default. Imports are not supported in this release.
 
 ## Dynamic profiles
 
-Dynamic-profile state can include non-transcript values that CoreAgent cannot
+Dynamic-profile state can include non-transcript values that FoundationModelsAgent cannot
 rebuild safely. Automatic prompt injection is therefore disabled in profile
 mode. Episode capture and consolidation still run. Put the search tool in the
 profile explicitly when recall is required:
 
 ```swift
-let session = try CoreAgentSession(
+let session = try FoundationModelsAgentSession(
   checkpointCompatibilityID: "assistant-profile-v1",
   plugins: [memory]
 ) {
@@ -189,14 +189,14 @@ let session = try CoreAgentSession(
 The disclosure policy must declare whether the destination model is on-device
 or remote. Remote defaults exclude `restricted` records. Apps can provide an
 explicit sensitivity allowlist. Embeddings or other optional-index values are
-sensitive derivatives even though CoreAgent does not create them itself.
+sensitive derivatives even though FoundationModelsAgent does not create them itself.
 
 Memory events contain IDs, counts, stages, and error types, not record bodies.
 Preparation and write failures default to recording the failure and preserving
 the model response. Apps may select `failRun`; a completion failure can occur
 after model or tool side effects, so callers must not blindly retry it.
 Transcript-sanitization mismatches fail by default. If configured to continue,
-CoreAgent reverts to the pre-run transcript rather than retaining injected
+FoundationModelsAgent reverts to the pre-run transcript rather than retaining injected
 evidence.
 
 Neural state, KV-cache import/export, and latent-memory representations are not

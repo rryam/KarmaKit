@@ -1,21 +1,21 @@
 import CryptoKit
 import Foundation
 
-actor CoreAgentMemoryConsolidationWorker {
-  private let scope: CoreAgentMemoryScope
-  private let store: any CoreAgentMemoryStore
-  private let consolidator: any CoreAgentMemoryConsolidator
-  private let approvalProvider: any CoreAgentMemoryApprovalProvider
-  private let runtime: CoreAgentMemoryRuntime
+actor FoundationModelsAgentMemoryConsolidationWorker {
+  private let scope: FoundationModelsAgentMemoryScope
+  private let store: any FoundationModelsAgentMemoryStore
+  private let consolidator: any FoundationModelsAgentMemoryConsolidator
+  private let approvalProvider: any FoundationModelsAgentMemoryApprovalProvider
+  private let runtime: FoundationModelsAgentMemoryRuntime
 
   private var task: Task<Void, Never>?
 
   init(
-    scope: CoreAgentMemoryScope,
-    store: any CoreAgentMemoryStore,
-    consolidator: any CoreAgentMemoryConsolidator,
-    approvalProvider: any CoreAgentMemoryApprovalProvider,
-    runtime: CoreAgentMemoryRuntime
+    scope: FoundationModelsAgentMemoryScope,
+    store: any FoundationModelsAgentMemoryStore,
+    consolidator: any FoundationModelsAgentMemoryConsolidator,
+    approvalProvider: any FoundationModelsAgentMemoryApprovalProvider,
+    runtime: FoundationModelsAgentMemoryRuntime
   ) {
     self.scope = scope
     self.store = store
@@ -65,7 +65,7 @@ actor CoreAgentMemoryConsolidationWorker {
 
   private func drain() async {
     while !Task.isCancelled {
-      let job: CoreAgentMemoryConsolidationJob?
+      let job: FoundationModelsAgentMemoryConsolidationJob?
       do {
         job = try await store.claimNextConsolidationJob(in: scope)
       } catch {
@@ -97,7 +97,7 @@ actor CoreAgentMemoryConsolidationWorker {
     task = nil
   }
 
-  private func process(_ original: CoreAgentMemoryConsolidationJob) async -> Bool {
+  private func process(_ original: FoundationModelsAgentMemoryConsolidationJob) async -> Bool {
     var job = original
     guard job.attemptCount <= job.maximumAttempts else {
       job.status = .failed
@@ -127,7 +127,7 @@ actor CoreAgentMemoryConsolidationWorker {
         )
       )
       guard let episode = try await store.record(id: job.episodeID, in: scope) else {
-        throw CoreAgentMemoryError.recordNotFound(job.episodeID)
+        throw FoundationModelsAgentMemoryError.recordNotFound(job.episodeID)
       }
       guard episode.isActive else {
         job.status = .cancelled
@@ -187,7 +187,7 @@ actor CoreAgentMemoryConsolidationWorker {
   }
 
   private func persist(
-    _ job: CoreAgentMemoryConsolidationJob,
+    _ job: FoundationModelsAgentMemoryConsolidationJob,
     stage: String
   ) async -> Bool {
     do {
@@ -212,22 +212,22 @@ actor CoreAgentMemoryConsolidationWorker {
   }
 
   private func propose(
-    _ draft: CoreAgentMemoryCandidateDraft,
-    from episode: CoreAgentMemoryRecord,
-    job: CoreAgentMemoryConsolidationJob
+    _ draft: FoundationModelsAgentMemoryCandidateDraft,
+    from episode: FoundationModelsAgentMemoryRecord,
+    job: FoundationModelsAgentMemoryConsolidationJob
   ) async throws {
     guard let currentEpisode = try await store.record(id: episode.id, in: scope),
       currentEpisode.isActive
     else {
-      throw CoreAgentMemoryError.sourceRecordInactive(episode.id)
+      throw FoundationModelsAgentMemoryError.sourceRecordInactive(episode.id)
     }
     let id = Self.candidateID(episodeID: episode.id, draft: draft)
-    let candidate: CoreAgentMemoryCandidate
+    let candidate: FoundationModelsAgentMemoryCandidate
     if let existing = try await store.candidate(id: id, in: scope) {
       guard existing.status == .pending else { return }
       candidate = existing
     } else {
-      candidate = CoreAgentMemoryCandidate(
+      candidate = FoundationModelsAgentMemoryCandidate(
         id: id,
         scope: scope,
         sourceRecordID: episode.id,
@@ -245,7 +245,7 @@ actor CoreAgentMemoryConsolidationWorker {
       )
     }
 
-    let decision: CoreAgentMemoryApprovalDecision
+    let decision: FoundationModelsAgentMemoryApprovalDecision
     do {
       decision = try await approvalProvider.decision(for: candidate)
     } catch {
@@ -277,12 +277,12 @@ actor CoreAgentMemoryConsolidationWorker {
 
   private static func candidateID(
     episodeID: UUID,
-    draft: CoreAgentMemoryCandidateDraft
+    draft: FoundationModelsAgentMemoryCandidateDraft
   ) -> UUID {
     let seed = [
       episodeID.uuidString.lowercased(),
       draft.kind.rawValue,
-      CoreAgentMemoryRecord.hash(draft.content),
+      FoundationModelsAgentMemoryRecord.hash(draft.content),
     ].joined(separator: "\u{0}")
     var bytes = Array(SHA256.hash(data: Data(seed.utf8)).prefix(16))
     bytes[6] = (bytes[6] & 0x0F) | 0x50

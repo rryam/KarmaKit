@@ -1,7 +1,7 @@
-import CoreAgent
-import CoreAgentTestSupport
 import Foundation
 import FoundationModels
+import FoundationModelsAgent
+import FoundationModelsAgentTestSupport
 import Testing
 
 private enum TestPluginError: Error {
@@ -13,15 +13,15 @@ private actor TestPluginProbe {
   private(set) var preparationCount = 0
   private(set) var completionCount = 0
   private(set) var failureCount = 0
-  private(set) var requests: [CoreAgentPluginRequest] = []
-  private(set) var completions: [CoreAgentPluginCompletion] = []
+  private(set) var requests: [FoundationModelsAgentPluginRequest] = []
+  private(set) var completions: [FoundationModelsAgentPluginCompletion] = []
 
-  func recordPreparation(_ request: CoreAgentPluginRequest) {
+  func recordPreparation(_ request: FoundationModelsAgentPluginRequest) {
     preparationCount += 1
     requests.append(request)
   }
 
-  func recordCompletion(_ completion: CoreAgentPluginCompletion) {
+  func recordCompletion(_ completion: FoundationModelsAgentPluginCompletion) {
     completionCount += 1
     completions.append(completion)
   }
@@ -31,21 +31,21 @@ private actor TestPluginProbe {
   }
 }
 
-private struct TestSessionPlugin: CoreAgentSessionPlugin {
+private struct TestSessionPlugin: FoundationModelsAgentSessionPlugin {
   let identifier: String
   let probe: TestPluginProbe
-  let contextBlocks: [CoreAgentContextBlock]
+  let contextBlocks: [FoundationModelsAgentContextBlock]
   let tools: [any Tool]
-  let failurePolicies: CoreAgentPluginFailurePolicies
+  let failurePolicies: FoundationModelsAgentPluginFailurePolicies
   let failsPreparation: Bool
   let failsCompletion: Bool
 
   init(
     identifier: String = "test.plugin",
     probe: TestPluginProbe,
-    contextBlocks: [CoreAgentContextBlock] = [],
+    contextBlocks: [FoundationModelsAgentContextBlock] = [],
     tools: [any Tool] = [],
-    failurePolicies: CoreAgentPluginFailurePolicies = .default,
+    failurePolicies: FoundationModelsAgentPluginFailurePolicies = .default,
     failsPreparation: Bool = false,
     failsCompletion: Bool = false
   ) {
@@ -58,27 +58,31 @@ private struct TestSessionPlugin: CoreAgentSessionPlugin {
     self.failsCompletion = failsCompletion
   }
 
-  func prepare(for request: CoreAgentPluginRequest) async throws -> CoreAgentPluginPreparation {
+  func prepare(for request: FoundationModelsAgentPluginRequest) async throws
+    -> FoundationModelsAgentPluginPreparation
+  {
     await probe.recordPreparation(request)
     if failsPreparation {
       throw TestPluginError.preparation
     }
-    return CoreAgentPluginPreparation(contextBlocks: contextBlocks)
+    return FoundationModelsAgentPluginPreparation(contextBlocks: contextBlocks)
   }
 
-  func didComplete(_ completion: CoreAgentPluginCompletion) async throws
-    -> [CoreAgentPluginEvent]
+  func didComplete(_ completion: FoundationModelsAgentPluginCompletion) async throws
+    -> [FoundationModelsAgentPluginEvent]
   {
     await probe.recordCompletion(completion)
     if failsCompletion {
       throw TestPluginError.completion
     }
     return [
-      CoreAgentPluginEvent(name: "captured", message: "Test plugin captured the run.")
+      FoundationModelsAgentPluginEvent(name: "captured", message: "Test plugin captured the run.")
     ]
   }
 
-  func didFail(_ failure: CoreAgentPluginFailure) async -> [CoreAgentPluginEvent] {
+  func didFail(_ failure: FoundationModelsAgentPluginFailure) async
+    -> [FoundationModelsAgentPluginEvent]
+  {
     await probe.recordFailure()
     return []
   }
@@ -109,27 +113,27 @@ private func promptText(in entries: some Sequence<Transcript.Entry>) -> [String]
   }
 }
 
-@Suite("CoreAgent session plugins")
-struct CoreAgentPluginTests {
+@Suite("FoundationModelsAgent session plugins")
+struct FoundationModelsAgentPluginTests {
   @Test("Prepares once across retries and removes injected context from durable history")
   func contextLifecycleAcrossRetry() async throws {
     let probe = TestPluginProbe()
     let plugin = TestSessionPlugin(
       probe: probe,
       contextBlocks: [
-        CoreAgentContextBlock(
+        FoundationModelsAgentContextBlock(
           id: "memory-record-1",
           content: "Untrusted recalled evidence: the preferred color is blue."
         )
       ]
     )
-    let retry = try CoreAgentRetryPolicy(maximumAttempts: 2) { _ in true }
+    let retry = try FoundationModelsAgentRetryPolicy(maximumAttempts: 2) { _ in true }
     let model = RecordedLanguageModel(steps: [
       .failure("temporary"),
       .response(text: "blue"),
     ])
     let checkpointStore = InMemoryCheckpointStore()
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       configuration: .init(retryPolicy: retry),
       checkpointStore: checkpointStore,
@@ -177,12 +181,12 @@ struct CoreAgentPluginTests {
   @Test("Applies the same plugin lifecycle to streaming responses")
   func streamingLifecycle() async throws {
     let probe = TestPluginProbe()
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.responseFragments(["hel", "lo"])]),
       plugins: [
         TestSessionPlugin(
           probe: probe,
-          contextBlocks: [CoreAgentContextBlock(id: "context", content: "Context")]
+          contextBlocks: [FoundationModelsAgentContextBlock(id: "context", content: "Context")]
         )
       ]
     )
@@ -201,7 +205,7 @@ struct CoreAgentPluginTests {
   @Test("Plugin preparation failures continue or fail according to policy")
   func preparationFailurePolicy() async throws {
     let continuingProbe = TestPluginProbe()
-    let continuing = try CoreAgentSession(
+    let continuing = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "continued")]),
       plugins: [TestSessionPlugin(probe: continuingProbe, failsPreparation: true)]
     )
@@ -210,7 +214,7 @@ struct CoreAgentPluginTests {
     #expect(await continuingProbe.completionCount == 1)
 
     let failingProbe = TestPluginProbe()
-    let failing = try CoreAgentSession(
+    let failing = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "unused")]),
       plugins: [
         TestSessionPlugin(
@@ -230,8 +234,8 @@ struct CoreAgentPluginTests {
   @Test("Plugin tools participate in duplicate-name validation")
   func duplicatePluginToolName() throws {
     let probe = TestPluginProbe()
-    #expect(throws: CoreAgentError.self) {
-      _ = try CoreAgentSession(
+    #expect(throws: FoundationModelsAgentError.self) {
+      _ = try FoundationModelsAgentSession(
         model: RecordedLanguageModel(steps: []),
         tools: [PluginTool(name: "duplicate")],
         plugins: [
@@ -249,8 +253,8 @@ struct CoreAgentPluginTests {
     let first = TestSessionPlugin(probe: TestPluginProbe())
     let second = TestSessionPlugin(probe: TestPluginProbe())
 
-    #expect(throws: CoreAgentError.self) {
-      _ = try CoreAgentSession(
+    #expect(throws: FoundationModelsAgentError.self) {
+      _ = try FoundationModelsAgentSession(
         model: RecordedLanguageModel(steps: []),
         plugins: [first, second]
       )

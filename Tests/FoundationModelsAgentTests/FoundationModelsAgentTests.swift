@@ -1,8 +1,9 @@
-import CoreAgent
-import CoreAgentTestSupport
 import CoreGraphics
+import CryptoKit
 import Foundation
 import FoundationModels
+import FoundationModelsAgent
+import FoundationModelsAgentTestSupport
 import Testing
 
 @Generable
@@ -155,17 +156,17 @@ private struct TestCustomSegment: Transcript.CustomSegment {
 }
 
 private actor RequestCapture {
-  private(set) var requests: [CoreAgentToolRequest] = []
+  private(set) var requests: [FoundationModelsAgentToolRequest] = []
 
-  func append(_ request: CoreAgentToolRequest) {
+  func append(_ request: FoundationModelsAgentToolRequest) {
     requests.append(request)
   }
 }
 
 private actor EventCapture {
-  private(set) var events: [CoreAgentEvent] = []
+  private(set) var events: [FoundationModelsAgentEvent] = []
 
-  func append(_ event: CoreAgentEvent) {
+  func append(_ event: FoundationModelsAgentEvent) {
     events.append(event)
   }
 }
@@ -190,8 +191,8 @@ private enum AuthorizationServiceError: Error {
   case unavailable
 }
 
-private struct FailingAuthorizationPolicy: CoreAgentToolPolicy {
-  func authorize(_ request: CoreAgentToolRequest) async throws {
+private struct FailingAuthorizationPolicy: FoundationModelsAgentToolPolicy {
+  func authorize(_ request: FoundationModelsAgentToolRequest) async throws {
     throw AuthorizationServiceError.unavailable
   }
 }
@@ -230,13 +231,13 @@ private actor BooleanCapture {
 }
 
 private actor SessionReference {
-  private var session: CoreAgentSession?
+  private var session: FoundationModelsAgentSession?
 
-  func set(_ session: CoreAgentSession) {
+  func set(_ session: FoundationModelsAgentSession) {
     self.session = session
   }
 
-  func get() -> CoreAgentSession? {
+  func get() -> FoundationModelsAgentSession? {
     session
   }
 }
@@ -245,26 +246,26 @@ private enum FailingCheckpointError: Error {
   case intentional
 }
 
-private actor FailingCheckpointStore: CoreAgentCheckpointStore {
-  func loadCheckpoint(for key: String) throws -> CoreAgentCheckpoint? {
+private actor FailingCheckpointStore: FoundationModelsAgentCheckpointStore {
+  func loadCheckpoint(for key: String) throws -> FoundationModelsAgentCheckpoint? {
     nil
   }
 
-  func saveCheckpoint(_ checkpoint: CoreAgentCheckpoint, for key: String) throws {
+  func saveCheckpoint(_ checkpoint: FoundationModelsAgentCheckpoint, for key: String) throws {
     throw FailingCheckpointError.intentional
   }
 
   func removeCheckpoint(for key: String) throws {}
 }
 
-@Suite("CoreAgent native Foundation Models runtime")
-struct CoreAgentTests {
+@Suite("FoundationModelsAgent native Foundation Models runtime")
+struct FoundationModelsAgentTests {
   @Test("Uses native instructions, responses, usage, and receipts")
   func nativeTextResponse() async throws {
     let model = RecordedLanguageModel(
       steps: [.response(text: "hello", inputTokens: 4, outputTokens: 2)]
     )
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       instructions: Instructions("Always be concise.")
     )
@@ -276,7 +277,7 @@ struct CoreAgentTests {
     #expect(response.usage.outputTokens == 2)
     #expect(response.run.events.first?.kind == .runStarted)
     #expect(response.run.events.last?.kind == .runCompleted)
-    #expect(try CoreAgentRunReceipt(run: response.run).verify())
+    #expect(try FoundationModelsAgentRunReceipt(run: response.run).verify())
 
     let captured = model.recorder.capturedTranscripts()
     #expect(captured.count == 1)
@@ -295,7 +296,7 @@ struct CoreAgentTests {
   @Test("Preserves native structured generation")
   func structuredResponse() async throws {
     let model = RecordedLanguageModel(steps: [.response(text: #"{"value":"typed"}"#)])
-    let session = try CoreAgentSession(model: model)
+    let session = try FoundationModelsAgentSession(model: model)
 
     let response = try await session.respond(to: "Return a value", generating: TestAnswer.self)
 
@@ -306,7 +307,7 @@ struct CoreAgentTests {
   @Test("Passes image attachments through the native prompt")
   func imagePromptIsNotFlattened() async throws {
     let model = RecordedLanguageModel(steps: [.response(text: "seen")], capabilities: [.vision])
-    let session = try CoreAgentSession(model: model)
+    let session = try FoundationModelsAgentSession(model: model)
     let context = try #require(
       CGContext(
         data: nil,
@@ -341,7 +342,7 @@ struct CoreAgentTests {
   func governedToolRoundTrip() async throws {
     let counter = InvocationCounter()
     let capture = RequestCapture()
-    let approval = ClosureCoreAgentApprovalProvider { request in
+    let approval = ClosureFoundationModelsAgentApprovalProvider { request in
       await capture.append(request)
       return .approve
     }
@@ -349,7 +350,7 @@ struct CoreAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"approved"}"#),
       .response(text: "done"),
     ])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       tools: [EchoTool(counter: counter)],
       toolConfiguration: .init(
@@ -377,15 +378,17 @@ struct CoreAgentTests {
     let model = RecordedLanguageModel(steps: [
       .toolCall(name: "echo", argumentsJSON: #"{"value":"blocked"}"#)
     ])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       tools: [EchoTool(counter: counter)],
       toolConfiguration: .init(
         policy: ApprovalRequiredToolPolicy(
-          provider: ClosureCoreAgentApprovalProvider { _ in .deny(reason: "User declined") }
+          provider: ClosureFoundationModelsAgentApprovalProvider { _ in
+            .deny(reason: "User declined")
+          }
         )
       ),
-      observers: [ClosureCoreAgentObserver { await eventCapture.append($0) }]
+      observers: [ClosureFoundationModelsAgentObserver { await eventCapture.append($0) }]
     )
 
     await #expect(throws: (any Error).self) {
@@ -401,12 +404,12 @@ struct CoreAgentTests {
   func cancellationDuringAuthorization() async throws {
     let counter = InvocationCounter()
     let signal = AuthorizationSignal()
-    let approval = ClosureCoreAgentApprovalProvider { _ in
+    let approval = ClosureFoundationModelsAgentApprovalProvider { _ in
       await signal.markStarted()
       try? await Task.sleep(for: .seconds(1))
       return .approve
     }
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [
         .toolCall(name: "echo", argumentsJSON: #"{"value":"never"}"#)
       ]),
@@ -433,12 +436,12 @@ struct CoreAgentTests {
 
   @Test("Does not label an authorization service error as a denial or retry it")
   func authorizationFailureStopsRetry() async throws {
-    let retry = try CoreAgentRetryPolicy(maximumAttempts: 2) { _ in true }
+    let retry = try FoundationModelsAgentRetryPolicy(maximumAttempts: 2) { _ in true }
     let model = RecordedLanguageModel(steps: [
       .toolCall(name: "echo", argumentsJSON: #"{"value":"blocked"}"#),
       .response(text: "must not retry"),
     ])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       tools: [EchoTool(counter: InvocationCounter())],
       configuration: .init(retryPolicy: retry),
@@ -463,7 +466,7 @@ struct CoreAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"first"}"#),
       .toolCall(name: "echo", argumentsJSON: #"{"value":"second"}"#),
     ])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       tools: [EchoTool(counter: counter)],
       toolConfiguration: .init(maximumCallsPerRun: 1)
@@ -479,7 +482,7 @@ struct CoreAgentTests {
 
   @Test("Preserves a native tool's schema-in-instructions opt-out")
   func toolSchemaInstructionPreference() throws {
-    let manifest = try CoreAgentToolManifest(tool: SchemaHiddenEchoTool())
+    let manifest = try FoundationModelsAgentToolManifest(tool: SchemaHiddenEchoTool())
 
     #expect(!manifest.includesSchemaInInstructions)
   }
@@ -489,7 +492,7 @@ struct CoreAgentTests {
     let model = RecordedLanguageModel(steps: [
       .toolCall(name: "slow_echo", argumentsJSON: #"{"value":"late"}"#)
     ])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       tools: [SlowEchoTool()],
       toolConfiguration: .init(executionTimeout: .milliseconds(10))
@@ -507,12 +510,12 @@ struct CoreAgentTests {
   func trustedToolManifest() async throws {
     let counter = InvocationCounter()
     let tool = EchoTool(counter: counter)
-    let manifest = try CoreAgentToolManifest(tool: tool)
+    let manifest = try FoundationModelsAgentToolManifest(tool: tool)
     let model = RecordedLanguageModel(steps: [
       .toolCall(name: "echo", argumentsJSON: #"{"value":"trusted"}"#),
       .response(text: "done"),
     ])
-    let trusted = try CoreAgentSession(
+    let trusted = try FoundationModelsAgentSession(
       model: model,
       tools: [tool],
       toolConfiguration: .init(
@@ -523,7 +526,7 @@ struct CoreAgentTests {
     #expect(try await trusted.respond(to: "Use echo").content == "done")
     #expect(await counter.count == 1)
 
-    let denied = try CoreAgentSession(
+    let denied = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [
         .toolCall(name: "echo", argumentsJSON: #"{"value":"denied"}"#)
       ]),
@@ -540,12 +543,12 @@ struct CoreAgentTests {
 
   @Test("Retries only when the configured classifier permits it")
   func retryPolicy() async throws {
-    let retry = try CoreAgentRetryPolicy(maximumAttempts: 2) { _ in true }
+    let retry = try FoundationModelsAgentRetryPolicy(maximumAttempts: 2) { _ in true }
     let model = RecordedLanguageModel(steps: [
       .failure("temporary"),
       .response(text: "recovered"),
     ])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       configuration: .init(retryPolicy: retry)
     )
@@ -560,14 +563,14 @@ struct CoreAgentTests {
   @Test("Does not retry automatically after a side-effecting tool began")
   func retrySuppressedAfterToolExecution() async throws {
     let counter = InvocationCounter()
-    let retry = try CoreAgentRetryPolicy(maximumAttempts: 2) { _ in true }
+    let retry = try FoundationModelsAgentRetryPolicy(maximumAttempts: 2) { _ in true }
     let model = RecordedLanguageModel(steps: [
       .toolCall(name: "echo", argumentsJSON: #"{"value":"once"}"#),
       .failure("failed after the side effect"),
       .toolCall(name: "echo", argumentsJSON: #"{"value":"twice"}"#),
       .response(text: "should not happen"),
     ])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       tools: [EchoTool(counter: counter)],
       configuration: .init(retryPolicy: retry)
@@ -586,12 +589,12 @@ struct CoreAgentTests {
     let model = RecordedLanguageModel(
       steps: [.delayedResponse(text: "late", delay: .seconds(1))]
     )
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
       configuration: .init(responseTimeout: .milliseconds(10))
     )
 
-    await #expect(throws: CoreAgentError.self) {
+    await #expect(throws: FoundationModelsAgentError.self) {
       _ = try await session.respond(to: "Timeout")
     }
   }
@@ -601,13 +604,13 @@ struct CoreAgentTests {
     let model = RecordedLanguageModel(
       steps: [.delayedResponse(text: "first", delay: .milliseconds(50))]
     )
-    let session = try CoreAgentSession(model: model)
+    let session = try FoundationModelsAgentSession(model: model)
     let first = Task { try await session.respond(to: "First") }
     while model.recorder.capturedTranscripts().isEmpty {
       await Task.yield()
     }
 
-    await #expect(throws: CoreAgentError.self) {
+    await #expect(throws: FoundationModelsAgentError.self) {
       _ = try await session.respond(to: "Second")
     }
 
@@ -617,7 +620,7 @@ struct CoreAgentTests {
   @Test("Streams partial native responses and returns the final run")
   func streamingResponse() async throws {
     let model = RecordedLanguageModel(steps: [.response(text: "streamed")])
-    let session = try CoreAgentSession(model: model)
+    let session = try FoundationModelsAgentSession(model: model)
     let capture = StringCapture()
 
     let response = try await session.respondStreaming(to: Prompt("Stream")) {
@@ -631,22 +634,22 @@ struct CoreAgentTests {
 
   @Test("Applies response timeout to streaming")
   func streamingTimeout() async throws {
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(
         steps: [.delayedResponse(text: "late", delay: .seconds(1))]
       ),
       configuration: .init(responseTimeout: .milliseconds(10))
     )
 
-    await #expect(throws: CoreAgentError.self) {
+    await #expect(throws: FoundationModelsAgentError.self) {
       _ = try await session.respondStreaming(to: Prompt("Timeout")) { _ in }
     }
   }
 
   @Test("Retries a stream only before its first partial response")
   func streamingRetryBeforePartial() async throws {
-    let retry = try CoreAgentRetryPolicy(maximumAttempts: 2) { _ in true }
-    let session = try CoreAgentSession(
+    let retry = try FoundationModelsAgentRetryPolicy(maximumAttempts: 2) { _ in true }
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [
         .failure("temporary"),
         .response(text: "recovered stream"),
@@ -666,7 +669,7 @@ struct CoreAgentTests {
 
   @Test("Streams typed output across multiple provider fragments")
   func typedStreamingFragments() async throws {
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [
         .responseFragments(["{\"value\":\"", "typed\"}"])
       ])
@@ -688,7 +691,7 @@ struct CoreAgentTests {
   func checkpointRestore() async throws {
     let store = InMemoryCheckpointStore()
     let firstModel = RecordedLanguageModel(steps: [.response(text: "first")])
-    let first = try CoreAgentSession(
+    let first = try FoundationModelsAgentSession(
       model: firstModel,
       instructions: Instructions("Persist this instruction."),
       checkpointStore: store,
@@ -697,7 +700,7 @@ struct CoreAgentTests {
     _ = try await first.respond(to: "One")
 
     let secondModel = RecordedLanguageModel(steps: [.response(text: "second")])
-    let second = try CoreAgentSession(
+    let second = try FoundationModelsAgentSession(
       model: secondModel,
       checkpointStore: store,
       checkpointKey: "conversation"
@@ -717,7 +720,7 @@ struct CoreAgentTests {
   func dynamicProfileRestore() async throws {
     let store = InMemoryCheckpointStore()
     let firstModel = RecordedLanguageModel(steps: [.response(text: "first")])
-    let first = try CoreAgentSession(
+    let first = try FoundationModelsAgentSession(
       checkpointCompatibilityID: "assistant-profile-v1",
       checkpointStore: store,
       checkpointKey: "dynamic-profile"
@@ -727,7 +730,7 @@ struct CoreAgentTests {
     _ = try await first.respond(to: "One")
 
     let secondModel = RecordedLanguageModel(steps: [.response(text: "second")])
-    let second = try CoreAgentSession(
+    let second = try FoundationModelsAgentSession(
       checkpointCompatibilityID: "assistant-profile-v1",
       checkpointStore: store,
       checkpointKey: "dynamic-profile"
@@ -748,23 +751,64 @@ struct CoreAgentTests {
     #expect(instructionText.contains("New profile instructions."))
     #expect(!instructionText.contains("Old profile instructions."))
 
-    let incompatible = try CoreAgentSession(
+    let incompatible = try FoundationModelsAgentSession(
       checkpointCompatibilityID: "assistant-profile-v2",
       checkpointStore: store,
       checkpointKey: "dynamic-profile"
     ) {
       TestDynamicProfile(model: RecordedLanguageModel(steps: [.response(text: "unused")]))
     }
-    await #expect(throws: CoreAgentError.self) {
+    await #expect(throws: FoundationModelsAgentError.self) {
       _ = try await incompatible.respond(to: "Mismatch")
     }
+  }
+
+  @Test("Restores a dynamic profile checkpoint from the previous revision salt")
+  func dynamicProfilePreviousRevisionRestore() async throws {
+    let compatibilityID = "assistant-profile-v1"
+    let previousSalt = ["core", "agent-profile-v1"].joined()
+    let previousRevision = SHA256.hash(
+      data: Data("\(previousSalt)\u{0}\(compatibilityID)".utf8)
+    )
+    .map { String(format: "%02x", $0) }
+    .joined()
+    let checkpoint = FoundationModelsAgentCheckpoint(
+      compatibilityRevision: previousRevision,
+      transcript: Transcript(entries: [
+        .prompt(.init(segments: [.text(.init(content: "Previous conversation"))]))
+      ])
+    )
+    let store = InMemoryCheckpointStore(checkpoints: ["previous-profile": checkpoint])
+    let model = RecordedLanguageModel(steps: [.response(text: "restored")])
+    let session = try FoundationModelsAgentSession(
+      checkpointCompatibilityID: compatibilityID,
+      checkpointStore: store,
+      checkpointKey: "previous-profile"
+    ) {
+      TestDynamicProfile(model: model)
+    }
+
+    _ = try await session.respond(to: "Continue")
+
+    let restored = try #require(model.recorder.capturedTranscripts().first)
+    #expect(
+      restored.contains { entry in
+        guard case .prompt(let prompt) = entry else { return false }
+        return prompt.segments.contains { segment in
+          guard case .text(let text) = segment else { return false }
+          return text.content == "Previous conversation"
+        }
+      }
+    )
+    let migrated = try #require(await store.loadCheckpoint(for: "previous-profile"))
+    #expect(migrated.compatibilityRevision != previousRevision)
   }
 
   @Test("Creates fresh non-Sendable profile state when rebuilding on reset")
   func dynamicProfileSendingFactory() async throws {
     let counter = ProfileFactoryCounter()
     let model = RecordedLanguageModel(steps: [])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       checkpointCompatibilityID: "stateful-profile-v1"
     ) {
       counter.increment()
@@ -782,10 +826,10 @@ struct CoreAgentTests {
 
   @Test("Rejects retries for an opaque dynamic profile")
   func dynamicProfileRetrySafety() throws {
-    let retry = try CoreAgentRetryPolicy(maximumAttempts: 2) { _ in true }
+    let retry = try FoundationModelsAgentRetryPolicy(maximumAttempts: 2) { _ in true }
 
-    #expect(throws: CoreAgentError.self) {
-      _ = try CoreAgentSession(
+    #expect(throws: FoundationModelsAgentError.self) {
+      _ = try FoundationModelsAgentSession(
         checkpointCompatibilityID: "profile-v1",
         configuration: .init(
           retryPolicy: retry,
@@ -806,7 +850,7 @@ struct CoreAgentTests {
       .toolCall(name: "echo", argumentsJSON: #"{"value":"side-effect"}"#),
       .failure("continuation failed"),
     ])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       checkpointCompatibilityID: "tool-profile-v1"
     ) {
       TestToolDynamicProfile(
@@ -829,7 +873,7 @@ struct CoreAgentTests {
   @Test("Marks profile tool audit as best effort when an inner hook hides its output")
   func dynamicProfileLifecycleAuditBoundary() async throws {
     let counter = InvocationCounter()
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       checkpointCompatibilityID: "throwing-hook-profile-v1"
     ) {
       ThrowingLifecycleDynamicProfile(
@@ -854,7 +898,7 @@ struct CoreAgentTests {
   @Test("Applies bounded transcript retention only to persisted history")
   func transcriptRetention() async throws {
     let store = InMemoryCheckpointStore()
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [
         .response(text: "one"),
         .response(text: "two"),
@@ -881,7 +925,7 @@ struct CoreAgentTests {
   @Test("Never truncates persisted history into an orphaned tool turn")
   func transcriptRetentionKeepsTurnBoundaries() async throws {
     let store = InMemoryCheckpointStore()
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [
         .toolCall(name: "echo", argumentsJSON: #"{"value":"turn"}"#),
         .response(text: "done"),
@@ -901,7 +945,7 @@ struct CoreAgentTests {
   @Test("Replaces restored instructions when current instructions are supplied")
   func instructionRebasing() async throws {
     let store = InMemoryCheckpointStore()
-    let first = try CoreAgentSession(
+    let first = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "saved")]),
       instructions: Instructions("Old instructions"),
       checkpointStore: store,
@@ -910,7 +954,7 @@ struct CoreAgentTests {
     _ = try await first.respond(to: "Save")
 
     let model = RecordedLanguageModel(steps: [.response(text: "rebased")])
-    let second = try CoreAgentSession(
+    let second = try FoundationModelsAgentSession(
       model: model,
       instructions: Instructions("New instructions"),
       checkpointStore: store,
@@ -933,21 +977,21 @@ struct CoreAgentTests {
   @Test("Rejects a checkpoint restored with a different toolset")
   func checkpointConfigurationMismatch() async throws {
     let store = InMemoryCheckpointStore()
-    let first = try CoreAgentSession(
+    let first = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "saved")]),
       checkpointStore: store,
       checkpointKey: "toolset"
     )
     _ = try await first.respond(to: "Save")
 
-    let second = try CoreAgentSession(
+    let second = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "unused")]),
       tools: [EchoTool(counter: InvocationCounter())],
       checkpointStore: store,
       checkpointKey: "toolset"
     )
 
-    await #expect(throws: CoreAgentError.self) {
+    await #expect(throws: FoundationModelsAgentError.self) {
       _ = try await second.respond(to: "Restore")
     }
   }
@@ -958,7 +1002,7 @@ struct CoreAgentTests {
       .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = FileCheckpointStore(directory: directory)
-    let checkpoint = CoreAgentCheckpoint(
+    let checkpoint = FoundationModelsAgentCheckpoint(
       compatibilityRevision: "revision",
       transcript: Transcript(entries: [
         .prompt(.init(segments: [.text(.init(content: "persisted"))]))
@@ -973,13 +1017,91 @@ struct CoreAgentTests {
     #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == 1)
   }
 
+  @Test("File checkpoints migrate the previous filename")
+  func fileCheckpointLegacyFilenameMigration() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = FileCheckpointStore(directory: directory)
+    let checkpoint = FoundationModelsAgentCheckpoint(
+      compatibilityRevision: "revision",
+      transcript: Transcript(entries: [
+        .prompt(.init(segments: [.text(.init(content: "persisted"))]))
+      ])
+    )
+    let key = "conversation"
+
+    try await store.saveCheckpoint(checkpoint, for: key)
+    let currentURL = try #require(
+      FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+      ).first
+    )
+    let digest = try #require(currentURL.lastPathComponent.split(separator: ".").first)
+    let legacyURL = directory.appending(
+      path: "\(digest).\(["core", "agent-transcript.json"].joined())",
+      directoryHint: .notDirectory
+    )
+    try FileManager.default.moveItem(at: currentURL, to: legacyURL)
+
+    let restored = try #require(try await store.loadCheckpoint(for: key))
+
+    #expect(restored.transcript == checkpoint.transcript)
+    #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+    #expect(
+      FileManager.default.fileExists(
+        atPath: directory.appending(
+          path: "\(digest).foundationmodelsagent-transcript.json",
+          directoryHint: .notDirectory
+        ).path
+      )
+    )
+  }
+
+  @Test("File checkpoints fall back to a valid previous file")
+  func fileCheckpointPreviousFilenameFallback() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = FileCheckpointStore(directory: directory)
+    let checkpoint = FoundationModelsAgentCheckpoint(
+      compatibilityRevision: "revision",
+      transcript: Transcript(entries: [
+        .prompt(.init(segments: [.text(.init(content: "persisted"))]))
+      ])
+    )
+    let key = "conversation"
+
+    try await store.saveCheckpoint(checkpoint, for: key)
+    let currentURL = try #require(
+      FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: nil
+      ).first
+    )
+    let digest = try #require(currentURL.lastPathComponent.split(separator: ".").first)
+    let legacyURL = directory.appending(
+      path: "\(digest).\(["core", "agent-transcript.json"].joined())",
+      directoryHint: .notDirectory
+    )
+    try FileManager.default.copyItem(at: currentURL, to: legacyURL)
+    try Data("invalid".utf8).write(to: currentURL, options: .atomic)
+
+    let restored = try #require(try await store.loadCheckpoint(for: key))
+
+    #expect(restored.transcript == checkpoint.transcript)
+    #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+    #expect(try Data(contentsOf: currentURL) != Data("invalid".utf8))
+  }
+
   @Test("File checkpoints reject typed metadata instead of silently erasing its type")
   func fileCheckpointRejectsLossyMetadata() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     defer { try? FileManager.default.removeItem(at: directory) }
     let store = FileCheckpointStore(directory: directory)
-    let checkpoint = CoreAgentCheckpoint(
+    let checkpoint = FoundationModelsAgentCheckpoint(
       compatibilityRevision: "revision",
       transcript: Transcript(entries: [
         .prompt(
@@ -991,7 +1113,7 @@ struct CoreAgentTests {
       ])
     )
 
-    await #expect(throws: CoreAgentCheckpointStoreError.self) {
+    await #expect(throws: FoundationModelsAgentCheckpointStoreError.self) {
       try await store.saveCheckpoint(checkpoint, for: "lossy")
     }
   }
@@ -1006,21 +1128,21 @@ struct CoreAgentTests {
       id: "video",
       content: .init(value: "provider-specific")
     )
-    let checkpoint = CoreAgentCheckpoint(
+    let checkpoint = FoundationModelsAgentCheckpoint(
       compatibilityRevision: "revision",
       transcript: Transcript(entries: [
         .prompt(.init(segments: [.custom(custom)]))
       ])
     )
 
-    await #expect(throws: CoreAgentCheckpointStoreError.self) {
+    await #expect(throws: FoundationModelsAgentCheckpointStoreError.self) {
       try await store.saveCheckpoint(checkpoint, for: "custom")
     }
   }
 
   @Test("Checkpoint failures are recorded without turning a completed side effect into a retry")
   func checkpointFailureRecordsAndContinues() async throws {
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "completed")]),
       checkpointStore: FailingCheckpointStore()
     )
@@ -1034,7 +1156,7 @@ struct CoreAgentTests {
 
   @Test("Skips automatic retention work when no checkpoint store is configured")
   func disabledPersistenceSkipsRetention() async throws {
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "completed")]),
       configuration: .init(checkpointFailurePolicy: .failRun),
       transcriptRetention: .custom { _ in
@@ -1053,12 +1175,12 @@ struct CoreAgentTests {
 
   @Test("Receipt verification detects tampering")
   func receiptTampering() async throws {
-    let response = try await CoreAgentSession(
+    let response = try await FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "ok")])
     ).respond(to: "Receipt")
-    let valid = try CoreAgentRunReceipt(run: response.run)
+    let valid = try FoundationModelsAgentRunReceipt(run: response.run)
     let first = try #require(valid.receipts.first)
-    let changedEvent = CoreAgentEvent(
+    let changedEvent = FoundationModelsAgentEvent(
       id: first.event.id,
       runID: first.event.runID,
       timestamp: first.event.timestamp,
@@ -1067,13 +1189,13 @@ struct CoreAgentTests {
       attributes: first.event.attributes
     )
     var changedReceipts = valid.receipts
-    changedReceipts[0] = CoreAgentEventReceipt(
+    changedReceipts[0] = FoundationModelsAgentEventReceipt(
       index: first.index,
       previousHash: first.previousHash,
       hash: first.hash,
       event: changedEvent
     )
-    let tampered = CoreAgentRunReceipt(
+    let tampered = FoundationModelsAgentRunReceipt(
       runID: valid.runID,
       receipts: changedReceipts,
       rootHash: valid.rootHash
@@ -1082,7 +1204,7 @@ struct CoreAgentTests {
     #expect(valid.verify())
     #expect(!tampered.verify())
 
-    let changedRunID = CoreAgentRunReceipt(
+    let changedRunID = FoundationModelsAgentRunReceipt(
       runID: UUID(),
       receipts: valid.receipts,
       rootHash: valid.rootHash
@@ -1092,10 +1214,10 @@ struct CoreAgentTests {
 
   @Test("Exported receipts decode and verify with stable date encoding")
   func receiptExportRoundTrip() async throws {
-    let response = try await CoreAgentSession(
+    let response = try await FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "ok")])
     ).respond(to: "Export")
-    let exporter = CoreAgentReceiptExporter()
+    let exporter = FoundationModelsAgentReceiptExporter()
 
     let decoded = try exporter.decode(exporter.data(for: response.run))
 
@@ -1106,9 +1228,9 @@ struct CoreAgentTests {
   func eventRedaction() async throws {
     let capture = EventCapture()
     let model = RecordedLanguageModel(steps: [.failure("Bearer super-secret-token")])
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: model,
-      observers: [ClosureCoreAgentObserver { await capture.append($0) }]
+      observers: [ClosureFoundationModelsAgentObserver { await capture.append($0) }]
     )
 
     await #expect(throws: (any Error).self) {
@@ -1125,10 +1247,10 @@ struct CoreAgentTests {
   func boundedObserverDelivery() async throws {
     let gate = ObserverGate()
     let capture = EventCapture()
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "done")]),
       observers: [
-        ClosureCoreAgentObserver { event in
+        ClosureFoundationModelsAgentObserver { event in
           await gate.wait()
           await capture.append(event)
         }
@@ -1156,9 +1278,9 @@ struct CoreAgentTests {
   @Test("Reports a cancelled observer flush separately from a timeout")
   func cancelledObserverFlush() async throws {
     let gate = ObserverGate()
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "done")]),
-      observers: [ClosureCoreAgentObserver { _ in await gate.wait() }]
+      observers: [ClosureFoundationModelsAgentObserver { _ in await gate.wait() }]
     )
     _ = try await session.respond(to: "Wait")
     let flush = Task { await session.flushObservers(timeout: .seconds(5)) }
@@ -1174,10 +1296,10 @@ struct CoreAgentTests {
   func reentrantObserverFlush() async throws {
     let reference = SessionReference()
     let results = BooleanCapture()
-    let session = try CoreAgentSession(
+    let session = try FoundationModelsAgentSession(
       model: RecordedLanguageModel(steps: [.response(text: "done")]),
       observers: [
-        ClosureCoreAgentObserver { _ in
+        ClosureFoundationModelsAgentObserver { _ in
           guard let session = await reference.get() else { return }
           let flush = await session.flushObservers(timeout: .seconds(1))
           await results.append(flush.status == .reentrant)

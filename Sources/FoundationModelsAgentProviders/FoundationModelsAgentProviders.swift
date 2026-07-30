@@ -1,32 +1,32 @@
-import CoreAgent
 import Foundation
+import FoundationModelsAgent
 
-public enum CoreAgentProviderModels {}
+public enum FoundationModelsAgentProviderModels {}
 
-public enum CoreAgentProviderFeatures {
-  #if COREAGENT_APPLE_UTILITIES
+public enum FoundationModelsAgentProviderFeatures {
+  #if FOUNDATIONMODELSAGENT_APPLE_UTILITIES
     public static let appleUtilities = true
   #else
     public static let appleUtilities = false
   #endif
 
-  #if COREAGENT_CLAUDE
+  #if FOUNDATIONMODELSAGENT_CLAUDE
     public static let claude = true
   #else
     public static let claude = false
   #endif
 
-  #if COREAGENT_GEMINI
+  #if FOUNDATIONMODELSAGENT_GEMINI
     public static let gemini = true
   #else
     public static let gemini = false
   #endif
 }
 
-#if COREAGENT_APPLE_UTILITIES
+#if FOUNDATIONMODELSAGENT_APPLE_UTILITIES
   import FoundationModelsUtilities
 
-  extension CoreAgentProviderModels {
+  extension FoundationModelsAgentProviderModels {
     /// Creates Apple's generic language model for a Chat Completions endpoint.
     ///
     /// This is a protocol client for local, self-hosted, or developer-controlled
@@ -48,7 +48,7 @@ public enum CoreAgentProviderFeatures {
   }
 #endif
 
-#if COREAGENT_CLAUDE
+#if FOUNDATIONMODELSAGENT_CLAUDE
   import ClaudeForFoundationModels
 
   /// Anthropic's first-party Foundation Models implementation.
@@ -57,7 +57,7 @@ public enum CoreAgentProviderFeatures {
   public typealias AnthropicAuthMode = AuthMode
   public typealias AnthropicServerTool = ClaudeServerTool
 
-  extension CoreAgentProviderModels {
+  extension FoundationModelsAgentProviderModels {
     public static func claude(
       model: AnthropicModel = .sonnet4_6,
       auth: AnthropicAuthMode,
@@ -78,14 +78,14 @@ public enum CoreAgentProviderFeatures {
   }
 #endif
 
-#if COREAGENT_GEMINI
+#if FOUNDATIONMODELSAGENT_GEMINI
   import FirebaseAILogic
 
   /// Firebase AI Logic's first-party Gemini Foundation Models implementation.
   public typealias GoogleGeminiLanguageModel = GeminiLanguageModel
   public typealias FirebaseAIClient = FirebaseAI
 
-  extension CoreAgentProviderModels {
+  extension FoundationModelsAgentProviderModels {
     public static func gemini(
       using client: FirebaseAIClient,
       name: String,

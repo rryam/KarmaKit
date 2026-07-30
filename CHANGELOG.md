@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 - 2026-07-30
+
+- Renamed the package, products, modules, and public APIs to Foundation Models
+  Agent.
+- Updated the Apple utilities, Claude, and Gemini provider revisions for the
+  Xcode 27 Beta 4 Foundation Models sampling and usage APIs.
+- Added an explicit note that the project is independent and is not affiliated
+  with or endorsed by Apple.
+
 ## 0.3.0 - 2026-06-24
 
 - Renamed the Apple utilities helper from `openAICompatible(...)` to
@@ -8,8 +17,8 @@
 
 ## 0.2.0 - 2026-06-23
 
-- Rebuilt CoreAgent on native Xcode 27 Foundation Models types.
-- Added persistent `CoreAgentSession` text, structured, schema, and streaming
+- Rebuilt FoundationModelsAgent on native Xcode 27 Foundation Models types.
+- Added persistent `FoundationModelsAgentSession` text, structured, schema, and streaming
   response APIs.
 - Added a dynamic-profile factory path with history-only restore and explicit
   checkpoint compatibility revisions.
@@ -26,14 +35,14 @@
 - Added optional Apple utilities, Claude, and Gemini provider Traits.
 - Added session plugins with bounded pre-run context, post-run capture hooks,
   governed plugin tools, and transcript sanitization across retries and streams.
-- Added the optional `CoreAgentMemory` product with scoped canonical SQLite
+- Added the optional `FoundationModelsAgentMemory` product with scoped canonical SQLite
   records, FTS5 retrieval, provenance, supersession, tombstones, and Apple file
   protection defaults.
 - Added automatic episode capture, durable three-attempt consolidation jobs,
   pending semantic candidates, approval policies, and a fresh-session
   Foundation Models consolidator.
 - Added bounded untrusted-evidence injection, the governed
-  `coreagent_search_memory` tool, disclosure filtering, optional index repair,
+  `foundationmodelsagent_search_memory` tool, disclosure filtering, optional index repair,
   deterministic Markdown export, and hard-purge cleanup.
 - Suppressed retries after tool invocation (including authorization) and
   applied timeout/retry semantics to streaming before its first partial

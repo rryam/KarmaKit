@@ -1,18 +1,18 @@
 import Foundation
 
-public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
-  private var storedRecords: [UUID: CoreAgentMemoryRecord]
-  private var storedCandidates: [UUID: CoreAgentMemoryCandidate]
-  private var storedJobs: [UUID: CoreAgentMemoryConsolidationJob]
+public actor InMemoryFoundationModelsAgentMemoryStore: FoundationModelsAgentMemoryStore {
+  private var storedRecords: [UUID: FoundationModelsAgentMemoryRecord]
+  private var storedCandidates: [UUID: FoundationModelsAgentMemoryCandidate]
+  private var storedJobs: [UUID: FoundationModelsAgentMemoryConsolidationJob]
   private var claimedJobIDs: Set<UUID>
-  private var storedTombstones: [UUID: CoreAgentMemoryTombstone]
-  private var storedExportDirectories: [CoreAgentMemoryScope: Set<String>]
+  private var storedTombstones: [UUID: FoundationModelsAgentMemoryTombstone]
+  private var storedExportDirectories: [FoundationModelsAgentMemoryScope: Set<String>]
 
   public init(
-    records: [CoreAgentMemoryRecord] = [],
-    candidates: [CoreAgentMemoryCandidate] = [],
-    jobs: [CoreAgentMemoryConsolidationJob] = [],
-    tombstones: [CoreAgentMemoryTombstone] = []
+    records: [FoundationModelsAgentMemoryRecord] = [],
+    candidates: [FoundationModelsAgentMemoryCandidate] = [],
+    jobs: [FoundationModelsAgentMemoryConsolidationJob] = [],
+    tombstones: [FoundationModelsAgentMemoryTombstone] = []
   ) {
     self.storedRecords = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
     self.storedCandidates = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
@@ -22,35 +22,35 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     self.storedExportDirectories = [:]
   }
 
-  public func save(_ record: CoreAgentMemoryRecord) throws {
+  public func save(_ record: FoundationModelsAgentMemoryRecord) throws {
     try ensureScope(storedRecords[record.id]?.scope, equals: record.scope)
     try ensureLinkedRecordScopes(record)
     storedRecords[record.id] = record
   }
 
   public func saveEpisode(
-    _ episode: CoreAgentMemoryRecord,
-    enqueueing job: CoreAgentMemoryConsolidationJob?
+    _ episode: FoundationModelsAgentMemoryRecord,
+    enqueueing job: FoundationModelsAgentMemoryConsolidationJob?
   ) throws {
     try ensureScope(storedRecords[episode.id]?.scope, equals: episode.scope)
     try ensureLinkedRecordScopes(episode)
     if let job {
       try ensureScope(storedJobs[job.id]?.scope, equals: job.scope)
-      guard job.scope == episode.scope else { throw CoreAgentMemoryError.scopeMismatch }
+      guard job.scope == episode.scope else { throw FoundationModelsAgentMemoryError.scopeMismatch }
     }
     storedRecords[episode.id] = episode
     if let job { storedJobs[job.id] = job }
   }
 
   public func applyCorrection(
-    _ correction: CoreAgentMemoryRecord,
+    _ correction: FoundationModelsAgentMemoryRecord,
     superseding recordIDs: [UUID]
   ) throws {
     try ensureScope(storedRecords[correction.id]?.scope, equals: correction.scope)
-    var existingRecords: [CoreAgentMemoryRecord] = []
+    var existingRecords: [FoundationModelsAgentMemoryRecord] = []
     for id in recordIDs {
       guard let existing = storedRecords[id], existing.scope == correction.scope else {
-        throw CoreAgentMemoryError.recordNotFound(id)
+        throw FoundationModelsAgentMemoryError.recordNotFound(id)
       }
       existingRecords.append(existing)
     }
@@ -64,15 +64,21 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     }
   }
 
-  public func record(id: UUID, in scope: CoreAgentMemoryScope) -> CoreAgentMemoryRecord? {
+  public func record(id: UUID, in scope: FoundationModelsAgentMemoryScope)
+    -> FoundationModelsAgentMemoryRecord?
+  {
     storedRecords[id].flatMap { $0.scope == scope ? $0 : nil }
   }
 
-  public func records(ids: [UUID], in scope: CoreAgentMemoryScope) -> [CoreAgentMemoryRecord] {
+  public func records(ids: [UUID], in scope: FoundationModelsAgentMemoryScope)
+    -> [FoundationModelsAgentMemoryRecord]
+  {
     ids.compactMap { id in storedRecords[id].flatMap { $0.scope == scope ? $0 : nil } }
   }
 
-  public func records(in scope: CoreAgentMemoryScope) -> [CoreAgentMemoryRecord] {
+  public func records(in scope: FoundationModelsAgentMemoryScope)
+    -> [FoundationModelsAgentMemoryRecord]
+  {
     storedRecords.values
       .filter { $0.scope == scope }
       .sorted(by: Self.recordsBefore)
@@ -80,20 +86,20 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func lexicalSearch(
     query: String,
-    in scope: CoreAgentMemoryScope,
+    in scope: FoundationModelsAgentMemoryScope,
     limit: Int
-  ) -> [CoreAgentMemorySearchCandidate] {
+  ) -> [FoundationModelsAgentMemorySearchCandidate] {
     let terms = Self.terms(in: query)
     return storedRecords.values
       .filter { $0.scope == scope }
-      .compactMap { record -> CoreAgentMemorySearchCandidate? in
+      .compactMap { record -> FoundationModelsAgentMemorySearchCandidate? in
         let haystack = record.content.lowercased()
         let matches = terms.reduce(into: 0) { count, term in
           if haystack.contains(term) { count += 1 }
         }
         guard terms.isEmpty || matches > 0 else { return nil }
         let relevance = terms.isEmpty ? 0 : Double(matches) / Double(terms.count)
-        return CoreAgentMemorySearchCandidate(id: record.id, score: relevance)
+        return FoundationModelsAgentMemorySearchCandidate(id: record.id, score: relevance)
       }
       .sorted {
         if $0.score != $1.score { return $0.score > $1.score }
@@ -104,12 +110,12 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
   }
 
   public func updateIndexState(
-    _ state: CoreAgentMemoryIndexState,
+    _ state: FoundationModelsAgentMemoryIndexState,
     for id: UUID,
-    in scope: CoreAgentMemoryScope
+    in scope: FoundationModelsAgentMemoryScope
   ) throws {
     guard var record = storedRecords[id], record.scope == scope else {
-      throw CoreAgentMemoryError.recordNotFound(id)
+      throw FoundationModelsAgentMemoryError.recordNotFound(id)
     }
     record.indexState = state
     record.updatedAt = Date()
@@ -118,13 +124,13 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func tombstone(
     id: UUID,
-    in scope: CoreAgentMemoryScope,
+    in scope: FoundationModelsAgentMemoryScope,
     reason: String?
-  ) throws -> CoreAgentMemoryTombstone {
+  ) throws -> FoundationModelsAgentMemoryTombstone {
     guard var record = storedRecords[id], record.scope == scope else {
-      throw CoreAgentMemoryError.recordNotFound(id)
+      throw FoundationModelsAgentMemoryError.recordNotFound(id)
     }
-    let tombstone = CoreAgentMemoryTombstone(recordID: id, scope: scope, reason: reason)
+    let tombstone = FoundationModelsAgentMemoryTombstone(recordID: id, scope: scope, reason: reason)
     record.status = .tombstoned
     record.updatedAt = tombstone.deletedAt
     storedRecords[id] = record
@@ -150,11 +156,13 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     return tombstone
   }
 
-  public func tombstone(id: UUID, in scope: CoreAgentMemoryScope) -> CoreAgentMemoryTombstone? {
+  public func tombstone(id: UUID, in scope: FoundationModelsAgentMemoryScope)
+    -> FoundationModelsAgentMemoryTombstone?
+  {
     storedTombstones[id].flatMap { $0.scope == scope ? $0 : nil }
   }
 
-  public func purge(id: UUID, in scope: CoreAgentMemoryScope) {
+  public func purge(id: UUID, in scope: FoundationModelsAgentMemoryScope) {
     guard storedRecords[id]?.scope == scope || storedTombstones[id]?.scope == scope else { return }
     for (linkedID, var linked) in Array(storedRecords) where linked.scope == scope {
       let previousCount = linked.supersedes.count
@@ -177,7 +185,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     claimedJobIDs.subtract(removedJobIDs)
   }
 
-  public func purge(scope: CoreAgentMemoryScope) {
+  public func purge(scope: FoundationModelsAgentMemoryScope) {
     claimedJobIDs.subtract(storedJobs.values.filter { $0.scope == scope }.map(\.id))
     storedRecords = storedRecords.filter { $0.value.scope != scope }
     storedCandidates = storedCandidates.filter { $0.value.scope != scope }
@@ -186,26 +194,28 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     storedExportDirectories.removeValue(forKey: scope)
   }
 
-  public func save(_ candidate: CoreAgentMemoryCandidate) throws {
+  public func save(_ candidate: FoundationModelsAgentMemoryCandidate) throws {
     try ensureScope(storedCandidates[candidate.id]?.scope, equals: candidate.scope)
     guard let source = storedRecords[candidate.sourceRecordID], source.scope == candidate.scope
     else {
-      throw CoreAgentMemoryError.scopeMismatch
+      throw FoundationModelsAgentMemoryError.scopeMismatch
     }
     guard source.isActive || candidate.status == .rejected else {
-      throw CoreAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
+      throw FoundationModelsAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
     }
     storedCandidates[candidate.id] = candidate
   }
 
-  public func candidate(id: UUID, in scope: CoreAgentMemoryScope) -> CoreAgentMemoryCandidate? {
+  public func candidate(id: UUID, in scope: FoundationModelsAgentMemoryScope)
+    -> FoundationModelsAgentMemoryCandidate?
+  {
     storedCandidates[id].flatMap { $0.scope == scope ? $0 : nil }
   }
 
   public func candidates(
-    in scope: CoreAgentMemoryScope,
-    status: CoreAgentMemoryCandidateStatus?
-  ) -> [CoreAgentMemoryCandidate] {
+    in scope: FoundationModelsAgentMemoryScope,
+    status: FoundationModelsAgentMemoryCandidateStatus?
+  ) -> [FoundationModelsAgentMemoryCandidate] {
     storedCandidates.values
       .filter { $0.scope == scope && (status == nil || $0.status == status) }
       .sorted {
@@ -216,20 +226,20 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func approveCandidate(
     id: UUID,
-    as record: CoreAgentMemoryRecord,
-    in scope: CoreAgentMemoryScope
+    as record: FoundationModelsAgentMemoryRecord,
+    in scope: FoundationModelsAgentMemoryScope
   ) throws {
-    guard record.scope == scope else { throw CoreAgentMemoryError.scopeMismatch }
+    guard record.scope == scope else { throw FoundationModelsAgentMemoryError.scopeMismatch }
     try ensureScope(storedRecords[record.id]?.scope, equals: record.scope)
     try ensureLinkedRecordScopes(record)
     guard var candidate = storedCandidates[id], candidate.scope == scope else {
-      throw CoreAgentMemoryError.candidateNotFound(id)
+      throw FoundationModelsAgentMemoryError.candidateNotFound(id)
     }
     guard candidate.status == .pending else {
-      throw CoreAgentMemoryError.invalidCandidateDecision
+      throw FoundationModelsAgentMemoryError.invalidCandidateDecision
     }
     guard let source = storedRecords[candidate.sourceRecordID], source.isActive else {
-      throw CoreAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
+      throw FoundationModelsAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
     }
     candidate.status = .approved
     candidate.decidedAt = Date()
@@ -239,14 +249,14 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func rejectCandidate(
     id: UUID,
-    in scope: CoreAgentMemoryScope,
+    in scope: FoundationModelsAgentMemoryScope,
     reason: String?
   ) throws {
     guard var candidate = storedCandidates[id], candidate.scope == scope else {
-      throw CoreAgentMemoryError.candidateNotFound(id)
+      throw FoundationModelsAgentMemoryError.candidateNotFound(id)
     }
     guard candidate.status == .pending else {
-      throw CoreAgentMemoryError.invalidCandidateDecision
+      throw FoundationModelsAgentMemoryError.invalidCandidateDecision
     }
     candidate.status = .rejected
     candidate.decidedAt = Date()
@@ -254,13 +264,13 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     storedCandidates[id] = candidate
   }
 
-  public func save(_ job: CoreAgentMemoryConsolidationJob) throws {
+  public func save(_ job: FoundationModelsAgentMemoryConsolidationJob) throws {
     try ensureScope(storedJobs[job.id]?.scope, equals: job.scope)
     guard let source = storedRecords[job.episodeID], source.scope == job.scope else {
-      throw CoreAgentMemoryError.scopeMismatch
+      throw FoundationModelsAgentMemoryError.scopeMismatch
     }
     guard source.isActive || job.status == .cancelled else {
-      throw CoreAgentMemoryError.sourceRecordInactive(job.episodeID)
+      throw FoundationModelsAgentMemoryError.sourceRecordInactive(job.episodeID)
     }
     storedJobs[job.id] = job
     if job.status != .processing {
@@ -270,15 +280,15 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func consolidationJob(
     id: UUID,
-    in scope: CoreAgentMemoryScope
-  ) -> CoreAgentMemoryConsolidationJob? {
+    in scope: FoundationModelsAgentMemoryScope
+  ) -> FoundationModelsAgentMemoryConsolidationJob? {
     storedJobs[id].flatMap { $0.scope == scope ? $0 : nil }
   }
 
   public func consolidationJobs(
-    in scope: CoreAgentMemoryScope,
-    statuses: Set<CoreAgentMemoryConsolidationJobStatus>
-  ) -> [CoreAgentMemoryConsolidationJob] {
+    in scope: FoundationModelsAgentMemoryScope,
+    statuses: Set<FoundationModelsAgentMemoryConsolidationJobStatus>
+  ) -> [FoundationModelsAgentMemoryConsolidationJob] {
     storedJobs.values
       .filter { $0.scope == scope && statuses.contains($0.status) }
       .sorted {
@@ -288,8 +298,8 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
   }
 
   public func claimNextConsolidationJob(
-    in scope: CoreAgentMemoryScope
-  ) -> CoreAgentMemoryConsolidationJob? {
+    in scope: FoundationModelsAgentMemoryScope
+  ) -> FoundationModelsAgentMemoryConsolidationJob? {
     let jobs = storedJobs.values
       .filter {
         $0.scope == scope
@@ -319,16 +329,16 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     return nil
   }
 
-  public func releaseConsolidationJobClaim(id: UUID, in scope: CoreAgentMemoryScope) {
+  public func releaseConsolidationJobClaim(id: UUID, in scope: FoundationModelsAgentMemoryScope) {
     guard storedJobs[id]?.scope == scope else { return }
     claimedJobIDs.remove(id)
   }
 
-  public func registerExportDirectory(_ path: String, in scope: CoreAgentMemoryScope) {
+  public func registerExportDirectory(_ path: String, in scope: FoundationModelsAgentMemoryScope) {
     storedExportDirectories[scope, default: []].insert(path)
   }
 
-  public func exportDirectories(in scope: CoreAgentMemoryScope) -> [String] {
+  public func exportDirectories(in scope: FoundationModelsAgentMemoryScope) -> [String] {
     storedExportDirectories[scope, default: []].sorted()
   }
 
@@ -337,32 +347,32 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
   }
 
   private static func recordsBefore(
-    _ lhs: CoreAgentMemoryRecord,
-    _ rhs: CoreAgentMemoryRecord
+    _ lhs: FoundationModelsAgentMemoryRecord,
+    _ rhs: FoundationModelsAgentMemoryRecord
   ) -> Bool {
     if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
     return lhs.id.uuidString < rhs.id.uuidString
   }
 
   private func ensureScope(
-    _ existing: CoreAgentMemoryScope?,
-    equals proposed: CoreAgentMemoryScope
+    _ existing: FoundationModelsAgentMemoryScope?,
+    equals proposed: FoundationModelsAgentMemoryScope
   ) throws {
     guard existing == nil || existing == proposed else {
-      throw CoreAgentMemoryError.scopeMismatch
+      throw FoundationModelsAgentMemoryError.scopeMismatch
     }
   }
 
-  private func ensureLinkedRecordScopes(_ record: CoreAgentMemoryRecord) throws {
+  private func ensureLinkedRecordScopes(_ record: FoundationModelsAgentMemoryRecord) throws {
     for id in record.supersedes {
       guard storedRecords[id]?.scope == record.scope else {
-        throw CoreAgentMemoryError.scopeMismatch
+        throw FoundationModelsAgentMemoryError.scopeMismatch
       }
     }
     if let id = record.supersededBy,
       storedRecords[id]?.scope != record.scope
     {
-      throw CoreAgentMemoryError.scopeMismatch
+      throw FoundationModelsAgentMemoryError.scopeMismatch
     }
   }
 }

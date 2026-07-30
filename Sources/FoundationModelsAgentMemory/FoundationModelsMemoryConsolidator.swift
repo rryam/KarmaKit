@@ -34,7 +34,7 @@ public struct FoundationModelsMemoryConsolidationOutput: Sendable {
 }
 
 public struct FoundationModelsMemoryConsolidator<Model: LanguageModel>:
-  CoreAgentMemoryConsolidator
+  FoundationModelsAgentMemoryConsolidator
 {
   public let model: Model
   public let options: GenerationOptions
@@ -45,8 +45,8 @@ public struct FoundationModelsMemoryConsolidator<Model: LanguageModel>:
   }
 
   public func consolidate(
-    episode: CoreAgentMemoryRecord
-  ) async throws -> [CoreAgentMemoryCandidateDraft] {
+    episode: FoundationModelsAgentMemoryRecord
+  ) async throws -> [FoundationModelsAgentMemoryCandidateDraft] {
     let session = LanguageModelSession(
       model: model,
       instructions: Instructions {
@@ -67,11 +67,13 @@ public struct FoundationModelsMemoryConsolidator<Model: LanguageModel>:
       options: options
     )
     return try response.content.candidates.compactMap { candidate in
-      let kind = CoreAgentMemoryKind(rawValue: candidate.kind.lowercased()) ?? .reflection
+      let kind =
+        FoundationModelsAgentMemoryKind(rawValue: candidate.kind.lowercased()) ?? .reflection
       guard kind != .episode else { return nil }
       let sensitivity =
-        CoreAgentMemorySensitivity(rawValue: candidate.sensitivity.lowercased()) ?? .personal
-      return try CoreAgentMemoryCandidateDraft(
+        FoundationModelsAgentMemorySensitivity(rawValue: candidate.sensitivity.lowercased())
+        ?? .personal
+      return try FoundationModelsAgentMemoryCandidateDraft(
         kind: kind,
         content: candidate.content,
         authority: .assistantInference,

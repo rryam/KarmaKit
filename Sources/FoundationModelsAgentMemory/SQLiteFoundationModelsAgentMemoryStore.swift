@@ -1,42 +1,43 @@
 import Foundation
 import SQLite3
 
-public enum CoreAgentMemoryFileProtection: Sendable {
+public enum FoundationModelsAgentMemoryFileProtection: Sendable {
   case complete
   case completeUnlessOpen
   case completeUntilFirstUserAuthentication
   case none
 }
 
-public struct SQLiteCoreAgentMemoryStoreConfiguration: Sendable {
-  public var fileProtection: CoreAgentMemoryFileProtection
+public struct SQLiteFoundationModelsAgentMemoryStoreConfiguration: Sendable {
+  public var fileProtection: FoundationModelsAgentMemoryFileProtection
   public var excludesFromBackup: Bool
 
   public init(
-    fileProtection: CoreAgentMemoryFileProtection = .completeUntilFirstUserAuthentication,
+    fileProtection: FoundationModelsAgentMemoryFileProtection =
+      .completeUntilFirstUserAuthentication,
     excludesFromBackup: Bool = true
   ) {
     self.fileProtection = fileProtection
     self.excludesFromBackup = excludesFromBackup
   }
 
-  public static let `default` = SQLiteCoreAgentMemoryStoreConfiguration()
+  public static let `default` = SQLiteFoundationModelsAgentMemoryStoreConfiguration()
 }
 
-public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
+public actor SQLiteFoundationModelsAgentMemoryStore: FoundationModelsAgentMemoryStore {
   public static let schemaVersion: Int32 = 1
 
   public let databaseURL: URL
 
-  private let connection: SQLiteCoreAgentMemoryConnection
+  private let connection: SQLiteFoundationModelsAgentMemoryConnection
   private let encoder: JSONEncoder
   private let decoder: JSONDecoder
-  private let configuration: SQLiteCoreAgentMemoryStoreConfiguration
+  private let configuration: SQLiteFoundationModelsAgentMemoryStoreConfiguration
   private var claimedJobIDs: Set<UUID> = []
 
   public init(
     databaseURL: URL,
-    configuration: SQLiteCoreAgentMemoryStoreConfiguration = .default
+    configuration: SQLiteFoundationModelsAgentMemoryStoreConfiguration = .default
   ) throws {
     self.databaseURL = databaseURL.standardizedFileURL
     self.configuration = configuration
@@ -45,9 +46,9 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       at: self.databaseURL.deletingLastPathComponent(),
       withIntermediateDirectories: true
     )
-    self.connection = try SQLiteCoreAgentMemoryConnection(url: self.databaseURL)
-    self.encoder = JSONEncoder.coreAgentMemory
-    self.decoder = JSONDecoder.coreAgentMemory
+    self.connection = try SQLiteFoundationModelsAgentMemoryConnection(url: self.databaseURL)
+    self.encoder = JSONEncoder.foundationModelsAgentMemory
+    self.decoder = JSONDecoder.foundationModelsAgentMemory
 
     try Self.configure(connection)
     try Self.applyFilePolicies(
@@ -56,14 +57,14 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     )
   }
 
-  public func save(_ record: CoreAgentMemoryRecord) throws {
+  public func save(_ record: FoundationModelsAgentMemoryRecord) throws {
     try transaction { try saveRecord(record) }
     try refreshFilePolicies()
   }
 
   public func saveEpisode(
-    _ episode: CoreAgentMemoryRecord,
-    enqueueing job: CoreAgentMemoryConsolidationJob?
+    _ episode: FoundationModelsAgentMemoryRecord,
+    enqueueing job: FoundationModelsAgentMemoryConsolidationJob?
   ) throws {
     try transaction {
       try saveRecord(episode)
@@ -73,14 +74,14 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
   }
 
   public func applyCorrection(
-    _ correction: CoreAgentMemoryRecord,
+    _ correction: FoundationModelsAgentMemoryRecord,
     superseding recordIDs: [UUID]
   ) throws {
     try transaction {
-      var existingRecords: [CoreAgentMemoryRecord] = []
+      var existingRecords: [FoundationModelsAgentMemoryRecord] = []
       for id in recordIDs {
         guard let existing = try fetchRecord(id: id, scope: correction.scope) else {
-          throw CoreAgentMemoryError.recordNotFound(id)
+          throw FoundationModelsAgentMemoryError.recordNotFound(id)
         }
         existingRecords.append(existing)
       }
@@ -97,19 +98,21 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func record(
     id: UUID,
-    in scope: CoreAgentMemoryScope
-  ) throws -> CoreAgentMemoryRecord? {
+    in scope: FoundationModelsAgentMemoryScope
+  ) throws -> FoundationModelsAgentMemoryRecord? {
     try fetchRecord(id: id, scope: scope)
   }
 
   public func records(
     ids: [UUID],
-    in scope: CoreAgentMemoryScope
-  ) throws -> [CoreAgentMemoryRecord] {
+    in scope: FoundationModelsAgentMemoryScope
+  ) throws -> [FoundationModelsAgentMemoryRecord] {
     try ids.compactMap { try fetchRecord(id: $0, scope: scope) }
   }
 
-  public func records(in scope: CoreAgentMemoryScope) throws -> [CoreAgentMemoryRecord] {
+  public func records(in scope: FoundationModelsAgentMemoryScope) throws
+    -> [FoundationModelsAgentMemoryRecord]
+  {
     let statement = try prepare(
       """
       SELECT payload FROM memory_records
@@ -118,14 +121,14 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       """
     )
     try bind(scope, to: statement)
-    return try decodeRows(statement, as: CoreAgentMemoryRecord.self)
+    return try decodeRows(statement, as: FoundationModelsAgentMemoryRecord.self)
   }
 
   public func lexicalSearch(
     query: String,
-    in scope: CoreAgentMemoryScope,
+    in scope: FoundationModelsAgentMemoryScope,
     limit: Int
-  ) throws -> [CoreAgentMemorySearchCandidate] {
+  ) throws -> [FoundationModelsAgentMemorySearchCandidate] {
     guard limit > 0 else { return [] }
     let matchQuery = Self.ftsQuery(query)
     if matchQuery.isEmpty {
@@ -139,10 +142,10 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       )
       try bind(scope, to: statement)
       try statement.bind(Int64(limit), at: 4)
-      var results: [CoreAgentMemorySearchCandidate] = []
+      var results: [FoundationModelsAgentMemorySearchCandidate] = []
       while try statement.step() {
         guard let id = UUID(uuidString: statement.text(at: 0)) else { continue }
-        results.append(CoreAgentMemorySearchCandidate(id: id, score: 0))
+        results.append(FoundationModelsAgentMemorySearchCandidate(id: id, score: 0))
       }
       return results
     }
@@ -164,23 +167,23 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try bind(scope, to: statement, startingAt: 2)
     try statement.bind(Int64(limit), at: 5)
 
-    var results: [CoreAgentMemorySearchCandidate] = []
+    var results: [FoundationModelsAgentMemorySearchCandidate] = []
     while try statement.step() {
       guard let id = UUID(uuidString: statement.text(at: 0)) else { continue }
       results.append(
-        CoreAgentMemorySearchCandidate(id: id, score: statement.double(at: 1))
+        FoundationModelsAgentMemorySearchCandidate(id: id, score: statement.double(at: 1))
       )
     }
     return results
   }
 
   public func updateIndexState(
-    _ state: CoreAgentMemoryIndexState,
+    _ state: FoundationModelsAgentMemoryIndexState,
     for id: UUID,
-    in scope: CoreAgentMemoryScope
+    in scope: FoundationModelsAgentMemoryScope
   ) throws {
     guard var record = try fetchRecord(id: id, scope: scope) else {
-      throw CoreAgentMemoryError.recordNotFound(id)
+      throw FoundationModelsAgentMemoryError.recordNotFound(id)
     }
     record.indexState = state
     record.updatedAt = Date()
@@ -189,14 +192,14 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func tombstone(
     id: UUID,
-    in scope: CoreAgentMemoryScope,
+    in scope: FoundationModelsAgentMemoryScope,
     reason: String?
-  ) throws -> CoreAgentMemoryTombstone {
-    let tombstone = CoreAgentMemoryTombstone(recordID: id, scope: scope, reason: reason)
+  ) throws -> FoundationModelsAgentMemoryTombstone {
+    let tombstone = FoundationModelsAgentMemoryTombstone(recordID: id, scope: scope, reason: reason)
     var cancelledJobIDs: Set<UUID> = []
     try transaction {
       guard var record = try fetchRecord(id: id, scope: scope) else {
-        throw CoreAgentMemoryError.recordNotFound(id)
+        throw FoundationModelsAgentMemoryError.recordNotFound(id)
       }
       record.status = .tombstoned
       record.updatedAt = tombstone.deletedAt
@@ -227,8 +230,8 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func tombstone(
     id: UUID,
-    in scope: CoreAgentMemoryScope
-  ) throws -> CoreAgentMemoryTombstone? {
+    in scope: FoundationModelsAgentMemoryScope
+  ) throws -> FoundationModelsAgentMemoryTombstone? {
     let statement = try prepare(
       """
       SELECT payload FROM memory_tombstones
@@ -238,13 +241,14 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try statement.bind(id, at: 1)
     try bind(scope, to: statement, startingAt: 2)
     guard try statement.step() else { return nil }
-    return try decoder.decode(CoreAgentMemoryTombstone.self, from: statement.data(at: 0))
+    return try decoder.decode(
+      FoundationModelsAgentMemoryTombstone.self, from: statement.data(at: 0))
   }
 
-  public func purge(id: UUID, in scope: CoreAgentMemoryScope) throws {
+  public func purge(id: UUID, in scope: FoundationModelsAgentMemoryScope) throws {
     let removedJobIDs = try consolidationJobs(
       in: scope,
-      statuses: Set(CoreAgentMemoryConsolidationJobStatus.allCases)
+      statuses: Set(FoundationModelsAgentMemoryConsolidationJobStatus.allCases)
     ).filter { $0.episodeID == id }.map(\.id)
     try transaction {
       guard try fetchRecord(id: id, scope: scope) != nil else { return }
@@ -286,10 +290,10 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try refreshFilePolicies()
   }
 
-  public func purge(scope: CoreAgentMemoryScope) throws {
+  public func purge(scope: FoundationModelsAgentMemoryScope) throws {
     let removedJobIDs = try consolidationJobs(
       in: scope,
-      statuses: Set(CoreAgentMemoryConsolidationJobStatus.allCases)
+      statuses: Set(FoundationModelsAgentMemoryConsolidationJobStatus.allCases)
     ).map(\.id)
     try transaction {
       let fts = try prepare(
@@ -318,22 +322,22 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try refreshFilePolicies()
   }
 
-  public func save(_ candidate: CoreAgentMemoryCandidate) throws {
+  public func save(_ candidate: FoundationModelsAgentMemoryCandidate) throws {
     try transaction { try saveCandidate(candidate) }
     try refreshFilePolicies()
   }
 
   public func candidate(
     id: UUID,
-    in scope: CoreAgentMemoryScope
-  ) throws -> CoreAgentMemoryCandidate? {
+    in scope: FoundationModelsAgentMemoryScope
+  ) throws -> FoundationModelsAgentMemoryCandidate? {
     try fetchCandidate(id: id, scope: scope)
   }
 
   public func candidates(
-    in scope: CoreAgentMemoryScope,
-    status: CoreAgentMemoryCandidateStatus?
-  ) throws -> [CoreAgentMemoryCandidate] {
+    in scope: FoundationModelsAgentMemoryScope,
+    status: FoundationModelsAgentMemoryCandidateStatus?
+  ) throws -> [FoundationModelsAgentMemoryCandidate] {
     let statusClause = status == nil ? "" : " AND status = ?"
     let statement = try prepare(
       """
@@ -344,26 +348,26 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     )
     try bind(scope, to: statement)
     if let status { try statement.bind(status.rawValue, at: 4) }
-    return try decodeRows(statement, as: CoreAgentMemoryCandidate.self)
+    return try decodeRows(statement, as: FoundationModelsAgentMemoryCandidate.self)
   }
 
   public func approveCandidate(
     id: UUID,
-    as record: CoreAgentMemoryRecord,
-    in scope: CoreAgentMemoryScope
+    as record: FoundationModelsAgentMemoryRecord,
+    in scope: FoundationModelsAgentMemoryScope
   ) throws {
-    guard record.scope == scope else { throw CoreAgentMemoryError.scopeMismatch }
+    guard record.scope == scope else { throw FoundationModelsAgentMemoryError.scopeMismatch }
     try transaction {
       guard var candidate = try fetchCandidate(id: id, scope: scope) else {
-        throw CoreAgentMemoryError.candidateNotFound(id)
+        throw FoundationModelsAgentMemoryError.candidateNotFound(id)
       }
       guard candidate.status == .pending else {
-        throw CoreAgentMemoryError.invalidCandidateDecision
+        throw FoundationModelsAgentMemoryError.invalidCandidateDecision
       }
       guard let source = try fetchRecord(id: candidate.sourceRecordID, scope: scope),
         source.isActive
       else {
-        throw CoreAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
+        throw FoundationModelsAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
       }
       candidate.status = .approved
       candidate.decidedAt = Date()
@@ -375,15 +379,15 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func rejectCandidate(
     id: UUID,
-    in scope: CoreAgentMemoryScope,
+    in scope: FoundationModelsAgentMemoryScope,
     reason: String?
   ) throws {
     try transaction {
       guard var candidate = try fetchCandidate(id: id, scope: scope) else {
-        throw CoreAgentMemoryError.candidateNotFound(id)
+        throw FoundationModelsAgentMemoryError.candidateNotFound(id)
       }
       guard candidate.status == .pending else {
-        throw CoreAgentMemoryError.invalidCandidateDecision
+        throw FoundationModelsAgentMemoryError.invalidCandidateDecision
       }
       candidate.status = .rejected
       candidate.decidedAt = Date()
@@ -393,7 +397,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try refreshFilePolicies()
   }
 
-  public func save(_ job: CoreAgentMemoryConsolidationJob) throws {
+  public func save(_ job: FoundationModelsAgentMemoryConsolidationJob) throws {
     try transaction { try saveJob(job) }
     if job.status != .processing {
       claimedJobIDs.remove(job.id)
@@ -403,8 +407,8 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func consolidationJob(
     id: UUID,
-    in scope: CoreAgentMemoryScope
-  ) throws -> CoreAgentMemoryConsolidationJob? {
+    in scope: FoundationModelsAgentMemoryScope
+  ) throws -> FoundationModelsAgentMemoryConsolidationJob? {
     let statement = try prepare(
       """
       SELECT payload FROM memory_jobs
@@ -415,15 +419,15 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try bind(scope, to: statement, startingAt: 2)
     guard try statement.step() else { return nil }
     return try decoder.decode(
-      CoreAgentMemoryConsolidationJob.self,
+      FoundationModelsAgentMemoryConsolidationJob.self,
       from: statement.data(at: 0)
     )
   }
 
   public func consolidationJobs(
-    in scope: CoreAgentMemoryScope,
-    statuses: Set<CoreAgentMemoryConsolidationJobStatus>
-  ) throws -> [CoreAgentMemoryConsolidationJob] {
+    in scope: FoundationModelsAgentMemoryScope,
+    statuses: Set<FoundationModelsAgentMemoryConsolidationJobStatus>
+  ) throws -> [FoundationModelsAgentMemoryConsolidationJob] {
     guard !statuses.isEmpty else { return [] }
     let placeholders = Array(repeating: "?", count: statuses.count).joined(separator: ",")
     let statement = try prepare(
@@ -438,13 +442,13 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     for (offset, status) in statuses.sorted(by: { $0.rawValue < $1.rawValue }).enumerated() {
       try statement.bind(status.rawValue, at: Int32(offset + 4))
     }
-    return try decodeRows(statement, as: CoreAgentMemoryConsolidationJob.self)
+    return try decodeRows(statement, as: FoundationModelsAgentMemoryConsolidationJob.self)
   }
 
   public func claimNextConsolidationJob(
-    in scope: CoreAgentMemoryScope
-  ) throws -> CoreAgentMemoryConsolidationJob? {
-    var claimed: CoreAgentMemoryConsolidationJob?
+    in scope: FoundationModelsAgentMemoryScope
+  ) throws -> FoundationModelsAgentMemoryConsolidationJob? {
+    var claimed: FoundationModelsAgentMemoryConsolidationJob?
     try transaction {
       let jobs = try consolidationJobs(in: scope, statuses: [.queued, .processing])
       for var job in jobs where !claimedJobIDs.contains(job.id) {
@@ -471,14 +475,14 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     return claimed
   }
 
-  public func releaseConsolidationJobClaim(id: UUID, in scope: CoreAgentMemoryScope) {
+  public func releaseConsolidationJobClaim(id: UUID, in scope: FoundationModelsAgentMemoryScope) {
     guard (try? consolidationJob(id: id, in: scope)) != nil else { return }
     claimedJobIDs.remove(id)
   }
 
   public func registerExportDirectory(
     _ path: String,
-    in scope: CoreAgentMemoryScope
+    in scope: FoundationModelsAgentMemoryScope
   ) throws {
     let statement = try prepare(
       """
@@ -493,7 +497,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try statement.run()
   }
 
-  public func exportDirectories(in scope: CoreAgentMemoryScope) throws -> [String] {
+  public func exportDirectories(in scope: FoundationModelsAgentMemoryScope) throws -> [String] {
     let statement = try prepare(
       """
       SELECT path FROM memory_exports
@@ -511,8 +515,8 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   private func fetchRecord(
     id: UUID,
-    scope: CoreAgentMemoryScope
-  ) throws -> CoreAgentMemoryRecord? {
+    scope: FoundationModelsAgentMemoryScope
+  ) throws -> FoundationModelsAgentMemoryRecord? {
     let statement = try prepare(
       """
       SELECT payload FROM memory_records
@@ -522,13 +526,13 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try statement.bind(id, at: 1)
     try bind(scope, to: statement, startingAt: 2)
     guard try statement.step() else { return nil }
-    return try decoder.decode(CoreAgentMemoryRecord.self, from: statement.data(at: 0))
+    return try decoder.decode(FoundationModelsAgentMemoryRecord.self, from: statement.data(at: 0))
   }
 
   private func fetchCandidate(
     id: UUID,
-    scope: CoreAgentMemoryScope
-  ) throws -> CoreAgentMemoryCandidate? {
+    scope: FoundationModelsAgentMemoryScope
+  ) throws -> FoundationModelsAgentMemoryCandidate? {
     let statement = try prepare(
       """
       SELECT payload FROM memory_candidates
@@ -538,20 +542,21 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try statement.bind(id, at: 1)
     try bind(scope, to: statement, startingAt: 2)
     guard try statement.step() else { return nil }
-    return try decoder.decode(CoreAgentMemoryCandidate.self, from: statement.data(at: 0))
+    return try decoder.decode(
+      FoundationModelsAgentMemoryCandidate.self, from: statement.data(at: 0))
   }
 
-  private func saveRecord(_ record: CoreAgentMemoryRecord) throws {
+  private func saveRecord(_ record: FoundationModelsAgentMemoryRecord) throws {
     try ensureScope(for: record.id, table: "memory_records", equals: record.scope)
     for linkedID in record.supersedes {
       guard try fetchRecord(id: linkedID, scope: record.scope) != nil else {
-        throw CoreAgentMemoryError.scopeMismatch
+        throw FoundationModelsAgentMemoryError.scopeMismatch
       }
     }
     if let linkedID = record.supersededBy,
       try fetchRecord(id: linkedID, scope: record.scope) == nil
     {
-      throw CoreAgentMemoryError.scopeMismatch
+      throw FoundationModelsAgentMemoryError.scopeMismatch
     }
     let statement = try prepare(
       """
@@ -631,7 +636,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     }
   }
 
-  private func saveProvenance(for record: CoreAgentMemoryRecord) throws {
+  private func saveProvenance(for record: FoundationModelsAgentMemoryRecord) throws {
     let transcriptIDs =
       record.source.transcriptEntryIDs.isEmpty
       ? [String?](arrayLiteral: nil)
@@ -669,13 +674,13 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     }
   }
 
-  private func saveCandidate(_ candidate: CoreAgentMemoryCandidate) throws {
+  private func saveCandidate(_ candidate: FoundationModelsAgentMemoryCandidate) throws {
     try ensureScope(for: candidate.id, table: "memory_candidates", equals: candidate.scope)
     guard let source = try fetchRecord(id: candidate.sourceRecordID, scope: candidate.scope) else {
-      throw CoreAgentMemoryError.scopeMismatch
+      throw FoundationModelsAgentMemoryError.scopeMismatch
     }
     guard source.isActive || candidate.status == .rejected else {
-      throw CoreAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
+      throw FoundationModelsAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
     }
     let statement = try prepare(
       """
@@ -696,13 +701,13 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try statement.run()
   }
 
-  private func saveJob(_ job: CoreAgentMemoryConsolidationJob) throws {
+  private func saveJob(_ job: FoundationModelsAgentMemoryConsolidationJob) throws {
     try ensureScope(for: job.id, table: "memory_jobs", equals: job.scope)
     guard let source = try fetchRecord(id: job.episodeID, scope: job.scope) else {
-      throw CoreAgentMemoryError.scopeMismatch
+      throw FoundationModelsAgentMemoryError.scopeMismatch
     }
     guard source.isActive || job.status == .cancelled else {
-      throw CoreAgentMemoryError.sourceRecordInactive(job.episodeID)
+      throw FoundationModelsAgentMemoryError.sourceRecordInactive(job.episodeID)
     }
     let statement = try prepare(
       """
@@ -728,7 +733,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try statement.run()
   }
 
-  private func saveTombstone(_ tombstone: CoreAgentMemoryTombstone) throws {
+  private func saveTombstone(_ tombstone: FoundationModelsAgentMemoryTombstone) throws {
     let statement = try prepare(
       """
       INSERT INTO memory_tombstones (
@@ -747,7 +752,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
   }
 
   private func decodeRows<Value: Decodable>(
-    _ statement: SQLiteCoreAgentMemoryStatement,
+    _ statement: SQLiteFoundationModelsAgentMemoryStatement,
     as type: Value.Type
   ) throws -> [Value] {
     var values: [Value] = []
@@ -758,8 +763,8 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
   }
 
   private func bind(
-    _ scope: CoreAgentMemoryScope,
-    to statement: SQLiteCoreAgentMemoryStatement,
+    _ scope: FoundationModelsAgentMemoryScope,
+    to statement: SQLiteFoundationModelsAgentMemoryStatement,
     startingAt index: Int32 = 1
   ) throws {
     try statement.bind(scope.applicationID, at: index)
@@ -767,14 +772,14 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try statement.bind(scope.agentID, at: index + 2)
   }
 
-  private func prepare(_ sql: String) throws -> SQLiteCoreAgentMemoryStatement {
+  private func prepare(_ sql: String) throws -> SQLiteFoundationModelsAgentMemoryStatement {
     try connection.prepare(sql)
   }
 
   private func ensureScope(
     for id: UUID,
     table: String,
-    equals scope: CoreAgentMemoryScope
+    equals scope: FoundationModelsAgentMemoryScope
   ) throws {
     let statement = try prepare(
       "SELECT application_id, user_id, agent_id FROM \(table) WHERE id = ?"
@@ -785,7 +790,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       statement.text(at: 1) == scope.userID,
       statement.text(at: 2) == scope.agentID
     else {
-      throw CoreAgentMemoryError.scopeMismatch
+      throw FoundationModelsAgentMemoryError.scopeMismatch
     }
   }
 
@@ -805,13 +810,13 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     try Self.applyFilePolicies(databaseURL: databaseURL, configuration: configuration)
   }
 
-  private static func configure(_ connection: SQLiteCoreAgentMemoryConnection) throws {
+  private static func configure(_ connection: SQLiteFoundationModelsAgentMemoryConnection) throws {
     try connection.execute("PRAGMA foreign_keys = ON")
     try connection.execute("PRAGMA journal_mode = WAL")
     try connection.execute("PRAGMA synchronous = NORMAL")
     let version = try connection.int32(for: "PRAGMA user_version")
     guard version <= schemaVersion else {
-      throw CoreAgentMemoryError.unsupportedSchemaVersion(version)
+      throw FoundationModelsAgentMemoryError.unsupportedSchemaVersion(version)
     }
     try connection.execute(
       """
@@ -941,7 +946,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   private static func applyFilePolicies(
     databaseURL: URL,
-    configuration: SQLiteCoreAgentMemoryStoreConfiguration
+    configuration: SQLiteFoundationModelsAgentMemoryStoreConfiguration
   ) throws {
     for url in [
       databaseURL,
@@ -966,7 +971,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
   }
 }
 
-extension CoreAgentMemoryFileProtection {
+extension FoundationModelsAgentMemoryFileProtection {
   fileprivate var foundationValue: FileProtectionType? {
     switch self {
     case .complete: .complete
@@ -977,7 +982,7 @@ extension CoreAgentMemoryFileProtection {
   }
 }
 
-private final class SQLiteCoreAgentMemoryConnection: @unchecked Sendable {
+private final class SQLiteFoundationModelsAgentMemoryConnection: @unchecked Sendable {
   private var database: OpaquePointer?
 
   init(url: URL) throws {
@@ -985,7 +990,7 @@ private final class SQLiteCoreAgentMemoryConnection: @unchecked Sendable {
     guard sqlite3_open_v2(url.path, &database, flags, nil) == SQLITE_OK else {
       let message = database.map { String(cString: sqlite3_errmsg($0)) } ?? "open failed"
       sqlite3_close_v2(database)
-      throw CoreAgentMemoryError.sqlite(message)
+      throw FoundationModelsAgentMemoryError.sqlite(message)
     }
     sqlite3_busy_timeout(database, 5_000)
   }
@@ -999,18 +1004,18 @@ private final class SQLiteCoreAgentMemoryConnection: @unchecked Sendable {
     guard sqlite3_exec(database, sql, nil, nil, &errorMessage) == SQLITE_OK else {
       let message = errorMessage.map { String(cString: $0) } ?? lastError
       sqlite3_free(errorMessage)
-      throw CoreAgentMemoryError.sqlite(message)
+      throw FoundationModelsAgentMemoryError.sqlite(message)
     }
   }
 
-  func prepare(_ sql: String) throws -> SQLiteCoreAgentMemoryStatement {
+  func prepare(_ sql: String) throws -> SQLiteFoundationModelsAgentMemoryStatement {
     var statement: OpaquePointer?
     guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
       let statement
     else {
-      throw CoreAgentMemoryError.sqlite(lastError)
+      throw FoundationModelsAgentMemoryError.sqlite(lastError)
     }
-    return SQLiteCoreAgentMemoryStatement(statement: statement, connection: self)
+    return SQLiteFoundationModelsAgentMemoryStatement(statement: statement, connection: self)
   }
 
   func int32(for sql: String) throws -> Int32 {
@@ -1024,11 +1029,11 @@ private final class SQLiteCoreAgentMemoryConnection: @unchecked Sendable {
   }
 }
 
-private final class SQLiteCoreAgentMemoryStatement {
+private final class SQLiteFoundationModelsAgentMemoryStatement {
   private let statement: OpaquePointer
-  private let connection: SQLiteCoreAgentMemoryConnection
+  private let connection: SQLiteFoundationModelsAgentMemoryConnection
 
-  init(statement: OpaquePointer, connection: SQLiteCoreAgentMemoryConnection) {
+  init(statement: OpaquePointer, connection: SQLiteFoundationModelsAgentMemoryConnection) {
     self.statement = statement
     self.connection = connection
   }
@@ -1078,13 +1083,14 @@ private final class SQLiteCoreAgentMemoryStatement {
     switch sqlite3_step(statement) {
     case SQLITE_ROW: true
     case SQLITE_DONE: false
-    default: throw CoreAgentMemoryError.sqlite(connection.lastError)
+    default: throw FoundationModelsAgentMemoryError.sqlite(connection.lastError)
     }
   }
 
   func run() throws {
     guard try !step() else {
-      throw CoreAgentMemoryError.sqlite("A write statement unexpectedly returned a row.")
+      throw FoundationModelsAgentMemoryError.sqlite(
+        "A write statement unexpectedly returned a row.")
     }
   }
 
@@ -1109,7 +1115,7 @@ private final class SQLiteCoreAgentMemoryStatement {
 
   private func check(_ result: Int32) throws {
     guard result == SQLITE_OK else {
-      throw CoreAgentMemoryError.sqlite(connection.lastError)
+      throw FoundationModelsAgentMemoryError.sqlite(connection.lastError)
     }
   }
 }
@@ -1117,7 +1123,7 @@ private final class SQLiteCoreAgentMemoryStatement {
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 extension JSONEncoder {
-  fileprivate static var coreAgentMemory: JSONEncoder {
+  fileprivate static var foundationModelsAgentMemory: JSONEncoder {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .deferredToDate
     encoder.outputFormatting = [.sortedKeys]
@@ -1126,7 +1132,7 @@ extension JSONEncoder {
 }
 
 extension JSONDecoder {
-  fileprivate static var coreAgentMemory: JSONDecoder {
+  fileprivate static var foundationModelsAgentMemory: JSONDecoder {
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .deferredToDate
     return decoder
