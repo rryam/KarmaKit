@@ -16,6 +16,10 @@ public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable
   case pluginCompletionFailed
   case pluginEvent
   case profileToolAuditBestEffort
+  case profileToolAllowed
+  case profileToolDenied
+  case profileToolApprovalFailed
+  case profileToolBudgetExhausted
   case toolAuthorizationStarted
   case toolAuthorizationSucceeded
   case toolAuthorizationDenied

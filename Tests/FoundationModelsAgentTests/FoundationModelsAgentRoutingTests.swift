@@ -133,6 +133,38 @@ struct FoundationModelsAgentRoutingTests {
     )
   }
 
+  @Test("Treats a reported zero context size as a literal conservative boundary")
+  func zeroContextBoundary() throws {
+    let candidate = routingCandidate(id: "beta-zero", contextTokens: 0)
+
+    let noMinimum = FoundationModelsAgentRouter().select(
+      from: [candidate],
+      policy: routingPolicy(primary: "beta-zero"),
+      decidedAt: routingDecisionDate
+    )
+    #expect(try #require(noMinimum.selection).decision.selectedRouteID == "beta-zero")
+
+    let zeroMinimum = FoundationModelsAgentRouter().select(
+      from: [candidate],
+      requirements: .init(minimumContextTokens: 0),
+      policy: routingPolicy(primary: "beta-zero"),
+      decidedAt: routingDecisionDate
+    )
+    #expect(try #require(zeroMinimum.selection).decision.selectedRouteID == "beta-zero")
+
+    let positiveMinimum = FoundationModelsAgentRouter().select(
+      from: [candidate],
+      requirements: .init(minimumContextTokens: 1),
+      policy: routingPolicy(primary: "beta-zero"),
+      decidedAt: routingDecisionDate
+    )
+    #expect(positiveMinimum.selection == nil)
+    #expect(
+      rejectionCodes(in: positiveMinimum.decision, routeID: "beta-zero")
+        == [.insufficientContext]
+    )
+  }
+
   @Test("Distinguishes approaching and reached quota states")
   func quotaStates() throws {
     let requirements = FoundationModelsAgentRouteRequirements(

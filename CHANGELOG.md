@@ -10,6 +10,10 @@
   and per-candidate decision evidence.
 - Added truthful on-device and Private Cloud Compute snapshots plus routed
   `AgentSession` provenance on completed and failed runs.
+- Added Xcode 27 dynamic-profile tool governance with explicit manifest
+  registries, fail-closed unknown and changed-tool handling, canonical native
+  arguments, async approval, total and per-tool call budgets, and audited
+  pre-execution outcomes carrying native tool-call IDs.
 
 ## 0.4.0 - 2026-07-30
 

@@ -62,6 +62,12 @@ These snapshots are point-in-time evidence, not a lease on future availability. 
 execution can still fail after selection, and ``AgentSession`` records that failure
 without inventing usage the model did not expose.
 
+A zero native context size is retained as `.known(tokenLimit: 0)`. Xcode 27 Beta 4 can
+report that value for an available `SystemLanguageModel`; the router does not replace it
+with a guessed capacity. A positive
+``FoundationModelsAgentRouteRequirements/minimumContextTokens`` rejects that candidate,
+while omitting the minimum leaves it eligible if its other requirements pass.
+
 ## Preserve evidence with the run
 
 ``FoundationModelsAgentRouteDecision`` includes the selected route, fallback status, and
@@ -101,6 +107,9 @@ The router does not accept secrets, authenticate providers, or verify billing st
 Never place API keys, tokens, or other credentials in route IDs, purposes, explanations,
 or account references because routing decisions are intended to be exported as evidence.
 
-Do not combine this layer with `LanguageModelSession.DynamicProfile` model switching.
-Dynamic profiles already select their native model inside Foundation Models, where an
-external route decision could not prove which model executed.
+Use this layer only with the explicit-model ``AgentSession`` initializer. The
+dynamic-profile initializer intentionally accepts no routing decision because Foundation
+Models selects its model internally, where external evidence could not prove which model
+executed. Dynamic-profile tool governance remains available independently; governed
+profile runs keep their governance events and a `nil`
+``FoundationModelsAgentRun/routingDecision``.
