@@ -15,6 +15,7 @@ FoundationModelsAgent adds the layer an app still needs around the native sessio
 - optional scoped long-term memory with SQLite FTS, approval, and deletion;
 - toolset validation when restoring a checkpoint;
 - ordered run events, observers, usage, and tamper-evident receipts;
+- explicit, evidence-producing selection among native `LanguageModel` values;
 - deterministic, zero-network model fixtures for tests;
 - optional first-party Apple, Anthropic, and Google provider packages.
 
@@ -169,6 +170,96 @@ multi-attempt retries because profile-owned state and lifecycle hooks are not
 generically reversible. See
 [Dynamic-profile tool governance](Documentation/Dynamic-Profile-Tool-Governance.md)
 for the complete contract.
+
+## Explicit native model routing
+
+Use `FoundationModelsAgentRouter` before constructing an explicit-model `AgentSession`.
+Routing chooses among native `LanguageModel` values and produces evidence; it does not
+respond, stream, translate messages, or replace the native session loop.
+
+```swift
+let local = FoundationModelsAgentRouteCandidate.onDevice(
+  id: "on-device-general",
+  purpose: "Keep ordinary assistant prompts on device."
+)
+let privateCloud = await FoundationModelsAgentRouteCandidate.privateCloudCompute(
+  id: "pcc-reasoning",
+  purpose: "Handle reasoning requests when the user allows Private Cloud Compute."
+)
+
+let policy = ClosureFoundationModelsAgentRoutingPolicy { requirements, candidates in
+  FoundationModelsAgentRoutePlan(
+    primaryRouteID: "on-device-general",
+    // Listing a fallback is an explicit opt-in. No fallback is inferred.
+    fallbackRouteIDs: requirements.requiresReasoning ? ["pcc-reasoning"] : []
+  )
+}
+
+let requirements = FoundationModelsAgentRouteRequirements(
+  // The default is `.onDeviceOnly`. Both classes must be explicitly widened
+  // before prompt data may leave the device.
+  dataPolicy: FoundationModelsAgentRouteDataPolicy(
+    allowedPrivacyClasses: [.onDevice, .privateCloudCompute],
+    allowedNetworkClasses: [.none, .applePrivateCloud]
+  ),
+  minimumContextTokens: 8_000,
+  requiresReasoning: true,
+  quotaPolicy: .avoidApproachingLimit
+)
+
+switch FoundationModelsAgentRouter().select(
+  from: [local, privateCloud],
+  requirements: requirements,
+  policy: policy
+) {
+case .selected(let selection):
+  let agent = try AgentSession(
+    model: selection.model,
+    routingDecision: selection.decision,
+    instructions: Instructions("Help the user.")
+  )
+  let response = try await agent.respond(to: "Analyze this plan.")
+  print(response.run.routingDecision as Any)
+
+case .noRoute(let decision):
+  // Show an app-owned recovery UI. Every candidate and rejection reason is present.
+  print(decision)
+}
+```
+
+The app-supplied policy determines the primary route and ordered fallback list.
+The router then applies availability, privacy/network, context, reasoning, and quota
+requirements deterministically. `FoundationModelsAgentRouteDecision` records the selected
+route, whether it was a fallback, and an outcome for every candidate before execution.
+`AgentSession` emits `routeSelected` and `routeCandidateRejected` before the first model
+attempt, then preserves the decision beside truthful usage on completed runs and beside
+`nil` usage when a failed native response exposes no usage.
+
+The on-device and Private Cloud Compute candidate helpers snapshot Apple's native
+availability. The Private Cloud Compute helper also records below-limit,
+approaching-limit, and limit-reached quota states and queries the native context size only
+when the model is available. These helpers are availability-gated to the OS versions that
+expose their native APIs.
+
+Treat a native context size of zero literally. Xcode 27 Beta 4 can report
+`SystemLanguageModel.contextSize == 0` while the model is available. The helper preserves
+that observation as `.known(tokenLimit: 0)` instead of inventing a limit. A request with a
+positive `minimumContextTokens` then rejects the route as insufficient; a request without
+a minimum can still select it based on the other declared requirements.
+
+Third-party `LanguageModel` packages own authentication, secret storage, account setup,
+and billing. Construct and authenticate those native model values outside the router, then
+describe the route with `.externalProvider(providerID:accountReference:)`. The router never
+accepts API keys or refresh tokens, does not validate provider billing, and does not turn
+an account reference into authorization. Keep secrets out of route IDs, purposes, and
+account references because routing decisions are audit evidence.
+
+Use routing only with the explicit-model `AgentSession` initializer. The dynamic-profile
+initializer intentionally has no `routingDecision` parameter because Foundation Models
+owns its model switching; attaching an external route would make the evidence diverge
+from the model that actually executed. Govern profile-owned tool calls independently with
+`DynamicProfileToolGovernanceConfiguration`; those runs retain governance evidence and a
+`nil` routing decision.
 
 ## Native typed and multimodal input
 

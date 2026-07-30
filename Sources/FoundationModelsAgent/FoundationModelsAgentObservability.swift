@@ -3,6 +3,8 @@ import Foundation
 
 public enum FoundationModelsAgentEventKind: String, Codable, Equatable, Sendable {
   case runStarted
+  case routeSelected
+  case routeCandidateRejected
   case modelAttemptStarted
   case modelAttemptFailed
   case modelResponseCompleted
@@ -181,23 +183,62 @@ public struct FoundationModelsAgentRun: Codable, Equatable, Sendable, Identifiab
   public let endedAt: Date
   public let usage: FoundationModelsAgentUsage?
   public let events: [FoundationModelsAgentEvent]
+  /// The pre-execution route evidence, present for routed explicit-model runs.
+  public let routingDecision: FoundationModelsAgentRouteDecision?
 
   public init(
     id: UUID,
     startedAt: Date,
     endedAt: Date,
     usage: FoundationModelsAgentUsage?,
-    events: [FoundationModelsAgentEvent]
+    events: [FoundationModelsAgentEvent],
+    routingDecision: FoundationModelsAgentRouteDecision? = nil
   ) {
     self.id = id
     self.startedAt = startedAt
     self.endedAt = endedAt
     self.usage = usage
     self.events = events
+    self.routingDecision = routingDecision
   }
 
   public var duration: TimeInterval {
     endedAt.timeIntervalSince(startedAt)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case startedAt
+    case endedAt
+    case usage
+    case events
+    case routingDecision
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.id = try container.decode(UUID.self, forKey: .id)
+    self.startedAt = try container.decode(Date.self, forKey: .startedAt)
+    self.endedAt = try container.decode(Date.self, forKey: .endedAt)
+    self.usage = try container.decodeIfPresent(
+      FoundationModelsAgentUsage.self,
+      forKey: .usage
+    )
+    self.events = try container.decode([FoundationModelsAgentEvent].self, forKey: .events)
+    self.routingDecision = try container.decodeIfPresent(
+      FoundationModelsAgentRouteDecision.self,
+      forKey: .routingDecision
+    )
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(id, forKey: .id)
+    try container.encode(startedAt, forKey: .startedAt)
+    try container.encode(endedAt, forKey: .endedAt)
+    try container.encodeIfPresent(usage, forKey: .usage)
+    try container.encode(events, forKey: .events)
+    try container.encodeIfPresent(routingDecision, forKey: .routingDecision)
   }
 }
 

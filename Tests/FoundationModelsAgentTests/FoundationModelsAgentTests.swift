@@ -1044,6 +1044,12 @@ struct FoundationModelsAgentTests {
           && $0.attributes["native_call_id"] == "native-allow"
       }
     )
+    #expect(response.run.routingDecision == nil)
+    #expect(
+      !response.run.events.contains {
+        $0.kind == .routeSelected || $0.kind == .routeCandidateRejected
+      }
+    )
   }
 
   @Test("Denial in profile governance prevents the native tool implementation")
