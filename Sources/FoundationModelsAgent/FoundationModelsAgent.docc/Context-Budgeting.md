@@ -85,6 +85,51 @@ does not silently advance to another fallback.
 matching public token-count overloads. It cannot use automatic preflight until
 the app can provide truthful counts.
 
+## Automatic summarization
+
+Use ``AgentSessionContextOverflowPolicy/summarize(using:instructions:sourceRedactionPolicy:options:identifier:authoritativeTranscriptPolicy:)``
+to summarize completed history only after native measurement reports overflow:
+
+```swift
+let budget = AgentSessionContextBudget(
+  reservedResponseTokens: 768,
+  maximumUsableFraction: 0.9,
+  overflowPolicy: .summarize(
+    using: summarizer,
+    identifier: "support-summary-v1"
+  )
+)
+```
+
+The supplied `LanguageModel` runs in a fresh `LanguageModelSession` with no
+tools. The current request is not part of the summary source. Completed
+prompts, responses, structured content, tool calls, and tool outputs are
+rendered as delimited transcript data; reasoning is omitted. Image attachments
+are represented by their labels rather than copied into the summarizer prompt.
+Custom segments use their public descriptions.
+
+The default instructions tell the summarizer to preserve established facts,
+decisions, preferences, consequential tool results, and unresolved work while
+treating the transcript as data rather than instructions. Supply custom
+`Instructions` when an app needs a domain-specific continuation state. Change
+the transform `identifier` whenever that contract changes.
+
+Automatic summarization inherits the transform safety boundary below:
+
+- complete tool exchanges are validated before installation;
+- the rematerialized native session is measured again;
+- an empty summary, summarizer failure, or summary that still does not fit
+  fails before main-model inference;
+- complete authoritative history and checkpoints are preserved by default.
+
+The summarizer receives the conversation text. Passing a network-backed model
+is an explicit application data-disclosure decision. The package does not
+route or authenticate that model call. Set `sourceRedactionPolicy` when the
+rendered source must be filtered before disclosure; `.none` preserves the
+conversation by default. A source transcript may also exceed the summarizer's
+own context window; use a model with sufficient capacity or an app-owned
+chunking transform for that case.
+
 ## App-owned transforms
 
 When history can be compacted safely, configure an audited transform:
@@ -169,8 +214,12 @@ LanguageModelSession.Profile {
 ```
 
 `summarizeHistory`, `rollingWindow`, and `droppingCompletedToolCalls` come from
-Apple's `foundation-models-utilities` package. FoundationModelsAgent does not
-duplicate their summarization or Skills abstractions. These modifiers execute
-inside the profile, and `rollingWindow(entries:)` alone is not guaranteed to
-preserve prompt-led tool-turn boundaries. Test the chosen composition with the
-app's real tools and persistence policy.
+Apple's `foundation-models-utilities` package. They execute inside an opaque
+dynamic profile and use entry-based policy. FoundationModelsAgent's
+`.summarize(using:)` is the explicit-model alternative: native token overflow
+triggers it and the outer session validates, remeasures, and audits the result.
+It does not replace Apple's profile modifiers or Skills abstractions.
+
+`rollingWindow(entries:)` alone is not guaranteed to preserve prompt-led
+tool-turn boundaries. Test the chosen composition with the app's real tools
+and persistence policy.

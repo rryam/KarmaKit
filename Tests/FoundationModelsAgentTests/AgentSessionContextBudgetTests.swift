@@ -101,6 +101,44 @@ private func fixedMeasurer(
   }
 }
 
+private func transcriptText(_ transcript: Transcript) -> String {
+  transcript.compactMap { entry -> String? in
+    switch entry {
+    case .instructions(let instructions):
+      instructions.description
+    case .prompt(let prompt):
+      prompt.segments.map(\.description).joined(separator: " ")
+    case .response(let response):
+      response.segments.map(\.description).joined(separator: " ")
+    case .toolCalls(let calls):
+      calls.description
+    case .toolOutput(let output):
+      output.description
+    case .reasoning:
+      nil
+    @unknown default:
+      nil
+    }
+  }
+  .joined(separator: "\n")
+}
+
+private func automaticSummaryMeasurer(contextSize: Int = 8) -> AgentSessionContextMeasurer {
+  AgentSessionContextMeasurer { _, request in
+    let containsSummary = request.transcriptEntries.contains {
+      $0.id.hasPrefix("foundation-models-agent-summary-")
+    }
+    return AgentSessionContextTokenCounts(
+      contextSize: contextSize,
+      instructions: 0,
+      tools: 0,
+      prompt: 1,
+      schema: 0,
+      transcript: containsSummary ? 2 : request.transcriptEntries.count * 4
+    )
+  }
+}
+
 @Suite("AgentSession context budgets")
 struct AgentSessionContextBudgetTests {
   @Test("Tool definitions cannot be hidden by a smaller instruction-entry count")
@@ -340,6 +378,177 @@ struct AgentSessionContextBudgetTests {
     #expect(event.attributes["provenance"] == "test rolling window")
     #expect(event.attributes["cache_invalidated"] == "true")
     #expect(event.attributes["authoritative_transcript_policy"] == "preserve")
+  }
+
+  @Test("Automatic summarization uses a fresh model and preserves complete history")
+  func automaticSummaryPreservesCompleteHistory() async throws {
+    let summarizer = RecordedLanguageModel(steps: [
+      .response(text: "The user started a two-turn conversation.")
+    ])
+    let mainModel = RecordedLanguageModel(steps: [
+      .response(text: "first answer"),
+      .response(text: "second answer"),
+    ])
+    let store = InMemoryCheckpointStore()
+    let session = try AgentSession(
+      model: mainModel,
+      configuration: .init(
+        contextBudget: .init(
+          reservedResponseTokens: 0,
+          overflowPolicy: .summarize(using: summarizer)
+        )
+      ),
+      contextMeasurer: automaticSummaryMeasurer(),
+      checkpointStore: store
+    )
+
+    _ = try await session.respond(to: "First question")
+    let second = try await session.respond(to: "Second question")
+
+    let summarizerRequests = summarizer.recorder.capturedTranscripts()
+    #expect(summarizerRequests.count == 1)
+    let summarizerText = transcriptText(try #require(summarizerRequests.first))
+    #expect(summarizerText.contains("First question"))
+    #expect(summarizerText.contains("first answer"))
+
+    let mainRequests = mainModel.recorder.capturedTranscripts()
+    #expect(mainRequests.count == 2)
+    let compactedText = transcriptText(mainRequests[1])
+    #expect(compactedText.contains("The user started a two-turn conversation."))
+    #expect(compactedText.contains("Second question"))
+    #expect(!compactedText.contains("First question"))
+
+    #expect(try await session.transcript().history.count == 4)
+    let checkpoint = try #require(await store.loadCheckpoint(for: "default"))
+    #expect(checkpoint.transcript.history.count == 4)
+    let event = try #require(
+      second.run.events.first { $0.kind == .contextBudgetTransformed })
+    #expect(event.attributes["before_total_input_tokens"] == "9")
+    #expect(event.attributes["after_total_input_tokens"] == "3")
+    #expect(event.attributes["selected_policy"] == "transform:automatic-summary-v1")
+    #expect(event.attributes["provenance"]?.hasPrefix("automatic-summary:") == true)
+    #expect(event.attributes["authoritative_transcript_policy"] == "preserve")
+  }
+
+  @Test("Automatic summarization renders completed tool evidence")
+  func automaticSummaryRendersToolEvidence() async throws {
+    let summarizer = RecordedLanguageModel(steps: [
+      .response(text: "The lookup returned forty-two.")
+    ])
+    let mainModel = RecordedLanguageModel(steps: [
+      .toolCall(
+        id: "lookup-call",
+        name: "budget_tool",
+        argumentsJSON: #"{"value":"question"}"#
+      ),
+      .response(text: "first answer"),
+      .response(text: "second answer"),
+    ])
+    let session = try AgentSession(
+      model: mainModel,
+      tools: [BudgetTool()],
+      configuration: .init(
+        contextBudget: .init(
+          reservedResponseTokens: 0,
+          overflowPolicy: .summarize(using: summarizer)
+        )
+      ),
+      contextMeasurer: automaticSummaryMeasurer(contextSize: 12)
+    )
+
+    _ = try await session.respond(to: "Use the tool")
+    _ = try await session.respond(to: "Continue")
+
+    let request = try #require(summarizer.recorder.capturedTranscripts().first)
+    let rendered = transcriptText(request)
+    #expect(rendered.contains("budget_tool"))
+    #expect(rendered.contains("question"))
+  }
+
+  @Test("Automatic summarization can redact its source before model disclosure")
+  func automaticSummaryRedactsSource() async throws {
+    let summarizer = RecordedLanguageModel(steps: [.response(text: "Redacted state.")])
+    let session = try AgentSession(
+      model: RecordedLanguageModel(steps: [
+        .response(text: "first answer"),
+        .response(text: "second answer"),
+      ]),
+      configuration: .init(
+        contextBudget: .init(
+          reservedResponseTokens: 0,
+          overflowPolicy: .summarize(
+            using: summarizer,
+            sourceRedactionPolicy: .standard
+          )
+        )
+      ),
+      contextMeasurer: automaticSummaryMeasurer()
+    )
+
+    _ = try await session.respond(to: "Remember api_key=fixture-secret-value")
+    _ = try await session.respond(to: "Continue")
+
+    let request = try #require(summarizer.recorder.capturedTranscripts().first)
+    let rendered = transcriptText(request)
+    #expect(!rendered.contains("fixture-secret-value"))
+    #expect(rendered.contains("api_key=[REDACTED]"))
+  }
+
+  @Test("Automatic summarization can explicitly replace authoritative history")
+  func automaticSummaryCanReplaceAuthoritativeHistory() async throws {
+    let summarizer = RecordedLanguageModel(steps: [.response(text: "Compacted state.")])
+    let session = try AgentSession(
+      model: RecordedLanguageModel(steps: [
+        .response(text: "first answer"),
+        .response(text: "second answer"),
+      ]),
+      configuration: .init(
+        contextBudget: .init(
+          reservedResponseTokens: 0,
+          overflowPolicy: .summarize(
+            using: summarizer,
+            authoritativeTranscriptPolicy: .replace
+          )
+        )
+      ),
+      contextMeasurer: automaticSummaryMeasurer()
+    )
+
+    _ = try await session.respond(to: "First question")
+    _ = try await session.respond(to: "Second question")
+
+    let history = Array(try await session.transcript().history)
+    #expect(history.count == 4)
+    #expect(history[0].id.hasPrefix("foundation-models-agent-summary-prompt-"))
+    #expect(history[1].id.hasPrefix("foundation-models-agent-summary-response-"))
+  }
+
+  @Test("Automatic summarization fails before main inference for an empty summary")
+  func automaticSummaryRejectsEmptyOutput() async throws {
+    let summarizer = RecordedLanguageModel(steps: [.response(text: " \n ")])
+    let mainModel = RecordedLanguageModel(steps: [
+      .response(text: "first answer"),
+      .response(text: "unused"),
+    ])
+    let session = try AgentSession(
+      model: mainModel,
+      configuration: .init(
+        contextBudget: .init(
+          reservedResponseTokens: 0,
+          overflowPolicy: .summarize(using: summarizer)
+        )
+      ),
+      contextMeasurer: automaticSummaryMeasurer()
+    )
+
+    _ = try await session.respond(to: "First question")
+    await #expect(throws: FoundationModelsAgentError.self) {
+      _ = try await session.respond(to: "Second question")
+    }
+
+    #expect(mainModel.recorder.capturedTranscripts().count == 1)
+    let run = try #require(await session.lastRun())
+    #expect(run.events.contains { $0.kind == .contextBudgetFailed })
   }
 
   @Test("An explicit lossy transform replaces the authoritative checkpoint")

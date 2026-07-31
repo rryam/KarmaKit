@@ -277,6 +277,8 @@ history. `SystemLanguageModel` uses its native `contextSize` and
 `tokenCount(for:)` APIs automatically:
 
 ```swift
+let summarizer = SystemLanguageModel.default
+
 let agent = try AgentSession(
   model: SystemLanguageModel.default,
   tools: tools,
@@ -297,17 +299,40 @@ can opt in with `AgentSessionContextMeasurer`. Its closure receives the
 exact model instance passed to the session and the native values to measure.
 FoundationModelsAgent never substitutes an approximate tokenizer.
 
+Use `.summarize(using:)` when completed history should compact automatically
+only after native measurement reports that the request will not fit:
+
+```swift
+let agent = try AgentSession(
+  model: SystemLanguageModel.default,
+  configuration: .init(
+    contextBudget: .init(
+      reservedResponseTokens: 768,
+      maximumUsableFraction: 0.9,
+      overflowPolicy: .summarize(using: summarizer)
+    )
+  )
+)
+```
+
+The summarizer runs in a fresh native session with no tools. FoundationModelsAgent
+renders completed prompt, response, and tool evidence, preserves the current
+request, validates the compacted turn, and measures the exact rematerialized
+session again before inference. The complete authoritative transcript and
+checkpoint remain unchanged by default. Summary failure or a rewritten context
+that still does not fit fails before the main model runs.
+
 For a routed model, construct the session atomically with
 `AgentSession(selection:contextMeasurer:...)`. The measurer receives the
 selection's actual native model. A route descriptor's context size remains
 routing evidence and is never substituted for native token accounting; an
 unsupported selected model fails instead of silently trying another route.
 
-For app-owned compaction, use `.transform(...)`. The rewritten active session
-is validated, remeasured, and recorded with before/after counts, affected
-entry IDs, provenance, and cache invalidation. The complete authoritative
-transcript and checkpoint remain unchanged by default. Choosing
-`authoritativeTranscriptPolicy: .replace` is the explicit lossy option.
+For custom app-owned compaction, use `.transform(...)`. Both automatic
+summarization and custom transforms are validated, remeasured, and recorded
+with before/after counts, affected entry IDs, provenance, and cache
+invalidation. Choosing `authoritativeTranscriptPolicy: .replace` is the
+explicit lossy option.
 
 Dynamic profiles are intentionally different: their active model and
 modifier-produced history are opaque outside Foundation Models, so

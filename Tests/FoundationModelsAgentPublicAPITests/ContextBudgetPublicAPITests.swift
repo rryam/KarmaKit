@@ -400,6 +400,46 @@ struct ContextBudgetPublicAPITests {
     #expect(measurements.last?.instructionEntries.isEmpty == false)
   }
 
+  @Test("Automatic summarization is available to an external consumer")
+  func automaticSummarization() async throws {
+    let summarizer = RecordedLanguageModel(steps: [.response(text: "Public compact state.")])
+    let model = RecordedLanguageModel(steps: [
+      .response(text: "one"),
+      .response(text: "two"),
+    ])
+    let session = try AgentSession(
+      model: model,
+      configuration: .init(
+        contextBudget: .init(
+          reservedResponseTokens: 0,
+          overflowPolicy: .summarize(
+            using: summarizer,
+            identifier: "public-summary-v1"
+          )
+        )
+      ),
+      contextMeasurer: AgentSessionContextMeasurer { _, request in
+        let containsSummary = request.transcriptEntries.contains {
+          $0.id.hasPrefix("foundation-models-agent-summary-")
+        }
+        return publicCounts(
+          contextSize: 8,
+          transcript: containsSummary ? 2 : request.transcriptEntries.count * 4
+        )
+      }
+    )
+
+    _ = try await session.respond(to: "First")
+    let response = try await session.respond(to: "Second")
+
+    #expect(response.content == "two")
+    #expect(summarizer.recorder.capturedTranscripts().count == 1)
+    let transformed = try #require(
+      response.run.events.first { $0.kind == .contextBudgetTransformed })
+    #expect(transformed.attributes["selected_policy"] == "transform:public-summary-v1")
+    #expect(try await session.transcript().history.count == 4)
+  }
+
   @Test("Structured and streaming paths account for schema before inference")
   func structuredAndStreaming() async throws {
     let structuredProbe = PublicProbe()
